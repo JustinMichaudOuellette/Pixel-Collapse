@@ -130,18 +130,44 @@ object WfcGenerator {
       )
     }
     val startedAt = System.currentTimeMillis()
-    val portfolio = StrictSolverPortfolio(cells, columns, rows, Direction2d8.entries)
-    // Hand the caller's cancellation down to the search. Without this the solve would run to its
-    // deadline even though the editor had already replaced the drawing it was working on: the
-    // collapse is blocking, so cancelling the coroutine alone cannot stop it.
-    val scope = this
-    val result = portfolio.solve(
-      seed = seed,
-      workers = WORKERS,
-      deadlineNanos = System.nanoTime() + TIMEOUT_NANOS,
-      maxDecisions = MAX_DECISIONS,
-      shouldAbort = { !scope.isActive },
-    )
+    // The native solver is what runs on device; it packs the same tile set into a C model that every
+    // worker shares. Without the library (JVM tests, an ABI that was not built) the portfolio falls back
+    // to the Kotlin solver, so this is a speed-up and never a dependency.
+    val nativeModel = if (WfcNative.available) {
+      WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, columns, rows)
+    } else {
+      0L
+    }
+    val result = try {
+      val portfolio = StrictSolverPortfolio(
+        cells,
+        columns,
+        rows,
+        Direction2d8.entries,
+        solverFactory = { workerSeed, workerColumns, workerRows ->
+          if (nativeModel == 0L) {
+            null
+          } else {
+            NativeTileSolver(nativeModel, workerColumns, workerRows, workerSeed)
+          }
+        },
+      )
+      // Hand the caller's cancellation down to the search. Without this the solve would run to its
+      // deadline even though the editor had already replaced the drawing it was working on: the
+      // collapse is blocking, so cancelling the coroutine alone cannot stop it.
+      val scope = this
+      portfolio.solve(
+        seed = seed,
+        workers = WORKERS,
+        deadlineNanos = System.nanoTime() + TIMEOUT_NANOS,
+        maxDecisions = MAX_DECISIONS,
+        shouldAbort = { !scope.isActive },
+      )
+    } finally {
+      if (nativeModel != 0L) {
+        WfcNative.modelDestroy(nativeModel)
+      }
+    }
     // Null now means either "no tiling found" or "we were cancelled"; only the first one should fall
     // back to the stretched drawing. Letting the cancellation through is what makes it the second.
     ensureActive()

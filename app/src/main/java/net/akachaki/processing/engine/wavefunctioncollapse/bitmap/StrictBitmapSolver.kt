@@ -43,7 +43,7 @@ class StrictBitmapSolver(
      * `CoroutineScope.isActive` read is exactly that).
      */
     private val abortCheck: () -> Boolean = { false },
-) {
+) : TileSolver {
     private val tileCount = cells.size
     private val wordCount = (tileCount + 63) ushr 6
     private val directionCount = directions.size
@@ -229,6 +229,14 @@ class StrictBitmapSolver(
     var decisionsMade: Int = 0
         private set
 
+    override val decisionCount: Int get() = decisionsMade
+
+    override val revisionCount: Long get() = reviseCount
+
+    override fun requestAbort() {
+        abortRequested = true
+    }
+
     /** Diagnostics: number of domains with a single value at the end of the last solve. */
     var singletonDomains: Int = 0
         private set
@@ -344,7 +352,7 @@ class StrictBitmapSolver(
      * @param maxDecisions cap on branching decisions, so a pathological instance cannot run forever.
      * @return a tile index per variable (`y * columns + x`), or null when no solution was found in time.
      */
-    fun solve(deadlineNanos: Long = Long.MAX_VALUE, maxDecisions: Int = 2_000_000): IntArray? {
+    override fun solve(deadlineNanos: Long, maxDecisions: Int): IntArray? {
         this.deadlineNanos = deadlineNanos
         this.maxDecisions = maxDecisions
         abortRequested = false

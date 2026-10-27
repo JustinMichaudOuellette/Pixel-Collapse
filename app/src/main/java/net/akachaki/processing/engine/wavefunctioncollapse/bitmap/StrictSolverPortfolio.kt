@@ -35,8 +35,8 @@ class PortfolioResult(
  * cores into wall-clock and removes that tail. The cost is one solver's state per worker, which is why
  * [memoryBudgetBytes] caps the width instead of honouring `availableProcessors()` blindly.
  *
- * Losing workers are told to stop through [StrictBitmapSolver.abortRequested] and give up within one
- * clock check, so a finished portfolio does not leave threads burning CPU.
+ * Losing workers are told to stop through [TileSolver.requestAbort] and give up within one clock
+ * check, so a finished portfolio does not leave threads burning CPU.
  */
 class StrictSolverPortfolio(
     private val cells: List<BitmapWaveFunctionCell>,
@@ -44,6 +44,15 @@ class StrictSolverPortfolio(
     private val rows: Int,
     private val directions: List<Direction2d> = Direction2d8.entries,
     private val memoryBudgetBytes: Long = 128L * 1024 * 1024,
+    /**
+     * Builds a worker solver for [seed], or returns null to use the Kotlin [StrictBitmapSolver].
+     *
+     * This is how the app plugs in the native solver without this package knowing anything about JNI:
+     * the factory lives in the app module, closes over its native model, and every worker it returns is
+     * closed by the portfolio when the solve ends. The default keeps the Kotlin solver, which is what
+     * the JVM tests (and any device without the native library) exercise.
+     */
+    private val solverFactory: ((seed: Int, columns: Int, rows: Int) -> TileSolver?)? = null,
 ) {
     /** How many concurrent solvers fit the memory budget at this grid size, at least one. */
     fun workersThatFit(requested: Int): Int {
@@ -55,6 +64,11 @@ class StrictSolverPortfolio(
     /** Measured strict-solver cost per variable, in microseconds (21 µs at 270x480 on a desktop). */
     fun expectedSolveMs(): Long =
         (columns.toLong() * rows * MICROS_PER_VARIABLE / 1000).coerceAtLeast(1L)
+
+    /** A worker solver: the factory's if it has one for this seed, otherwise the Kotlin solver. */
+    private fun newSolver(seed: Int, shouldAbort: () -> Boolean): TileSolver =
+        solverFactory?.invoke(seed, columns, rows)
+            ?: StrictBitmapSolver(cells, columns, rows, directions, Random(seed), shouldAbort)
 
     /**
      * @param seed first seed; worker `i` runs seed `seed + i`.
@@ -81,32 +95,44 @@ class StrictSolverPortfolio(
     ): PortfolioResult {
         val width = workersThatFit(workers)
         if (width <= 1) {
+            // One solver, run on this thread: there is nobody to poll `shouldAbort` while it blocks, so
+            // the Kotlin solver is used here regardless of the factory.
             val solver = StrictBitmapSolver(cells, columns, rows, directions, Random(seed), shouldAbort)
-            val startedAt = System.nanoTime()
-            val assignment = solver.solve(deadlineNanos, maxDecisions)
-            val millis = (System.nanoTime() - startedAt) / 1_000_000
-            return PortfolioResult(
-                assignment,
-                if (assignment != null) seed else null,
-                millis,
-                listOf(
-                    PortfolioEntry(
-                        seed,
-                        assignment != null,
-                        millis,
-                        solver.decisionsMade,
-                        solver.reviseCount,
+            try {
+                val startedAt = System.nanoTime()
+                val assignment = solver.solve(deadlineNanos, maxDecisions)
+                val millis = (System.nanoTime() - startedAt) / 1_000_000
+                return PortfolioResult(
+                    assignment,
+                    if (assignment != null) seed else null,
+                    millis,
+                    listOf(
+                        PortfolioEntry(
+                            seed,
+                            assignment != null,
+                            millis,
+                            solver.decisionCount,
+                            solver.revisionCount,
+                        ),
                     ),
-                ),
-            )
+                )
+            } finally {
+                solver.close()
+            }
         }
 
         val startedAt = System.nanoTime()
-        val hedge = if (hedgeMs < 0) expectedSolveMs() * 3 / 2 else hedgeMs
-        // Build every solver before any worker starts, so the winner can abort the whole set.
-        val solvers = List(width) { index ->
-            StrictBitmapSolver(cells, columns, rows, directions, Random(seed + index), shouldAbort)
+        // A plug-in solver (the native one) is several times faster per variable than the Kotlin one,
+        // so the "let the first worker run alone" hedge has to be much shorter for it: measured on a
+        // 76x135 grid, the 320 ms hedge made a 4-worker native portfolio take 739 ms for a drawing the
+        // first worker solves in 189 ms.
+        val hedge = when {
+            hedgeMs >= 0 -> hedgeMs
+            solverFactory != null -> FAST_SOLVER_HEDGE_MS
+            else -> expectedSolveMs() * 3 / 2
         }
+        // Build every solver before any worker starts, so the winner can abort the whole set.
+        val solvers = List(width) { index -> newSolver(seed + index, shouldAbort) }
         val result = AtomicReference<IntArray?>()
         val winner = AtomicInteger(-1)
         val solved = CountDownLatch(1)
@@ -134,7 +160,7 @@ class StrictSolverPortfolio(
                             solved.countDown()
                             for (other in solvers) {
                                 if (other !== solver) {
-                                    other.abortRequested = true
+                                    other.requestAbort()
                                 }
                             }
                         }
@@ -142,8 +168,8 @@ class StrictSolverPortfolio(
                             workerSeed,
                             assignment != null,
                             (System.nanoTime() - workerStartedAt) / 1_000_000,
-                            solver.decisionsMade,
-                            solver.reviseCount,
+                            solver.decisionCount,
+                            solver.revisionCount,
                         )
                         finished.countDown()
                     }
@@ -164,13 +190,23 @@ class StrictSolverPortfolio(
             }
             if (shouldAbort()) {
                 for (solver in solvers) {
-                    solver.abortRequested = true
+                    solver.requestAbort()
                 }
             }
             // Winners abort the rest, so this normally returns at once; the grace is only for a worker that overshoots its deadline, and it is deliberately short so a failed solve returns promptly.
             finished.await(5_000L, TimeUnit.MILLISECONDS)
         } finally {
             pool.shutdownNow()
+            /*
+             * Release the worker solvers (native ones own memory). Only once every worker has actually
+             * finished: a thread that overshot the grace could still be inside its solver, and leaking
+             * a handle is far better than freeing memory a live thread is reading.
+             */
+            if (finished.count == 0L) {
+                for (solver in solvers) {
+                    solver.close()
+                }
+            }
         }
         val assignment = result.get()
         return PortfolioResult(
@@ -223,6 +259,13 @@ class StrictSolverPortfolio(
          * cancelled solve stops in a few tens of milliseconds, long enough that polling costs nothing.
          */
         const val ABORT_POLL_MS = 25L
+
+        /**
+         * Hedge used when a [solverFactory] supplies the worker solvers. Short enough that a fast
+         * solver's first attempt is not wasted waiting, long enough that a drawing which solves
+         * quickly never pays for three more workers.
+         */
+        const val FAST_SOLVER_HEDGE_MS = 60L
 
         /**
          * Bytes of solver state per variable, rounded up: 4 domain words (32), five int arrays

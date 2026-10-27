@@ -19,3 +19,10 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+# The native solver's entry points are resolved by name: libwfc.so exports
+# Java_ca_justinmo_wfcbitmap_WfcNative_modelCreate and friends, so neither the class nor its native
+# methods may be renamed. WfcNative is annotated @Keep as well; this rule is the belt to that
+# suspenders, in case the annotation is ever dropped by mistake.
+-keep class ca.justinmo.wfcbitmap.WfcNative {
+    native <methods>;
+}

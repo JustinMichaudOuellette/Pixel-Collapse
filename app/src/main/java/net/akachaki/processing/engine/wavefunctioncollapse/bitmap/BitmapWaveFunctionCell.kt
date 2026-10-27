@@ -298,9 +298,11 @@ class BitmapWaveFunctionCell(
          * of the drawing -- and in turn means a pixel drawn on the edge of the drawing can only be
          * generated on the edge of the bitmap.
          *
-         * The set is sampled twice, the second time on a mirrored copy of the drawing, so the mirror
-         * images of the drawn patterns are available too. Callers must pass an array they own:
-         * [IntArray2D.mirrorX] reverses it in place.
+         * The drawing is **not** mirrored here, and that is deliberate. Mirroring the image would also
+         * mirror the borders, so a pattern sampled on the drawing's right edge would carry a
+         * "blank to the right" mask and land on the bitmap's *left* edge with the wrong colours: the
+         * edge would still be an edge, but not the one that was drawn. Every tile is exactly a window
+         * of the drawing, so a pixel stays on the edge it was put on.
          *
          * Note the trade this makes. Because the drawing's edge must then close around the output, a
          * border that cannot repeat enough has *no* tiling at all, which is a real possibility and the
@@ -311,8 +313,6 @@ class BitmapWaveFunctionCell(
             pixels: IntArray2D,
         ): List<BitmapWaveFunctionCell> {
             val possibilities = mutableMapOf<List<Int?>, Int>()
-            computePossibilities(pixels, possibilities)
-            pixels.mirrorX()
             computePossibilities(pixels, possibilities)
             return pruneUnsupported(possibilities.map { (kernel, count) ->
                 BitmapWaveFunctionCell(kernel.toTypedArray(), count.toFloat())
