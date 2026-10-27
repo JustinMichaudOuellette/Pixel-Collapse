@@ -1,40 +1,33 @@
 package ca.justinmo.wfcbitmap
 
-import android.graphics.Bitmap
 import android.os.Bundle
-import android.widget.Toast
+import android.util.Log
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.material3.Button
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import ca.justinmo.wfcbitmap.BitmapEditor.PixelEditorScreen
 import ca.justinmo.wfcbitmap.ui.theme.WFCBitmapTheme
-import kotlinx.coroutines.launch
-import kotlin.random.Random
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,92 +55,88 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * The editor draws the *source image*; "Generate" grows it into a bitmap built only from 3x3
- * patterns that occur in the drawing (see [WfcGenerator]), and the result can be saved as a PNG.
+ * How long the drawing has to sit still before a solve starts. Editing is a stream of taps, and
+ * every solve is a full wave-function collapse, so regenerating on each tap would only ever finish
+ * work for drawings that no longer exist.
+ */
+private const val PREVIEW_DEBOUNCE_MS = 150L
+
+/**
+ * One fixed seed: the preview should follow the drawing, not the dice. A seed that was reseeded on
+ * every edit would reshuffle the whole picture each time, so an edit would not visibly change what
+ * it edited.
+ */
+private const val PREVIEW_SEED = 1
+
+/** Log tag for a generation that failed outright (see the catch in [PixelEditor]). */
+private const val TAG = "WfcPreview"
+
+/**
+ * The editor draws the *source image*; the column on its left shows, live, the bitmap that source
+ * generates (see [WfcGenerator]). There is no button: the preview is derived state of the drawing
+ * and is rebuilt whenever the drawing changes.
  */
 @Composable
 fun PixelEditor(modifier: Modifier = Modifier) {
   val gridState = remember { BitmapEditor.PixelGridState() }
-  var state by remember { mutableStateOf<WfcUiState>(WfcUiState.Idle) }
-  var seed by remember { mutableIntStateOf(1) }
-  val scope = rememberCoroutineScope()
-  val context = LocalContext.current
+  var output by remember { mutableStateOf<WfcGenerator.Output?>(null) }
 
-  // Creating the document through the system picker needs no storage permission on any supported
-  // API level, and it puts the file wherever the user wants it.
-  var pendingSave by remember { mutableStateOf<WfcGenerator.Output?>(null) }
-  val saveLauncher = rememberLauncherForActivityResult(
-    ActivityResultContracts.CreateDocument("image/png"),
-  ) { uri ->
-    val output = pendingSave
-    pendingSave = null
-    if (uri == null || output == null) {
-      return@rememberLauncherForActivityResult
-    }
-    val saved = runCatching {
-      context.contentResolver.openOutputStream(uri)?.use { stream ->
-        output.bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-      } ?: false
-    }.getOrDefault(false)
-    Toast.makeText(
-      context,
-      if (saved) "Saved ${output.bitmap.width}x${output.bitmap.height} bitmap" else "Could not save the bitmap",
-      Toast.LENGTH_SHORT,
-    ).show()
-  }
-
-  fun generate(requestSeed: Int) {
-    if (state is WfcUiState.Generating) {
-      return
-    }
-    // Snapshot the drawing on the main thread: the solver runs on a background dispatcher and must
-    // not read Compose snapshot state.
-    val columns = gridState.columns
-    val rows = gridState.rows
-    val pixels = IntArray(columns * rows) { gridState.pixels[it].toArgb() }
-    scope.launch {
-      state = WfcUiState.Generating
-      state = try {
-        WfcUiState.Ready(
+  // Rebuild the bitmap whenever the drawing changes. `collectLatest` is what makes a newer edit
+  // *cancel* the solve that is still running for an older one: the generator hands the coroutine's
+  // cancellation down to the search (see WfcGenerator), so a superseded solve stops within a few
+  // tens of milliseconds instead of running to its deadline and briefly showing a stale bitmap.
+  // The debounce below is inside the cancelled body, so a continuous stroke starts no solve at all
+  // until the user pauses.
+  LaunchedEffect(gridState) {
+    snapshotFlow { gridState.revision }
+      .collectLatest { revision ->
+        delay(PREVIEW_DEBOUNCE_MS)
+        if (gridState.revision != revision) {
+          return@collectLatest
+        }
+        // Snapshot the drawing on the main thread: the solver runs on a background dispatcher and
+        // must not read Compose snapshot state.
+        val columns = gridState.columns
+        val rows = gridState.rows
+        val pixels = IntArray(columns * rows) { gridState.pixels[it].toArgb() }
+        val generated = try {
           WfcGenerator.generate(
             pixels = pixels,
             sourceWidth = columns,
             sourceHeight = rows,
-            seed = requestSeed,
+            seed = PREVIEW_SEED,
           )
-        )
-      } catch (e: WfcGenerator.GenerationException) {
-        WfcUiState.Failed(e.message ?: "Generation failed")
-      } catch (e: Exception) {
-        WfcUiState.Failed("Generation failed: ${e.message ?: e::class.simpleName}")
+        } catch (e: CancellationException) {
+          // The composable went away; let the cancellation through instead of reporting it.
+          throw e
+        } catch (e: Exception) {
+          // A drawing this app can make always yields a bitmap (wrap-around extraction guarantees a
+          // tiling), so this is a bug rather than something the user can act on: log it and leave the
+          // last picture up instead of covering the preview with an error.
+          Log.w(TAG, "Could not generate a bitmap for the current drawing", e)
+          null
+        }
+        if (generated != null) {
+          if (generated.usedFallback) {
+            // Still a bitmap, but the drawing's own tiling rather than a shuffled one. Nothing on
+            // screen can say so, so leave a trace for whoever wonders why the preview stopped
+            // varying.
+            Log.i(TAG, "Search timed out; preview shows the drawing's periodic tiling")
+          }
+          Log.i(
+            TAG,
+            "Generated ${generated.bitmap.width}x${generated.bitmap.height} bitmap from " +
+              "${generated.columns}x${generated.rows} cells, ${generated.tileCount} patterns, " +
+              "${generated.millis} ms",
+          )
+          output = generated
+        }
       }
-    }
   }
 
-  Box(modifier.fillMaxSize()) {
-    PixelEditorScreen(gridState = gridState)
-
-    Button(
-      onClick = { generate(seed) },
-      modifier = Modifier
-        .align(Alignment.BottomCenter)
-        .padding(24.dp),
-    ) {
-      Text(if (state is WfcUiState.Generating) "Generating..." else "Generate bitmap")
-    }
-
-    WfcOverlay(
-      state = state,
-      onClose = { state = WfcUiState.Idle },
-      onRegenerate = {
-        seed = Random.nextInt(1, 1_000_000)
-        generate(seed)
-      },
-      onSave = { output ->
-        pendingSave = output
-        val name = "wfc-${output.columns}x${output.rows}-seed${output.wonBySeed ?: output.seed}.png"
-        saveLauncher.launch(name)
-      },
-    )
-  }
+  PixelEditorScreen(
+    modifier = modifier,
+    gridState = gridState,
+    preview = { WfcPreview(output = output) },
+  )
 }

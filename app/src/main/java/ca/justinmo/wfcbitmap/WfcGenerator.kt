@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import net.akachaki.processing.engine.array.IntArray2D
 import net.akachaki.processing.engine.enum.Direction2d8
@@ -22,9 +24,13 @@ import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictSolverPo
  *
  * Because the tile set is closed under wrap-around, the drawing's periodic extension is always a
  * valid tiling, so *any* drawing produces a bitmap; [generate] only falls back to that periodic
- * extension (same picture, no shuffled variety) if the search cannot finish within its budget. The
- * fallback is reported through [Output.usedFallback] rather than hidden, so a slow search is still
- * visible to the user.
+ * extension (same picture, no shuffled variety) if the search cannot finish within its budget.
+ * [Output.usedFallback] says which one happened, which is what lets the editor log a slow search
+ * instead of silently showing a picture that stopped varying.
+ *
+ * The bitmap is [BITMAP_WIDTH] x [BITMAP_HEIGHT] (9:16, 270 tall). The grid the solver fills is
+ * [DEFAULT_COLUMNS] x [DEFAULT_ROWS] cells, each drawn as a [PIXELS_PER_CELL] square of that bitmap:
+ * one cell per pixel would be a 152x270 grid, which the strict search does not finish.
  *
  * All the heavy work runs on [Dispatchers.Default]; callers pass a snapshot of the drawing (plain
  * `IntArray` of ARGB) rather than the Compose state, so no snapshot state is touched off the main
@@ -32,16 +38,29 @@ import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictSolverPo
  */
 object WfcGenerator {
 
-  /** Output grid: 9:16 at 6 pixels per editor cell is a good phone-sized canvas. */
-  const val DEFAULT_COLUMNS = 54
-  const val DEFAULT_ROWS = 96
+  /**
+   * Output bitmap geometry: 9:16, 270 pixels tall.
+   *
+   * A 9:16 image 270 pixels tall is 151.875 wide, so 152 is the closest integer width -- off by one
+   * eighth of a pixel, i.e. 0.08%. Nothing an image format can express closer than that.
+   */
+  const val BITMAP_WIDTH = 152
+  const val BITMAP_HEIGHT = 270
 
   /**
-   * Pixels per generated cell in the output bitmap. A cell *is* one pixel of the pattern, so the
-   * bitmap is an integer nearest-neighbour upscale of it: blocky on purpose, and big enough
-   * (54x96 -> 432x768) to be saved, shared or zoomed without turning to mush.
+   * Pixels per generated cell: the bitmap is an integer nearest-neighbour upscale of the pattern, so
+   * cells stay square and their edges land on pixel boundaries.
+   *
+   * This is 2 rather than 1 because the cell grid is what the solver actually has to fill. At one
+   * pixel per cell that is 152x270 = 41,040 cells, and the strict search does not finish that (it ran
+   * the whole 20 s budget on two of four probe drawings); at 76x135 it solves in 0.1-0.6 s. The
+   * bitmap keeps the requested 152x270 either way.
    */
-  const val PIXELS_PER_CELL = 8
+  const val PIXELS_PER_CELL = 2
+
+  /** The grid the solver fills: one cell per [PIXELS_PER_CELL] square of the bitmap. */
+  const val DEFAULT_COLUMNS = BITMAP_WIDTH / PIXELS_PER_CELL
+  const val DEFAULT_ROWS = BITMAP_HEIGHT / PIXELS_PER_CELL
 
   /**
    * Give up rather than block a device for minutes. A drawing that tiles solves in a second or two
@@ -60,7 +79,13 @@ object WfcGenerator {
 
   class GenerationException(message: String) : Exception(message)
 
-  /** A finished generation: the bitmap plus the numbers worth showing the user. */
+  /**
+   * A finished generation: the bitmap plus what it took.
+   *
+   * Only [bitmap] (through [image]) is drawn today -- the preview shows the picture and nothing else
+   * -- but the rest is what a status line, a save filename or a bug report needs, and it costs
+   * nothing to carry once the solve has produced it.
+   */
   data class Output(
     val bitmap: Bitmap,
     val columns: Int,
@@ -103,12 +128,20 @@ object WfcGenerator {
     }
     val startedAt = System.currentTimeMillis()
     val portfolio = StrictSolverPortfolio(cells, columns, rows, Direction2d8.entries)
+    // Hand the caller's cancellation down to the search. Without this the solve would run to its
+    // deadline even though the editor had already replaced the drawing it was working on: the
+    // collapse is blocking, so cancelling the coroutine alone cannot stop it.
+    val scope = this
     val result = portfolio.solve(
       seed = seed,
       workers = WORKERS,
       deadlineNanos = System.nanoTime() + TIMEOUT_NANOS,
       maxDecisions = MAX_DECISIONS,
+      shouldAbort = { !scope.isActive },
     )
+    // Null now means either "no tiling found" or "we were cancelled"; only the first one should fall
+    // back to the drawing's own tiling. Letting the cancellation through is what makes it the second.
+    ensureActive()
     val millis = System.currentTimeMillis() - startedAt
     val assignment = result.assignment
     val usedFallback = assignment == null

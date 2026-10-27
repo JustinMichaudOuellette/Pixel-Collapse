@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,14 +64,31 @@ object BitmapEditor {
       repeat(columns * rows) { add(defaultColor) }
     }
 
+    /**
+     * Bumped on every edit. The live preview watches this one value instead of the pixel list: it is
+     * a single snapshot state read, and it cannot miss two edits that cancel out.
+     */
+    var revision by mutableIntStateOf(0)
+      private set
+
     fun getPixel(col: Int, row: Int): Color = pixels[row * columns + col]
 
     fun setPixel(col: Int, row: Int, color: Color) {
-      pixels[row * columns + col] = color
+      val index = row * columns + col
+      if (pixels[index] == color) {
+        // Painting the same colour again is not an edit; regenerating for it would just repeat work.
+        return
+      }
+      pixels[index] = color
+      revision++
     }
 
     fun clear() {
+      if (pixels.all { it == defaultColor }) {
+        return
+      }
       for (i in pixels.indices) pixels[i] = defaultColor
+      revision++
     }
   }
 
@@ -78,18 +96,29 @@ object BitmapEditor {
 // Root composable
 // ─────────────────────────────────────────────────────────────────────────────
 
+  /**
+   * @param preview fills the column left of the drawing grid. It is kept as a slot so the editor does
+   *   not need to know anything about the wave-function collapse that produces the bitmap shown there.
+   */
   @Composable
   fun PixelEditorScreen(
+    modifier: Modifier = Modifier,
     gridState: PixelGridState = remember { PixelGridState() },
+    preview: @Composable () -> Unit = {},
   ) {
     var selectedColor by remember { mutableStateOf(Color.Black) }
 
-    Row {
+    Row(modifier = modifier) {
+        // The live bitmap preview: the same 9:16 shape as the generated output, so what is shown
+        // here is the picture at the aspect ratio it will be saved in.
         Box(
           modifier = Modifier
             .aspectRatio(9f / 16f)
             .fillMaxHeight()
-        )
+            .background(PREVIEW_BACKGROUND),
+        ) {
+          preview()
+        }
 
       VerticalDividerLine()
 
@@ -116,6 +145,9 @@ object BitmapEditor {
         )
     }
   }
+
+  /** Slightly darker than the app background, so the preview reads as its own surface. */
+  private val PREVIEW_BACKGROUND = Color(0xFF0B0910)
 
   @Composable
   fun VerticalDividerLine() {

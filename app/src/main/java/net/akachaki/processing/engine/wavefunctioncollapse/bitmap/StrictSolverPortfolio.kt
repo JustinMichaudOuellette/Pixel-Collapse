@@ -66,6 +66,10 @@ class StrictSolverPortfolio(
      *   bandwidth (measured: four workers at 135x240 each take 1.67x as long as one), so a grid that
      *   solves quickly is faster with no portfolio at all and only a run that outlives the hedge is
      *   worth spreading. Pass 0 to start every worker at once.
+     * @param shouldAbort the caller's own reason to stop, polled while the workers run (see
+     *   [ABORT_POLL_MS]). When it turns true the workers are cancelled, unsent workers are never
+     *   started, and [solve] returns null instead of waiting for the deadline -- that is what lets a
+     *   live preview abandon the solve for a drawing the user has already changed. Defaults to never.
      */
     fun solve(
         seed: Int,
@@ -73,10 +77,11 @@ class StrictSolverPortfolio(
         deadlineNanos: Long,
         maxDecisions: Int = 2_000_000,
         hedgeMs: Long = -1,
+        shouldAbort: () -> Boolean = { false },
     ): PortfolioResult {
         val width = workersThatFit(workers)
         if (width <= 1) {
-            val solver = StrictBitmapSolver(cells, columns, rows, directions, Random(seed))
+            val solver = StrictBitmapSolver(cells, columns, rows, directions, Random(seed), shouldAbort)
             val startedAt = System.nanoTime()
             val assignment = solver.solve(deadlineNanos, maxDecisions)
             val millis = (System.nanoTime() - startedAt) / 1_000_000
@@ -100,7 +105,7 @@ class StrictSolverPortfolio(
         val hedge = if (hedgeMs < 0) expectedSolveMs() * 3 / 2 else hedgeMs
         // Build every solver before any worker starts, so the winner can abort the whole set.
         val solvers = List(width) { index ->
-            StrictBitmapSolver(cells, columns, rows, directions, Random(seed + index))
+            StrictBitmapSolver(cells, columns, rows, directions, Random(seed + index), shouldAbort)
         }
         val result = AtomicReference<IntArray?>()
         val winner = AtomicInteger(-1)
@@ -110,8 +115,12 @@ class StrictSolverPortfolio(
         val pool = Executors.newFixedThreadPool(width) { runnable ->
             Thread(runnable, "wfc-strict-portfolio").apply { isDaemon = true }
         }
+        var submitted = 0
         try {
             for (index in 0 until width) {
+                if (shouldAbort()) {
+                    break
+                }
                 val solver = solvers[index]
                 val workerSeed = seed + index
                 pool.execute {
@@ -139,18 +148,25 @@ class StrictSolverPortfolio(
                         finished.countDown()
                     }
                 }
+                submitted++
                 if (index == 0 && width > 1 && hedge > 0) {
                     // Let the lone worker try first; only fan out if it is still running.
-                    solved.await(hedge, TimeUnit.MILLISECONDS)
-                    if (result.get() != null) {
-                        // The others were never submitted, so release the latch they would have hit.
-                        repeat(width - 1) { finished.countDown() }
+                    if (awaitSolved(solved, hedge, shouldAbort)) {
                         break
                     }
                 }
             }
-            val remainingMs = ((deadlineNanos - System.nanoTime()) / 1_000_000).coerceAtLeast(0L)
-            solved.await(remainingMs + 1_000L, TimeUnit.MILLISECONDS)
+            // Workers that were never submitted must not hold `finished` open.
+            repeat(width - submitted) { finished.countDown() }
+            if (!shouldAbort()) {
+                val remainingMs = ((deadlineNanos - System.nanoTime()) / 1_000_000).coerceAtLeast(0L)
+                awaitSolved(solved, remainingMs + 1_000L, shouldAbort)
+            }
+            if (shouldAbort()) {
+                for (solver in solvers) {
+                    solver.abortRequested = true
+                }
+            }
             // Winners abort the rest, so this normally returns at once; the grace is only for a worker that overshoots its deadline, and it is deliberately short so a failed solve returns promptly.
             finished.await(5_000L, TimeUnit.MILLISECONDS)
         } finally {
@@ -165,7 +181,41 @@ class StrictSolverPortfolio(
         )
     }
 
+    /**
+     * Waits for a solution for up to [millis], giving up early when [shouldAbort] turns true.
+     *
+     * @return true when a solution arrived, false on timeout or abort.
+     *
+     * The wait has to be polled rather than one long [CountDownLatch.await]: an aborted solve produces
+     * no solution, so a single blocking wait would keep the caller (the UI, in this app) stuck until
+     * the deadline.
+     */
+    private fun awaitSolved(
+        solved: CountDownLatch,
+        millis: Long,
+        shouldAbort: () -> Boolean,
+    ): Boolean {
+        val endAt = System.nanoTime() + millis.coerceAtLeast(0L) * 1_000_000
+        while (true) {
+            if (solved.await(ABORT_POLL_MS, TimeUnit.MILLISECONDS)) {
+                return true
+            }
+            if (shouldAbort()) {
+                return false
+            }
+            if (System.nanoTime() >= endAt) {
+                return false
+            }
+        }
+    }
+
     private companion object {
+        /**
+         * How often [awaitSolved] wakes up to look at the caller's abort check. Short enough that a
+         * cancelled solve stops in a few tens of milliseconds, long enough that polling costs nothing.
+         */
+        const val ABORT_POLL_MS = 25L
+
         /**
          * Bytes of solver state per variable, rounded up: 4 domain words (32), five int arrays
          * (masks and bucket links, 20), the bit-packed worklist (1) and a share of the trail.

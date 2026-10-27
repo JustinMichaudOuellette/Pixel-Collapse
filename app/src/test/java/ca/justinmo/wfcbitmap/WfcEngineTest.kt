@@ -7,6 +7,7 @@ import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictBitmapSo
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictSolverPortfolio
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.random.Random
@@ -212,6 +213,61 @@ class WfcEngineTest {
       "root arc consistency rejected the wrapped tile set: failVar=${solver.failureVariable}",
       solver.propagateRoot(),
     )
+  }
+
+  // --- cancellation -------------------------------------------------------------------------
+
+  /**
+   * A cancelled solve has to give up rather than run to its deadline. This is what the live preview
+   * depends on: every edit cancels the solve for the previous drawing, and if that solve ignored the
+   * cancellation the preview would keep showing results for drawings that no longer exist.
+   *
+   * The deadline here is a minute, so a regression shows up as a test that hangs rather than one that
+   * fails by a second.
+   */
+  @Test
+  fun cancelledSolveGivesUpInsteadOfWaitingForItsDeadline() {
+    val cells = wrappedTiles(ringsDrawing())
+    val deadline = System.nanoTime() + 60_000_000_000L
+
+    val solverStartedAt = System.nanoTime()
+    val solverAssignment = StrictBitmapSolver(
+      cells,
+      OUTPUT_COLUMNS,
+      OUTPUT_ROWS,
+      Direction2d8.entries,
+      Random(1),
+    ) { true }.solve(deadline, Int.MAX_VALUE)
+    val solverMillis = (System.nanoTime() - solverStartedAt) / 1_000_000
+    assertNull("a cancelled solver must not return a tiling", solverAssignment)
+    assertTrue("cancelled solver took ${solverMillis}ms", solverMillis < 2_000)
+
+    val portfolioStartedAt = System.nanoTime()
+    val result = StrictSolverPortfolio(cells, OUTPUT_COLUMNS, OUTPUT_ROWS, Direction2d8.entries)
+      .solve(
+        seed = 1,
+        workers = 4,
+        deadlineNanos = deadline,
+        shouldAbort = { true },
+      )
+    val portfolioMillis = (System.nanoTime() - portfolioStartedAt) / 1_000_000
+    assertNull("a cancelled portfolio must not return a tiling", result.assignment)
+    assertTrue("cancelled portfolio took ${portfolioMillis}ms", portfolioMillis < 2_000)
+  }
+
+  /** The same tile set still solves when nothing cancels it, so the check above tests the abort path. */
+  @Test
+  fun theSameTileSetStillSolvesWithoutCancellation() {
+    val cells = wrappedTiles(ringsDrawing())
+    val result = StrictSolverPortfolio(cells, OUTPUT_COLUMNS, OUTPUT_ROWS, Direction2d8.entries)
+      .solve(
+        seed = 1,
+        workers = 4,
+        deadlineNanos = System.nanoTime() + 30_000_000_000L,
+        shouldAbort = { false },
+      )
+    assertNotNull("the unaborted solve should still find a tiling", result.assignment)
+    assertTilesCleanly(result.assignment!!, cells)
   }
 
   // --- the fallback -------------------------------------------------------------------------

@@ -33,6 +33,16 @@ class StrictBitmapSolver(
     private val rows: Int,
     private val directions: List<Direction2d>,
     private val random: Random,
+    /**
+     * Cooperative cancellation, checked at the same points as [abortRequested]: when it returns true
+     * the search gives up and [solve] returns null. [abortRequested] is a flag the *portfolio* sets
+     * when another worker wins; this is the caller's own reason to stop, typically "the user edited
+     * the drawing again, so nobody wants the answer to this question any more".
+     *
+     * Called from the solving thread on a hot-ish path, so it has to be cheap and thread safe (a
+     * `CoroutineScope.isActive` read is exactly that).
+     */
+    private val abortCheck: () -> Boolean = { false },
 ) {
     private val tileCount = cells.size
     private val wordCount = (tileCount + 63) ushr 6
@@ -193,6 +203,12 @@ class StrictBitmapSolver(
      */
     @Volatile
     var abortRequested: Boolean = false
+
+    /**
+     * Both reasons to stop early: another worker won, or the caller no longer wants the answer. Every
+     * place that used to test [abortRequested] tests this instead.
+     */
+    private fun aborting(): Boolean = abortRequested || abortCheck()
 
     /** Where the last failed solve wiped a domain out, for diagnostics (-1 when none). */
     var failureVariable: Int = -1
@@ -744,7 +760,7 @@ class StrictBitmapSolver(
             // The clock is a syscall-ish cost; checking it per arc used to dominate short revises.
             if (++sinceClockCheck >= 512) {
                 sinceClockCheck = 0
-                if (abortRequested || System.nanoTime() > deadlineNanos) {
+                if (aborting() || System.nanoTime() > deadlineNanos) {
                     return false
                 }
             }
@@ -968,7 +984,7 @@ class StrictBitmapSolver(
     private fun search(): IntArray? {
         val stack = ArrayList<Frame>()
         while (true) {
-            if (abortRequested || System.nanoTime() > deadlineNanos || decisions > maxDecisions) {
+            if (aborting() || System.nanoTime() > deadlineNanos || decisions > maxDecisions) {
                 return null
             }
             val selectionStartedAt = System.nanoTime()
