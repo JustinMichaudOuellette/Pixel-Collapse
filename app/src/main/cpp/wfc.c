@@ -121,7 +121,15 @@ struct wfc_solver {
   int queue_head;
   int queue_size;
   int queue_cap;
-  uint64_t *in_queue; /* bitset over variable_count * WFC_DIRS */
+  /*
+   * Arc worklist: one bit per (variable, direction), so an arc queued twice is only queued once.
+   *
+   * Coalescing this per variable instead -- one entry per variable plus a direction mask -- was tried at
+   * 152x270 and measured worse: bordered 122.6 -> 127.3 ms, rings 395.5 -> 421.5 ms, with slightly more
+   * revisions (3.06M -> 3.07M and 4.39M -> 4.51M). Grouping a variable's arcs makes each pass prune
+   * against more neighbours at once, and at this size that costs more than the queue traffic it saves.
+   */
+  uint64_t *in_queue;
 
   wfc_frame *stack;
   int stack_size;
@@ -689,6 +697,7 @@ static void mark_out(wfc_solver *s, int v, int d) {
   s->in_queue[index >> 6] &= ~(1ull << (index & 63));
 }
 
+/** Queues the arc (v, d): "revise v against its neighbour in direction d". */
 static void enqueue(wfc_solver *s, int v, int d) {
   int index = v * WFC_DIRS + d;
   uint64_t mask = 1ull << (index & 63);

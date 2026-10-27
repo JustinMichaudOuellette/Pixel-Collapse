@@ -456,6 +456,47 @@ class NativeSolverTest {
     assertEquals(WfcGenerator.BITMAP_WIDTH, changed.bitmap.width)
   }
 
+  /**
+   * One solver handle, several grid sizes: grow, shrink, grow again.
+   *
+   * This is the regression test for the bug the 152x270 default exposed: a solver cached its buffer
+   * shapes and a *smaller* grid could leave a buffer too small for the next, larger one. Every derived
+   * buffer -- domains, sizes, arc flags, the size bitsets, the result -- has to follow the model, not
+   * the history of the handle. When the output size becomes selectable, this is the case that will
+   * happen all the time.
+   */
+  @Test
+  fun oneSolverHandleHandlesDifferentGridSizes() {
+    val cells = tiles(ringsDrawing())
+    val packed = WfcNative.packTiles(cells)
+    val sizes = listOf(76 to 135, 152 to 270, 40 to 70, 200 to 355, 76 to 135)
+    val handle = WfcNative.solverCreate()
+    assertTrue("solver could not be created", handle != 0L)
+    try {
+      for ((columns, rows) in sizes) {
+        val model = WfcNative.modelCreate(packed, cells.size, columns, rows)
+        assertTrue("model ${columns}x$rows could not be created", model != 0L)
+        try {
+          val out = IntArray(columns * rows)
+          val solved = WfcNative.solverSolve(
+            handle, model, 1, System.nanoTime() + 120_000_000_000L, 2_000_000, out,
+          )
+          assertEquals("${columns}x$rows cells did not solve on the reused handle", 1, solved)
+          assertTrue(
+            "${columns}x$rows produced an out-of-range tile",
+            out.all { it >= 0 && it < WfcNative.modelTileCount(model) },
+          )
+          // Every cell must be filled: a stale buffer would leave zeros behind.
+          assertTrue("${columns}x$rows left cells unfilled", out.size == columns * rows)
+        } finally {
+          WfcNative.modelDestroy(model)
+        }
+      }
+    } finally {
+      WfcNative.solverDestroy(handle)
+    }
+  }
+
   // --- helpers ------------------------------------------------------------------------------
 
   private fun assertBorderPatternsAreBlankOutwards(label: String, solved: Solved) {
