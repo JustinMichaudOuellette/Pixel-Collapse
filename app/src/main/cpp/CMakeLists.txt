@@ -16,12 +16,28 @@ add_library(wfc SHARED
     wfc.c
     wfc_jni.c)
 
+# Auto-vectorisation is already on at -O3, but asking for it explicitly costs nothing and makes the
+# intent reviewable. What it does here was checked rather than assumed: see the note below.
+#
+# Asking what the vectoriser actually does needs clang invoked directly, because AGP does not surface
+# the remarks: compile app/src/main/cpp/wfc.c with the NDK clang and the same flags, plus
+#   -Rpass=loop-vectorize -Rpass=slp-vectorize -Rpass-analysis=loop-vectorize
+# and without -flto=thin (which defers the back end to link time). On this code it vectorises the
+# tile-set build and nothing on the search path: the revision loop walks set bits one at a time
+# (`bit = ctz(bits); bits &= bits - 1`) with a memory index derived from that bit, so clang reports
+# "cannot identify array bounds" / "could not determine number of loop iterations" for every hot loop.
+# Enabling the flags changed no measured solve time; see the note in wfc.c next to revise().
+
 target_compile_options(wfc PRIVATE
     $<$<NOT:$<CONFIG:Debug>>:-O3>
     $<$<NOT:$<CONFIG:Debug>>:-flto=thin>
     $<$<NOT:$<CONFIG:Debug>>:-fno-math-errno>
+    $<$<NOT:$<CONFIG:Debug>>:-fno-trapping-math>
+    $<$<NOT:$<CONFIG:Debug>>:-ffp-contract=fast>
     $<$<NOT:$<CONFIG:Debug>>:-funroll-loops>
     $<$<NOT:$<CONFIG:Debug>>:-fomit-frame-pointer>
+    $<$<NOT:$<CONFIG:Debug>>:-fvectorize>
+    $<$<NOT:$<CONFIG:Debug>>:-fslp-vectorize>
     -fvisibility=hidden
     -Wall
     -Wextra)

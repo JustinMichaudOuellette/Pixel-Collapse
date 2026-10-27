@@ -243,11 +243,11 @@ object BitmapEditor {
         // Single-finger draw
         .pointerInput(gridState, selectedColor) {
           detectTapGestures { tapOffset ->
-            // Report the gesture before the pixel changes: everything the preview does afterwards is
-            // what the latency measurement is about.
-            onTap()
             tapToPixel(tapOffset)?.let { (col, row) ->
               gridState.paint(col, row, selectedColor)
+              // After the paint, so a generation requested from here sees this edit. It is also where
+              // the end-to-end measurement starts: the tap has become a change to the drawing.
+              onTap()
             }
           }
         }

@@ -755,6 +755,15 @@ static int revise(wfc_solver *s, int v, int d) {
      *    hoisted words keep it ahead.
      *
      * Precision and a tight inner loop beat fewer operations here.
+     *
+     * On SIMD: this loop is bit-serial by nature -- `bit = ctz(bits); bits &= bits - 1` walks the set
+     * bits one at a time and the extracted bit indexes the next load -- so there is no vector register
+     * to fill. The compiler agrees: with -Rpass-analysis=loop-vectorize it reports "cannot identify
+     * array bounds" / "could not determine number of loop iterations" for every loop on the search path
+     * and vectorises only the tile-set build. Measured on a Pixel 7a with -fvectorize -fslp-vectorize
+     * versus -fno-vectorize -fno-slp-vectorize: 27.12 vs 27.08 ms (bordered) and 87.11 vs 87.08 ms
+     * (rings), i.e. nothing. Making this loop SIMD-friendly means making it *dense* instead of walking
+     * set bits, and the dense formulation is the word-level support table above, which loses on pruning.
      */
     if (words == 1) {
       const uint64_t neighbour_bits = s->domains[n_base];
@@ -1016,7 +1025,13 @@ static int initialise_domains(wfc_solver *s) {
     int size = m->size_by_present[present];
     const uint64_t *row = m->domain_by_present + (size_t)present * m->word_count;
     int base = v * m->word_count;
-    for (int word = 0; word < m->word_count; word++) s->domains[base + word] = row[word];
+    /*
+     * Copied as one memcpy rather than a word loop so the two-word case (the usual one above 64 tiles)
+     * is a single load/store pair instead of a runtime-length loop. This is deliberately not claimed as
+     * a win: measured against the loop it was inside the noise. It is simply the shape clang lowers
+     * best, and the rest of the search path has no such shape -- see the note on revise().
+     */
+    memcpy(&s->domains[base], row, sizeof(uint64_t) * (size_t)m->word_count);
     s->size[v] = size;
     if (size == 0) return 0; /* nothing fits this cell: no tiling exists */
     if (size > s->largest_size) s->largest_size = size;
