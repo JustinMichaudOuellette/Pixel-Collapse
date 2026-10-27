@@ -69,6 +69,29 @@ void wfc_solver_finish(wfc_solver *solver);
 int wfc_solver_decisions(const wfc_solver *solver);
 int64_t wfc_solver_revises(const wfc_solver *solver);
 
+/*
+ * Instrumentation for the last solve: how many decisions led to a contradiction (dead ends, i.e. wasted
+ * branches) and how many revisions actually removed a tile. Together with wfc_solver_revises they say
+ * whether the search is backtracking too much or propagating too widely -- see wfc_solver_set_order.
+ */
+int64_t wfc_solver_dead_ends(const wfc_solver *solver);
+int64_t wfc_solver_shrinks(const wfc_solver *solver);
+
+/*
+ * Variable selection order, for measuring rather than for the app:
+ *   0  minimum domain first, ties to the lowest variable index (the default; what the app runs)
+ *   1  a fixed outward-in peel: the border ring, then each ring inwards
+ *   2  minimum domain first, ties to the cell peeled earliest
+ * Modes 1 and 2 cost a grid-sized order table per solve.
+ */
+void wfc_solver_set_order(wfc_solver *solver, int mode);
+
+/*
+ * Arc worklist discipline, for measuring: 0 pops the oldest arc (FIFO, breadth-first, the default),
+ * 1 pops the newest (LIFO, depth-first, follows one wavefront to its fixpoint first).
+ */
+void wfc_solver_set_worklist(wfc_solver *solver, int mode);
+
 /* How many cells the model fills, i.e. the size of the assignment buffer a solve needs. */
 int wfc_model_variable_count(const wfc_model *model);
 

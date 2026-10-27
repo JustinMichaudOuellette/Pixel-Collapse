@@ -96,6 +96,24 @@ internal object WfcNative {
 
   external fun solverRevises(solver: Long): Long
 
+  /** Decisions of the last solve that hit a contradiction and were undone, i.e. wasted branches. */
+  external fun solverDeadEnds(solver: Long): Long
+
+  /** Revisions of the last solve that actually removed a tile from a domain. */
+  external fun solverShrinks(solver: Long): Long
+
+  /**
+   * Variable-selection order for the next solves on this solver. 0 is the shipping heuristic (minimum
+   * domain, ties to the lowest index); 1 and 2 are the outward-in peel orders, for measurement.
+   */
+  external fun solverSetOrder(solver: Long, mode: Int)
+
+  /**
+   * Arc worklist discipline for the next solves: 0 pops the oldest arc (FIFO, what the app runs), 1 the
+   * newest (LIFO). Measurement knob only.
+   */
+  external fun solverSetWorklist(solver: Long, mode: Int)
+
   /** Phase timers of the last solve, in nanoseconds; see the phase constants below. */
   external fun solverPhaseNanos(solver: Long, phase: Int): Long
 

@@ -67,9 +67,11 @@ class NativeSolverBenchmarkTest {
     var ordering = 0L
     var decisions = 0L
     var revises = 0L
+    var deadEnds = 0L
+    var shrinks = 0L
   }
 
-  private fun run(label: String, pixels: IntArray, repeats: Int) {
+  private fun run(label: String, pixels: IntArray, repeats: Int, orderMode: Int = 0) {
     // The pipeline around the solver runs on every edit too, so time it here as well.
     val extractStartedAt = System.nanoTime()
     val cells = tiles(pixels)
@@ -89,6 +91,7 @@ class NativeSolverBenchmarkTest {
      */
     val solver = WfcNative.solverCreate()
     check(solver != 0L)
+    WfcNative.solverSetOrder(solver, orderMode)
     // Ask for the per-decision split; the extra clock reads are part of these numbers.
     WfcNative.solverSetFineProfiling(solver, true)
     repeat(repeats) {
@@ -110,6 +113,8 @@ class NativeSolverBenchmarkTest {
       totals.ordering += WfcNative.solverPhaseNanos(solver, WfcNative.Phase.ORDERING)
       totals.decisions += WfcNative.solverDecisions(solver)
       totals.revises += WfcNative.solverRevises(solver)
+      totals.deadEnds += WfcNative.solverDeadEnds(solver)
+      totals.shrinks += WfcNative.solverShrinks(solver)
 
       WfcNative.modelDestroy(model)
     }
@@ -125,7 +130,116 @@ class NativeSolverBenchmarkTest {
         "wall=${ms(totals.wall)}ms  create=${ms(totals.create)}ms  " +
         "setup=${ms(totals.setup)}  initial=${ms(totals.initial)}  search=${ms(totals.search)}  " +
         "of which select=${ms(totals.selection)} order=${ms(totals.ordering)}  " +
-        "decisions/run=${totals.decisions / repeats} revises/run=${totals.revises / repeats}",
+        "decisions/run=${totals.decisions / repeats} revises/run=${totals.revises / repeats} " +
+        "deadends/run=${totals.deadEnds / repeats} shrinks/run=${totals.shrinks / repeats}",
+    )
+  }
+
+  /**
+   * How much of the search is wasted on branches that lead nowhere, and what the decision order is worth.
+   *
+   * Three orders, same drawings, one seed: the shipping heuristic (0), the fixed outward-in peel (1) and
+   * minimum-domain with a peel tie-break (2). Each solve is given a deadline so a bad order fails fast
+   * instead of burning the decision cap.
+   */
+  @Test
+  fun compareOrders() {
+    println("ORDER device=${android.os.Build.MODEL}")
+    for (mode in 0..2) {
+      runWith("bordered", bordered(), orderMode = mode, worklist = 0)
+      runWith("rings", rings(), orderMode = mode, worklist = 0)
+    }
+  }
+
+  /**
+   * FIFO against LIFO arc worklists. The shrink count is the number that matters: it is how many times a
+   * cell's domain narrows, and every narrowing re-revises up to eight neighbours.
+   */
+  @Test
+  fun compareWorklists() {
+    println("WORKLIST device=${android.os.Build.MODEL}")
+    for (mode in 0..1) {
+      runWith("bordered", bordered(), orderMode = 0, worklist = mode)
+      runWith("rings", rings(), orderMode = 0, worklist = mode)
+    }
+  }
+
+  /**
+   * How many *distinct overlaps* the tile set has, per direction.
+   *
+   * Two tiles are compatible in a direction exactly when their overlapping cells agree, so the
+   * compatibility relation is an equality on the overlap content: tiles sharing an overlap are
+   * interchangeable in that direction. A revision could therefore be expressed as "union the groups of
+   * the overlaps still present on the other side" instead of testing each of the destination's candidates
+   * one at a time, which is only worth anything if the number of distinct overlaps is much smaller than
+   * the number of tiles. This prints both, so the answer is a measurement rather than a guess.
+   */
+  @Test
+  fun overlapAlphabet() {
+    for (label in listOf("bordered", "rings")) {
+      val pixels = if (label == "bordered") bordered() else rings()
+      val cells = tiles(pixels)
+      val packed = WfcNative.packTiles(cells)
+      val report = StringBuilder()
+      for (direction in 0 until 8) {
+        val dx = DIRECTION_DX[direction]
+        val dy = DIRECTION_DY[direction]
+        val overlaps = HashSet<Long>()
+        for (tile in 0 until cells.size) {
+          val base = tile * WfcNative.PACKED_TILE_INTS
+          var key = 0L
+          for (y in 0 until 3) {
+            for (x in 0 until 3) {
+              // This slot of the tile lands on slot (x - dx, y - dy) of its neighbour, so it belongs to
+              // the shared region only when that lands inside the neighbour's own 3x3 kernel.
+              val nx = x - dx
+              val ny = y - dy
+              if (nx < 0 || nx > 2 || ny < 0 || ny > 2) continue
+              key = key * 31 + (packed[base + 2 + x + 3 * y].toLong() and 0xFFFFFFFFL)
+            }
+          }
+          overlaps.add(key)
+        }
+        report.append(" d$direction=${overlaps.size}")
+      }
+      println("SIGNATURES $label tiles=${cells.size}$report")
+    }
+  }
+
+  private fun runWith(label: String, pixels: IntArray, orderMode: Int, worklist: Int) {
+    val repeats = 3
+    val cells = tiles(pixels)
+    val packed = WfcNative.packTiles(cells)
+    val solver = WfcNative.solverCreate()
+    check(solver != 0L)
+    WfcNative.solverSetOrder(solver, orderMode)
+    WfcNative.solverSetWorklist(solver, worklist)
+    var solved = 0
+    var wall = 0L
+    var decisions = 0L
+    var deadEnds = 0L
+    var revises = 0L
+    var shrinks = 0L
+    repeat(repeats) {
+      val model = WfcNative.modelCreate(packed, cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS)
+      check(model != 0L)
+      val out = IntArray(OUTPUT_COLUMNS * OUTPUT_ROWS)
+      val deadline = System.nanoTime() + 5_000_000_000L
+      val startedAt = System.nanoTime()
+      if (WfcNative.solverSolve(solver, model, 1, deadline, 1_000_000, out) == 1) solved++
+      wall += System.nanoTime() - startedAt
+      decisions += WfcNative.solverDecisions(solver)
+      deadEnds += WfcNative.solverDeadEnds(solver)
+      revises += WfcNative.solverRevises(solver)
+      shrinks += WfcNative.solverShrinks(solver)
+      WfcNative.modelDestroy(model)
+    }
+    WfcNative.solverDestroy(solver)
+    println(
+      "WORKLIST $label order=$orderMode worklist=$worklist solved=$solved/$repeats " +
+        "wall=${"%.2f".format(wall / 1_000_000.0 / repeats)}ms " +
+        "decisions=${decisions / repeats} deadends=${deadEnds / repeats} " +
+        "revises=${revises / repeats} shrinks=${shrinks / repeats}",
     )
   }
 
@@ -157,5 +271,9 @@ class NativeSolverBenchmarkTest {
     const val SOURCE_HEIGHT = 11
     const val OUTPUT_COLUMNS = 152
     const val OUTPUT_ROWS = 270
+
+    /** Direction2d8 declaration order: LEFT, UP_LEFT, UP, UP_RIGHT, RIGHT, DOWN_RIGHT, DOWN, DOWN_LEFT. */
+    val DIRECTION_DX = intArrayOf(-1, -1, 0, 1, 1, 1, 0, -1)
+    val DIRECTION_DY = intArrayOf(0, -1, -1, -1, 0, 1, 1, 1)
   }
 }

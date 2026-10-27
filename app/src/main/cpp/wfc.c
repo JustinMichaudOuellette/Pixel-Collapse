@@ -8,6 +8,29 @@
  * sampling without replacement (Efraimidis-Spirakis: key = random^(1/weight), largest first).
  *
  * The shape of the code follows the Kotlin original closely so that the two can be read side by side.
+ *
+ * --- where the time actually goes (152x270 = 41,040 cells, Pixel 7a) ------------------------------
+ *
+ *   drawing    tiles  decisions  dead ends  revisions   shrinks   wall   initial  search
+ *   flat          9          0         0           0         0   1.0 ms   0.0      0.0
+ *   bordered     50     18,212         0   3,064,778   510,588  120 ms  30 ms   88 ms
+ *   rings       104         66         0   4,394,225   813,598  380 ms   6 ms  373 ms
+ *
+ * Three consequences, each measured rather than reasoned:
+ *
+ *  1. `dead ends` is zero on every drawing tried, so this search never backtracks: every decision is
+ *     taken once and kept. Nothing is wasted on bad branches, and heuristics whose whole purpose is to
+ *     avoid them (better value ordering, backjumping, restarts) have nothing to win.
+ *  2. Revisions / shrinks is 5.4-6.0, i.e. about six arc checks per domain narrowing against the
+ *     eight a cell can have: the worklist is not repeating itself. The cost is the narrowing itself.
+ *  3. A cell's domain narrows 12 times (bordered) to 20 times (rings) before it is a singleton, and each
+ *     narrowing re-checking its neighbours scans the candidates still left. Time is therefore
+ *     `shrinks x 6 x |domain|`, which is why breadth-first beats depth-first by the shrink ratio, and
+ *     why -O3/SIMD/allocation work is already spent: the inner loop runs at ~1.7 ns per candidate, which
+ *     is a dependent load plus a `and`.
+ *
+ * The remaining levers are not in this file: collapse fewer grids (warm-start from the previous tiling
+ * on an edit, which the app does not do), or collapse them on more cores.
  */
 
 #include "wfc.h"
@@ -79,6 +102,8 @@ typedef struct {
   int count;
   int next;
   int trail_mark;
+  /** This variable's position in the peel order, so backtracking can rewind the sweep cursor. */
+  int order_pos;
 } wfc_frame;
 
 struct wfc_solver {
@@ -153,7 +178,61 @@ struct wfc_solver {
   uint32_t rng;
   int decisions;
   int64_t revises;
+  /*
+   * Instrumentation for "is the search wasting work on bad branches?". A dead end is a decision whose
+   * propagation failed and had to be undone; a shrink is a revision that actually removed a tile. The
+   * ratio (revises per decision, shrinks per revision) is what separates "too much backtracking" from
+   * "the propagation cascade is simply wide", and those two have completely different fixes.
+   */
+  int64_t dead_ends;
+  int64_t shrinks;
   volatile int abort_flag;
+
+  /*
+   * Variable-selection order, so competing orders can be measured against each other instead of argued
+   * about. 0 is what the app runs: minimum domain, ties to the lowest variable index. 1 and 2 are the
+   * outward-in peel orders described on build_sweep().
+   *
+   * Measured at 152x270 on a Pixel 7a, 3 solves per point, seed 1:
+   *
+   *   bordered (50 tiles)          wall      decisions   revisions
+   *     mode 0 (min domain)       119.8 ms     18,212     3,064,778
+   *     mode 1 (pure peel)        120.8 ms     18,827     3,088,642
+   *     mode 2 (peel tie-break)   139.4 ms     18,827     3,088,642
+   *   rings (104 tiles)
+   *     mode 0 / 1 / 2            381 / 383 / 380 ms, 66 decisions, 4,394,225 revisions -- identical,
+   *                               because propagation decides the whole grid no matter where it starts.
+   *
+   * So the order is worth nothing here, and the tie-break costs 16% (it scans a whole row of the size
+   * bitset per decision). The reason: this search never backtracks (dead_ends is 0 on every drawing
+   * measured), so there are no "bad cells" for a better order to avoid, and min-domain already picks a
+   * cell the cascade has narrowed. Peel is not wrong, it is just not better -- which is why the shipping
+   * path stays mode 0.
+   */
+  int order_mode;
+  int *sweep_order; /* variable index at each position of the peel */
+  int *sweep_rank;  /* the inverse: how early a variable is peeled */
+  int sweep_cursor;
+  int sweep_cap;
+
+  /*
+   * Arc worklist discipline: 0 is FIFO (breadth-first over the grid, what the app runs), 1 is LIFO
+   * (depth-first, follows one wavefront at a time).
+   *
+   * Measured at 152x270, Pixel 7a, 3 solves per point, seed 1:
+   *
+   *   bordered   FIFO 122.7 ms  3,064,778 revisions  510,588 shrinks
+   *              LIFO 175.9 ms  4,116,389 revisions  519,297 shrinks   (+43%)
+   *   rings      FIFO 408.8 ms  4,394,225 revisions  813,598 shrinks
+   *              LIFO 815.1 ms  8,361,565 revisions 1,077,475 shrinks  (2.0x)
+   *
+   * Depth-first is the intuitive choice -- finish one wave before starting the next -- and it doubles the
+   * work. The reason is that a cell can only narrow as far as its neighbours have: breadth-first gives
+   * every cell the most information available before it is narrowed, so it narrows fewer times, while
+   * depth-first narrows on partial information and then has to narrow again. The shrink count is what
+   * the whole solve costs, so FIFO wins by the ratio of the shrink counts.
+   */
+  int worklist_mode;
 
   /* Phase timers, so a slow solve can be attributed to a phase instead of guessed at. */
   int fine_profile;
@@ -343,8 +422,18 @@ wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int
     }
   }
 
-
-
+  /*
+   * Nothing else can be pruned from a drawing-derived tile set, and that is worth stating because it
+   * closes off a whole family of optimisations.
+   *
+   * Every tile here is a 3x3 window that occurs somewhere in the drawing, with exactly the neighbours it
+   * has there. So arc consistency removes nothing (`sampled=104 model=104` on the probe drawings), and a
+   * 2x2 path-consistency pass -- drop tiles whose up-neighbour and right-neighbour cannot coexist --
+   * removes nothing either: it was implemented and measured, with byte-identical revision counts
+   * (3,064,778 and 4,394,225 before and after) and no change in solve time. Domain sizes are therefore a
+   * property of the drawing, not of the pruning, and the collapse's cost is inherent to
+   * cells x domain size x cascades.
+   */
   /*
    * The edge rule: a border cell's domain is the tiles whose mask is *exactly* the in-grid directions,
    * i.e. the ones sampled on that edge of the drawing. Interior cells therefore accept only complete
@@ -528,6 +617,8 @@ void wfc_solver_destroy(wfc_solver *solver) {
   free(solver->value_arena);
   free(solver->keys_scratch);
   free(solver->assignment);
+  free(solver->sweep_order);
+  free(solver->sweep_rank);
   free(solver);
 }
 
@@ -542,6 +633,24 @@ void wfc_solver_abort(wfc_solver *solver) {
 int wfc_solver_decisions(const wfc_solver *solver) { return solver->decisions; }
 
 int64_t wfc_solver_revises(const wfc_solver *solver) { return solver->revises; }
+
+int64_t wfc_solver_dead_ends(const wfc_solver *solver) {
+  return solver == NULL ? 0 : solver->dead_ends;
+}
+
+int64_t wfc_solver_shrinks(const wfc_solver *solver) {
+  return solver == NULL ? 0 : solver->shrinks;
+}
+
+void wfc_solver_set_order(wfc_solver *solver, int mode) {
+  if (solver == NULL) return;
+  solver->order_mode = mode < 0 ? 0 : mode;
+}
+
+void wfc_solver_set_worklist(wfc_solver *solver, int mode) {
+  if (solver == NULL) return;
+  solver->worklist_mode = mode != 0 ? 1 : 0;
+}
 
 int wfc_model_tile_count(const wfc_model *model) { return model == NULL ? 0 : model->tile_count; }
 
@@ -686,9 +795,19 @@ static int queue_push(wfc_solver *s, int value) {
 }
 
 static int queue_pop(wfc_solver *s) {
+  int slot = s->queue_head;
+  if (s->worklist_mode != 0) {
+    /* LIFO: take the most recently queued arc, i.e. the newest end of the ring. */
+    slot = (s->queue_head + s->queue_size - 1) % s->queue_cap;
+    s->queue_size--;
+    if (s->queue_size == 0) s->queue_head = 0;
+    return s->queue[slot];
+  }
   int value = s->queue[s->queue_head];
   s->queue_head = (s->queue_head + 1) % s->queue_cap;
   s->queue_size--;
+  /* Keep "empty" canonical: pushing only replays the head-to-tail walk when the head is zero. */
+  if (s->queue_size == 0) s->queue_head = 0;
   return value;
 }
 
@@ -794,14 +913,27 @@ static int revise(wfc_solver *s, int v, int d) {
      *
      * Precision and a tight inner loop beat fewer operations here.
      *
+     * There is a way to make a dense formulation exact: compatibility is equality of the *overlap*, so
+     * the table could be keyed on overlap signatures and grouped by them ("union the groups of the
+     * overlaps still present on the other side"), which is one 128-bit OR per group instead of one test
+     * per candidate. It is exact, unlike the word-level table, and it dies on the alphabet size: measured
+     * with the drawing's own tiles, `bordered` has 33 distinct orthogonal overlaps for 50 tiles and
+     * `rings` 78 for 104 (diagonals 21 and 43). About 1.3 tiles per group, so the "few" groups are as
+     * many as the candidates they would replace, and the grouping buys nothing.
+     *
+     * That is the same structural fact that makes the model un-prunable (see the note in
+     * wfc_model_create): every tile is a window that really occurs in the drawing, so its overlap with
+     * its neighbours is its own, and a tile set sampled from a hand-drawn picture has no structure to
+     * quotient, no domain to shrink and no neighbour to skip. Account-level optimisations are closed;
+     * what is left is doing fewer collapses (a warm start) or doing them on more cores.
+     *
      * On SIMD: this loop is bit-serial by nature -- `bit = ctz(bits); bits &= bits - 1` walks the set
      * bits one at a time and the extracted bit indexes the next load -- so there is no vector register
      * to fill. The compiler agrees: with -Rpass-analysis=loop-vectorize it reports "cannot identify
      * array bounds" / "could not determine number of loop iterations" for every loop on the search path
      * and vectorises only the tile-set build. Measured on a Pixel 7a with -fvectorize -fslp-vectorize
      * versus -fno-vectorize -fno-slp-vectorize: 27.12 vs 27.08 ms (bordered) and 87.11 vs 87.08 ms
-     * (rings), i.e. nothing. Making this loop SIMD-friendly means making it *dense* instead of walking
-     * set bits, and the dense formulation is the word-level support table above, which loses on pruning.
+     * (rings), i.e. nothing.
      */
     if (words == 1) {
       const uint64_t neighbour_bits = s->domains[n_base];
@@ -850,6 +982,7 @@ static int revise(wfc_solver *s, int v, int d) {
   s->revises++;
   if (s->size[v] == 0) return 0;
   if (removed != 0) {
+    s->shrinks++;
     /* This domain shrank, so every neighbour that constrains it has to be revised again. */
     for (int d2 = 0; d2 < WFC_DIRS; d2++) {
       if (((m->present[v] >> d2) & 1) != 0) {
@@ -891,14 +1024,118 @@ static void assign(wfc_solver *s, int v, int tile) {
   }
 }
 
+/*
+ * Builds the "peel" order: the border ring first, then each ring inwards, each ring walked clockwise
+ * from its bottom-left corner. That is the order the app's author proposed -- fill the border, then the
+ * bottom-left corner's surroundings, then the next pixels around them -- and it is the natural way to
+ * keep the decided region compact while it grows.
+ *
+ * Why the order could matter at all: propagation is cheap against a decided cell (one 128-bit AND) and
+ * only expensive against a wide-open one (a scan of every remaining candidate). Choosing where to
+ * branch decides how much of each cascade runs through wide-open cells. It is not obvious which way
+ * that cuts -- peeling from the border downwards could equally make the last decision responsible for
+ * a long cascade -- so the order is selectable and measured rather than assumed.
+ */
+static int build_sweep(wfc_solver *s) {
+  const wfc_model *m = s->model;
+  const int vars = m->variable_count;
+  const int columns = m->columns;
+  const int rows = m->rows;
+  if (s->sweep_cap < vars) {
+    int grown = s->sweep_cap < 256 ? 256 : s->sweep_cap;
+    while (grown < vars) grown *= 2;
+    int *order = realloc(s->sweep_order, (size_t)grown * sizeof(int));
+    if (order == NULL) return 0;
+    s->sweep_order = order;
+    int *rank = realloc(s->sweep_rank, (size_t)grown * sizeof(int));
+    if (rank == NULL) return 0;
+    s->sweep_rank = rank;
+    s->sweep_cap = grown;
+  }
+  for (int v = 0; v < vars; v++) s->sweep_rank[v] = -1;
+
+  int filled = 0;
+  int rings = (columns < rows ? columns : rows);
+  rings = (rings + 1) / 2;
+#define ADD_CELL(x, y)                                    \
+  do {                                                    \
+    int v_ = (y) * columns + (x);                         \
+    if (s->sweep_rank[v_] < 0) {                          \
+      s->sweep_rank[v_] = filled;                         \
+      s->sweep_order[filled++] = v_;                      \
+    }                                                     \
+  } while (0)
+  for (int r = 0; r < rings; r++) {
+    const int left = r;
+    const int right = columns - 1 - r;
+    const int top = r;
+    const int bottom = rows - 1 - r;
+    if (left > right || top > bottom) break;
+    /* Clockwise from the ring's bottom-left corner: up the left side, along the top, down the right,
+     * then back along the bottom. Cells shared with a smaller ring are skipped, so a degenerate ring
+     * (a single row or a single cell) still adds each of its cells exactly once. */
+    for (int y = bottom; y >= top; y--) ADD_CELL(left, y);
+    for (int x = left + 1; x <= right; x++) ADD_CELL(x, top);
+    for (int y = top + 1; y <= bottom; y++) ADD_CELL(right, y);
+    for (int x = right - 1; x >= left + 1; x--) ADD_CELL(x, bottom);
+  }
+#undef ADD_CELL
+  s->sweep_cursor = 0;
+  return filled == vars;
+}
+
 static int select_variable(wfc_solver *s) {
   const int tiles = s->model->tile_count;
   const int words = s->bitset_words;
+
+  if (s->order_mode == 1) {
+    /*
+     * Pure peel: the next undecided cell in the order above, ignoring domain sizes. Propagation usually
+     * has already assigned most of the grid, so the cursor mostly skips over cells rather than choosing
+     * them -- which is what makes a fixed order affordable at all.
+     */
+    const int vars = s->model->variable_count;
+    int i = s->sweep_cursor;
+    while (i < vars && s->size[s->sweep_order[i]] <= 1) i++;
+    if (i >= vars) {
+      s->sweep_cursor = vars;
+      return -1;
+    }
+    s->sweep_cursor = i + 1;
+    return s->sweep_order[i];
+  }
+
   if (s->smallest < 2) s->smallest = 2;
   while (s->smallest <= tiles) {
     const uint64_t *row = s->size_bits + (size_t)s->smallest * words;
-    for (int word = 0; word < words; word++) {
-      if (row[word] != 0) return (word << 6) + ctz(row[word]);
+    if (s->order_mode != 2) {
+      for (int word = 0; word < words; word++) {
+        if (row[word] != 0) return (word << 6) + ctz(row[word]);
+      }
+    } else {
+      /*
+       * Min domain as usual, but ties go to the cell that is peeled earliest. Keeps the strong
+       * heuristic (never branch on a cell that propagation could still narrow) while making the
+       * decided region grow outward-in instead of jumping around the grid.
+       *
+       * This costs a full scan of the winning row instead of stopping at the first set bit. At 152x270
+       * that row is up to 641 words, so the extra cost is only worth paying if it buys fewer decisions.
+       */
+      int best = -1;
+      int best_rank = s->model->variable_count + 1;
+      for (int word = 0; word < words; word++) {
+        uint64_t bits = row[word];
+        while (bits != 0) {
+          int v = (word << 6) + ctz(bits);
+          bits &= bits - 1;
+          int rank = s->sweep_rank[v];
+          if (rank < best_rank) {
+            best_rank = rank;
+            best = v;
+          }
+        }
+      }
+      if (best >= 0) return best;
     }
     s->smallest++;
   }
@@ -975,6 +1212,7 @@ static int push_frame(wfc_solver *s, int v, int values_offset, int count, int tr
   frame->count = count;
   frame->next = 0;
   frame->trail_mark = trail_mark;
+  frame->order_pos = s->order_mode == 1 ? s->sweep_rank[v] : 0;
   s->arena_size = values_offset + count;
   return 1;
 }
@@ -1027,6 +1265,9 @@ static int search(wfc_solver *s, int64_t deadline_nanos, int max_decisions) {
       wfc_frame *frame = &s->stack[s->stack_size - 1];
       if (frame->next >= frame->count) {
         undo(s, frame->trail_mark);
+        /* The frame is gone, so the peel cursor has to go back to its cell: that cell is undecided
+         * again and the next decision may well land on it. */
+        if (s->order_mode == 1) s->sweep_cursor = frame->order_pos;
         /* Popping is just dropping the arena back to this frame's slice: nothing to free. */
         s->arena_size = frame->values_offset;
         s->stack_size--;
@@ -1038,11 +1279,15 @@ static int search(wfc_solver *s, int64_t deadline_nanos, int max_decisions) {
       int mark = frame->trail_mark;
       undo(s, mark);
       assign(s, frame->var, tile);
+      if (s->order_mode == 1) s->sweep_cursor = frame->order_pos + 1;
       if (propagate(s, deadline_nanos)) {
         descended = 1;
         break;
       }
+      /* This value led to a contradiction somewhere: that is one dead end, and one branch wasted. */
+      s->dead_ends++;
       undo(s, mark);
+      if (s->order_mode == 1) s->sweep_cursor = frame->order_pos;
     }
     if (!descended && s->stack_size == 0) return 0;
   }
@@ -1148,10 +1393,14 @@ int wfc_solver_solve(wfc_solver *s, const wfc_model *model, uint32_t seed, int64
   s->rng = seed == 0 ? 0x9E3779B9u : seed;
   s->decisions = 0;
   s->revises = 0;
+  s->dead_ends = 0;
+  s->shrinks = 0;
   s->trail_size = 0;
   s->queue_head = 0;
   s->queue_size = 0;
   s->abort_flag = 0;
+  /* The peel depends only on the grid, so it is rebuilt per solve rather than per decision. */
+  if (s->order_mode != 0 && !build_sweep(s)) return 0;
 
   s->setup_nanos = 0;
   s->initial_propagation_nanos = 0;

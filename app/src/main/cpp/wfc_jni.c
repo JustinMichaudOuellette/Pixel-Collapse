@@ -142,3 +142,35 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverRevises(JNIEnv *env, jobject thiz, jl
   const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
   return native_solver == NULL ? 0 : (jlong)wfc_solver_revises(native_solver);
 }
+
+JNIEXPORT jlong JNICALL
+Java_ca_justinmo_wfcbitmap_WfcNative_solverDeadEnds(JNIEnv *env, jobject thiz, jlong solver) {
+  (void)env;
+  (void)thiz;
+  const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
+  return native_solver == NULL ? 0 : (jlong)wfc_solver_dead_ends(native_solver);
+}
+
+JNIEXPORT jlong JNICALL
+Java_ca_justinmo_wfcbitmap_WfcNative_solverShrinks(JNIEnv *env, jobject thiz, jlong solver) {
+  (void)env;
+  (void)thiz;
+  const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
+  return native_solver == NULL ? 0 : (jlong)wfc_solver_shrinks(native_solver);
+}
+
+JNIEXPORT void JNICALL
+Java_ca_justinmo_wfcbitmap_WfcNative_solverSetOrder(JNIEnv *env, jobject thiz, jlong solver,
+                                                    jint mode) {
+  (void)env;
+  (void)thiz;
+  wfc_solver_set_order((wfc_solver *)from_handle(solver), (int)mode);
+}
+
+JNIEXPORT void JNICALL
+Java_ca_justinmo_wfcbitmap_WfcNative_solverSetWorklist(JNIEnv *env, jobject thiz, jlong solver,
+                                                       jint mode) {
+  (void)env;
+  (void)thiz;
+  wfc_solver_set_worklist((wfc_solver *)from_handle(solver), (int)mode);
+}
