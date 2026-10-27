@@ -71,7 +71,7 @@ internal object WfcNative {
 
   external fun modelDestroy(model: Long)
 
-  external fun solverCreate(model: Long): Long
+  external fun solverCreate(): Long
 
   external fun solverDestroy(solver: Long)
 
@@ -79,11 +79,23 @@ internal object WfcNative {
   external fun solverAbort(solver: Long)
 
   /** @return 1 when [out] was filled with a tiling, 0 otherwise. */
-  external fun solverSolve(solver: Long, seed: Int, deadlineNanos: Long, maxDecisions: Int, out: IntArray): Int
+  external fun solverSolve(solver: Long, model: Long, seed: Int, deadlineNanos: Long, maxDecisions: Int, out: IntArray): Int
 
   external fun solverDecisions(solver: Long): Int
 
   external fun solverRevises(solver: Long): Long
+
+  /** Phase timers of the last solve, in nanoseconds; see the phase constants below. */
+  external fun solverPhaseNanos(solver: Long, phase: Int): Long
+
+  /** Indices for [solverPhaseNanos]. */
+  object Phase {
+    const val SETUP = 0
+    const val INITIAL_PROPAGATION = 1
+    const val SEARCH = 2
+    const val SELECTION = 3
+    const val ORDERING = 4
+  }
 
   /**
    * Kernel index each direction reads, in `Direction2d8` declaration order:

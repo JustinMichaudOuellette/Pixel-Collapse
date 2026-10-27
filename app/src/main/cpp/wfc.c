@@ -31,6 +31,7 @@ static const int DY[WFC_DIRS] = {0, -1, -1, -1, 0, 1, 1, 1};
 /* Check the clock every this many revisions: a syscall per arc would dominate short revisions. */
 #define CLOCK_EVERY 512
 
+
 typedef struct {
   int mask;        /* direction bits where the kernel has a pixel */
   int weight;      /* how often the pattern occurs in the drawing */
@@ -48,13 +49,15 @@ struct wfc_model {
   int *present;                /* per variable: direction bits with a neighbour inside the grid */
   int *step_offset;            /* per direction: dy * columns + dx */
   uint64_t *compat;            /* [(direction * tile_count + tile) * word_count + word] */
+
   uint64_t *domain_by_present; /* [present * word_count + word] */
   int *size_by_present;
 };
 
 typedef struct {
   int var;
-  int *values;
+  /** Start of this frame's candidate tiles inside the solver's value arena. */
+  int values_offset;
   int count;
   int next;
   int trail_mark;
@@ -65,8 +68,22 @@ struct wfc_solver {
 
   uint64_t *domains; /* variable_count * word_count */
   int *size;         /* per variable: values left */
-  int *hist;         /* per size: how many variables, the index min-domain selection searches */
+  /*
+   * Min-domain selection: a bit per (domain size, variable), so a decision is "find the first set bit of
+   * the smallest non-empty size" -- O(1) instead of scanning all variables (which was 31% of the search
+   * on a decision-heavy drawing), and it returns the *lowest variable index* of that size, which is the
+   * tie-break the search has always used. A plain linked list per size is cheaper to store but breaks
+   * ties in insertion order, and that alone tripled the decisions on one drawing.
+   */
+  uint64_t *size_bits;
+  int bitset_words;
+  int largest_size;
   int smallest;
+
+  /* Capacities of the buffers above, so a pooled solver only grows them when a model needs more room. */
+  int capacity_variables;
+  int capacity_words;
+  int capacity_tiles;
 
   int *trail_key; /* (variable << 4) | word */
   uint64_t *trail_value;
@@ -83,10 +100,32 @@ struct wfc_solver {
   int stack_size;
   int stack_cap;
 
+  /*
+   * Candidate tiles for the frames of the search, in one bump-allocated arena. Frames are pushed and
+   * popped LIFO, so a frame's slice is always at the top and popping is just moving the bump pointer
+   * back -- no malloc/free per decision, which used to be two allocations and a free for every branch.
+   */
+  int *value_arena;
+  int arena_size;
+  int arena_cap;
+
+  /** Scratch for the weighted keys of one decision; reused, never allocated per decision. */
+  double *keys_scratch;
+
+  /** Solution buffer, so the JNI layer does not allocate one per solve. */
+  int32_t *assignment;
+
   uint32_t rng;
   int decisions;
   int64_t revises;
   volatile int abort_flag;
+
+  /* Phase timers, so a slow solve can be attributed to a phase instead of guessed at. */
+  int64_t setup_nanos;
+  int64_t initial_propagation_nanos;
+  int64_t search_nanos;
+  int64_t selection_nanos;
+  int64_t ordering_nanos;
 };
 
 /* --- small helpers ------------------------------------------------------------------------- */
@@ -135,6 +174,7 @@ wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int
   m->present = calloc((size_t)m->variable_count, sizeof(int));
   m->step_offset = calloc(WFC_DIRS, sizeof(int));
   m->compat = calloc((size_t)WFC_DIRS * tile_count * m->word_count, sizeof(uint64_t));
+
   m->domain_by_present = calloc(256 * (size_t)m->word_count, sizeof(uint64_t));
   m->size_by_present = calloc(256, sizeof(int));
   if (m->tiles == NULL || m->present == NULL || m->step_offset == NULL || m->compat == NULL ||
@@ -189,6 +229,8 @@ wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int
     }
   }
 
+
+
   /*
    * The edge rule: a border cell's domain is the tiles whose mask is *exactly* the in-grid directions,
    * i.e. the ones sampled on that edge of the drawing. Interior cells therefore accept only complete
@@ -213,6 +255,7 @@ void wfc_model_destroy(wfc_model *model) {
   free(model->present);
   free(model->step_offset);
   free(model->compat);
+
   free(model->domain_by_present);
   free(model->size_by_present);
   free(model);
@@ -220,16 +263,9 @@ void wfc_model_destroy(wfc_model *model) {
 
 /* --- solver lifecycle ---------------------------------------------------------------------- */
 
-wfc_solver *wfc_solver_create(const wfc_model *model) {
-  if (model == NULL) return NULL;
+wfc_solver *wfc_solver_create(void) {
   wfc_solver *s = calloc(1, sizeof(*s));
   if (s == NULL) return NULL;
-  s->model = model;
-  size_t vars = (size_t)model->variable_count;
-  s->domains = calloc(vars * (size_t)model->word_count, sizeof(uint64_t));
-  s->size = calloc(vars, sizeof(int));
-  s->hist = calloc((size_t)model->tile_count + 1, sizeof(int));
-  s->in_queue = calloc((vars * WFC_DIRS + 63) / 64, sizeof(uint64_t));
   s->trail_cap = 1024;
   s->trail_key = calloc((size_t)s->trail_cap, sizeof(int));
   s->trail_value = calloc((size_t)s->trail_cap, sizeof(uint64_t));
@@ -237,28 +273,82 @@ wfc_solver *wfc_solver_create(const wfc_model *model) {
   s->queue = calloc((size_t)s->queue_cap, sizeof(int));
   s->stack_cap = 256;
   s->stack = calloc((size_t)s->stack_cap, sizeof(wfc_frame));
-  if (s->domains == NULL || s->size == NULL || s->hist == NULL || s->in_queue == NULL ||
-      s->trail_key == NULL || s->trail_value == NULL || s->queue == NULL || s->stack == NULL) {
+  s->arena_cap = 4096;
+  s->value_arena = malloc((size_t)s->arena_cap * sizeof(int));
+  if (s->trail_key == NULL || s->trail_value == NULL || s->queue == NULL || s->stack == NULL ||
+      s->value_arena == NULL) {
     wfc_solver_destroy(s);
     return NULL;
   }
   return s;
 }
 
+/*
+ * Points the solver at [model], growing its buffers only when the model needs more room than they have.
+ *
+ * Capacities are monotonic, so a pooled solver settles after a few collapses and then runs with no
+ * allocation at all -- which is the point of pooling: allocating and first-touching ~250 KB per worker
+ * per keystroke was a measurable slice of a small solve.
+ */
+static int bind_model(wfc_solver *s, const wfc_model *m) {
+  if (s->model == m) return 1;
+  if (s->capacity_variables < m->variable_count || s->capacity_words < m->word_count) {
+    size_t vars = (size_t)m->variable_count;
+    uint64_t *domains = realloc(s->domains, vars * m->word_count * sizeof(uint64_t));
+    if (domains == NULL) return 0;
+    s->domains = domains;
+    int *sizes = realloc(s->size, vars * sizeof(int));
+    if (sizes == NULL) return 0;
+    s->size = sizes;
+    uint64_t *queue_flags = realloc(s->in_queue, ((vars * WFC_DIRS + 63) / 64) * sizeof(uint64_t));
+    if (queue_flags == NULL) return 0;
+    s->in_queue = queue_flags;
+    int32_t *assignment = realloc(s->assignment, vars * sizeof(int32_t));
+    if (assignment == NULL) return 0;
+    s->assignment = assignment;
+    s->bitset_words = (m->variable_count + 63) >> 6;
+    s->capacity_variables = m->variable_count;
+    s->capacity_words = m->word_count;
+  }
+  if (s->capacity_tiles < m->tile_count || s->size_bits == NULL) {
+    size_t rows = (size_t)(m->tile_count + 1);
+    size_t words = rows * s->bitset_words;
+    uint64_t *bits = realloc(s->size_bits, words * sizeof(uint64_t));
+    if (bits == NULL) return 0;
+    s->size_bits = bits;
+    /*
+     * realloc does not zero, and rows the *first* solve never writes would otherwise hold whatever the
+     * allocator left there -- which select_variable happily reads as candidate bits. Clearing here (on
+     * allocation only, which is rare) is what lets the per-solve clear stay bounded by largest_size.
+     */
+    memset(s->size_bits, 0, words * sizeof(uint64_t));
+    double *keys = realloc(s->keys_scratch, (size_t)m->tile_count * sizeof(double));
+    if (keys == NULL) return 0;
+    s->keys_scratch = keys;
+    s->capacity_tiles = m->tile_count;
+  }
+  s->model = m;
+  return 1;
+}
+
 void wfc_solver_destroy(wfc_solver *solver) {
   if (solver == NULL) return;
-  if (solver->stack != NULL) {
-    for (int i = 0; i < solver->stack_size; i++) free(solver->stack[i].values);
-  }
   free(solver->domains);
   free(solver->size);
-  free(solver->hist);
+  free(solver->size_bits);
   free(solver->trail_key);
   free(solver->trail_value);
   free(solver->queue);
   free(solver->in_queue);
   free(solver->stack);
+  free(solver->value_arena);
+  free(solver->keys_scratch);
+  free(solver->assignment);
   free(solver);
+}
+
+const int32_t *wfc_solver_assignment(const wfc_solver *solver) {
+  return solver == NULL ? NULL : solver->assignment;
 }
 
 void wfc_solver_abort(wfc_solver *solver) {
@@ -269,19 +359,47 @@ int wfc_solver_decisions(const wfc_solver *solver) { return solver->decisions; }
 
 int64_t wfc_solver_revises(const wfc_solver *solver) { return solver->revises; }
 
-int wfc_solver_variable_count(const wfc_solver *solver) {
-  return solver == NULL ? 0 : solver->model->variable_count;
+int wfc_model_variable_count(const wfc_model *model) {
+  return model == NULL ? 0 : model->variable_count;
+}
+
+int64_t wfc_solver_phase_nanos(const wfc_solver *solver, int phase) {
+  if (solver == NULL) return 0;
+  switch (phase) {
+    case 0: return solver->setup_nanos;
+    case 1: return solver->initial_propagation_nanos;
+    case 2: return solver->search_nanos;
+    case 3: return solver->selection_nanos;
+    case 4: return solver->ordering_nanos;
+    default: return 0;
+  }
 }
 
 /* --- domains and the trail ------------------------------------------------------------------ */
 
+/*
+ * Sets or clears the bit for (size, variable). Sizes below 2 are not tracked: 1 means assigned and is
+ * never selected again, 0 means a contradiction and aborts propagation anyway.
+ */
+static void set_size_bit(wfc_solver *s, int v, int size, int present) {
+  if (size < 2 || size > s->model->tile_count) return;
+  uint64_t *row = s->size_bits + (size_t)size * s->bitset_words;
+  uint64_t bit = 1ull << (v & 63);
+  if (present) {
+    row[v >> 6] |= bit;
+    if (size < s->smallest) s->smallest = size;
+  } else {
+    row[v >> 6] &= ~bit;
+  }
+}
+
+/* Moves [v] to the new domain size's bitset. */
 static void adjust_size(wfc_solver *s, int v, int new_size) {
   int old = s->size[v];
   if (old == new_size) return;
-  s->hist[old]--;
+  set_size_bit(s, v, old, 0);
   s->size[v] = new_size;
-  s->hist[new_size]++;
-  if (new_size >= 2 && new_size < s->smallest) s->smallest = new_size;
+  set_size_bit(s, v, new_size, 1);
 }
 
 /*
@@ -422,31 +540,89 @@ static int revise(wfc_solver *s, int v, int d) {
       }
     }
   } else {
-    for (int word = 0; word < words; word++) {
-      uint64_t current = s->domains[v_base + word];
-      if (current == 0) continue;
-      uint64_t remaining = current;
-      uint64_t bits = current;
-      while (bits != 0) {
-        int tile = (word << 6) + ctz(bits);
-        bits &= bits - 1;
-        const uint64_t *row = m->compat + (size_t)(d * tiles + tile) * words;
-        int supported = 0;
-        for (int k = 0; k < words; k++) {
-          if ((row[k] & s->domains[n_base + k]) != 0) {
-            supported = 1;
-            break;
+    /*
+     * Exact revision: for each candidate tile, ask the neighbour's domain whether any of its tiles
+     * supports it.
+     *
+     * This is O(tiles * words) per revision, and a word-parallel version is tempting: precompute a
+     * support table (union of the partners of each *word* of tiles) and answer the whole domain with a
+     * few word operations. It was tried and measured, and it is a large loss on this model. The table
+     * can only union the partners of every tile in a word, so it prunes less than this scan; weaker
+     * pruning means domains stay wide, and this search is fast precisely because propagation collapses
+     * the grid with almost no decisions. On a 76x135 grid, 104 tiles: this exact scan solves `rings`
+     * with 23 decisions and ~1M revisions in ~95 ms, while the word-parallel version needed the full
+     * 1,000,000-decision cap and never found a tiling. Precision, not raw ops, is what wins here.
+     */
+    /*
+     * One and two words cover every tile set this app can produce (up to 128 patterns), so they are
+     * spelled out: no inner support loop, no per-word indexing, and the neighbour's words hoisted into
+     * registers. The generic loop below handles the rare wider tile set.
+     */
+    if (words == 1) {
+      const uint64_t neighbour_bits = s->domains[n_base];
+      uint64_t current = s->domains[v_base];
+      if (current != 0) {
+        uint64_t remaining = current;
+        uint64_t bits = current;
+        while (bits != 0) {
+          int bit = ctz(bits);
+          bits &= bits - 1;
+          const uint64_t *row = m->compat + (size_t)(d * tiles + (bit)) * 1;
+          if ((row[0] & neighbour_bits) == 0) remaining &= ~(1ull << bit);
+        }
+        if (remaining != current) {
+          removed += popcount(current) - popcount(remaining);
+          set_word(s, v, 0, remaining);
+        }
+      }
+    } else if (words == 2) {
+      const uint64_t neighbour0 = s->domains[n_base];
+      const uint64_t neighbour1 = s->domains[n_base + 1];
+      for (int word = 0; word < 2; word++) {
+        uint64_t current = s->domains[v_base + word];
+        if (current == 0) continue;
+        uint64_t remaining = current;
+        uint64_t bits = current;
+        while (bits != 0) {
+          int bit = ctz(bits);
+          bits &= bits - 1;
+          int tile = (word << 6) + bit;
+          const uint64_t *row = m->compat + (size_t)(d * tiles + tile) * 2;
+          if (((row[0] & neighbour0) | (row[1] & neighbour1)) == 0) {
+            remaining &= ~(1ull << bit);
           }
         }
-        if (!supported) remaining &= ~(1ull << (tile & 63));
+        if (remaining != current) {
+          removed += popcount(current) - popcount(remaining);
+          set_word(s, v, word, remaining);
+        }
       }
-      if (remaining != current) {
-        removed += popcount(current) - popcount(remaining);
-        set_word(s, v, word, remaining);
+    } else {
+      for (int word = 0; word < words; word++) {
+        uint64_t current = s->domains[v_base + word];
+        if (current == 0) continue;
+        uint64_t remaining = current;
+        uint64_t bits = current;
+        while (bits != 0) {
+          int tile = (word << 6) + ctz(bits);
+          bits &= bits - 1;
+          const uint64_t *row = m->compat + (size_t)(d * tiles + tile) * words;
+          int supported = 0;
+          for (int k = 0; k < words; k++) {
+            if ((row[k] & s->domains[n_base + k]) != 0) {
+              supported = 1;
+              break;
+            }
+          }
+          if (!supported) remaining &= ~(1ull << (tile & 63));
+        }
+        if (remaining != current) {
+          removed += popcount(current) - popcount(remaining);
+          set_word(s, v, word, remaining);
+        }
       }
     }
   }
-
   s->revises++;
   if (s->size[v] == 0) return 0;
   if (removed != 0) {
@@ -493,21 +669,29 @@ static void assign(wfc_solver *s, int v, int tile) {
 
 static int select_variable(wfc_solver *s) {
   const int tiles = s->model->tile_count;
+  const int words = s->bitset_words;
   if (s->smallest < 2) s->smallest = 2;
-  for (int size = s->smallest; size <= tiles; size++) {
-    if (s->hist[size] == 0) continue;
-    s->smallest = size;
-    for (int v = 0; v < s->model->variable_count; v++) {
-      if (s->size[v] == size) return v;
+  while (s->smallest <= tiles) {
+    const uint64_t *row = s->size_bits + (size_t)s->smallest * words;
+    for (int word = 0; word < words; word++) {
+      if (row[word] != 0) return (word << 6) + ctz(row[word]);
     }
+    s->smallest++;
   }
   return -1;
 }
 
-static void collect_values(wfc_solver *s, int v, int *values, double *keys, int count) {
+static void collect_values(wfc_solver *s, int v, int *values, int count) {
   const int words = s->model->word_count;
   int base = v * words;
   int filled = 0;
+  /*
+   * The keys go into a per-solver scratch buffer rather than an allocation per decision. Ordering by
+   * log(random) / weight is the same order as the textbook random^(1/weight) race -- it is a monotone
+   * transform of it, sorted the other way round -- for one log instead of a pow per candidate, and
+   * log() is markedly cheaper than pow().
+   */
+  double *keys = s->keys_scratch;
   for (int word = 0; word < words; word++) {
     uint64_t bits = s->domains[base + word];
     while (bits != 0) {
@@ -516,7 +700,7 @@ static void collect_values(wfc_solver *s, int v, int *values, double *keys, int 
       values[filled] = tile;
       double weight = (double)s->model->tiles[tile].weight;
       if (weight < 1e-6) weight = 1e-6;
-      keys[filled] = pow(rng_double(&s->rng), 1.0 / weight);
+      keys[filled] = log(rng_double(&s->rng)) / weight;
       filled++;
     }
   }
@@ -535,7 +719,25 @@ static void collect_values(wfc_solver *s, int v, int *values, double *keys, int 
   }
 }
 
-static int push_frame(wfc_solver *s, int v, int *values, int count, int trail_mark) {
+/**
+ * Reserves [count] ints at the top of the value arena for a new frame.
+ *
+ * @return the offset to write the candidate tiles at, or -1 when the arena cannot grow.
+ */
+static int reserve_values(wfc_solver *s, int count) {
+  if (s->arena_size + count > s->arena_cap) {
+    int needed = s->arena_size + count;
+    int grown = s->arena_cap * 2;
+    while (grown < needed) grown *= 2;
+    int *resized = realloc(s->value_arena, (size_t)grown * sizeof(int));
+    if (resized == NULL) return -1;
+    s->value_arena = resized;
+    s->arena_cap = grown;
+  }
+  return s->arena_size;
+}
+
+static int push_frame(wfc_solver *s, int v, int values_offset, int count, int trail_mark) {
   if (s->stack_size == s->stack_cap) {
     int grown = s->stack_cap * 2;
     wfc_frame *resized = realloc(s->stack, (size_t)grown * sizeof(wfc_frame));
@@ -545,16 +747,17 @@ static int push_frame(wfc_solver *s, int v, int *values, int count, int trail_ma
   }
   wfc_frame *frame = &s->stack[s->stack_size++];
   frame->var = v;
-  frame->values = values;
+  frame->values_offset = values_offset;
   frame->count = count;
   frame->next = 0;
   frame->trail_mark = trail_mark;
+  s->arena_size = values_offset + count;
   return 1;
 }
 
 static void free_frames(wfc_solver *s) {
-  for (int i = 0; i < s->stack_size; i++) free(s->stack[i].values);
   s->stack_size = 0;
+  s->arena_size = 0;
 }
 
 static int search(wfc_solver *s, int64_t deadline_nanos, int max_decisions) {
@@ -563,25 +766,25 @@ static int search(wfc_solver *s, int64_t deadline_nanos, int max_decisions) {
       free_frames(s);
       return 0;
     }
+    int64_t phase_started = now_nanos();
     int v = select_variable(s);
+    s->selection_nanos += now_nanos() - phase_started;
     if (v < 0) {
       free_frames(s);
       return 1;
     }
 
+    phase_started = now_nanos();
     int count = s->size[v];
-    int *values = malloc((size_t)count * sizeof(int));
-    double *keys = malloc((size_t)count * sizeof(double));
-    if (values == NULL || keys == NULL) {
-      free(values);
-      free(keys);
+    int values_offset = reserve_values(s, count);
+    if (values_offset < 0) {
       free_frames(s);
       return 0;
     }
-    collect_values(s, v, values, keys, count);
-    free(keys);
-    if (!push_frame(s, v, values, count, s->trail_size)) {
-      free(values);
+    int *values = s->value_arena + values_offset;
+    collect_values(s, v, values, count);
+    s->ordering_nanos += now_nanos() - phase_started;
+    if (!push_frame(s, v, values_offset, count, s->trail_size)) {
       free_frames(s);
       return 0;
     }
@@ -595,11 +798,12 @@ static int search(wfc_solver *s, int64_t deadline_nanos, int max_decisions) {
       wfc_frame *frame = &s->stack[s->stack_size - 1];
       if (frame->next >= frame->count) {
         undo(s, frame->trail_mark);
-        free(frame->values);
+        /* Popping is just dropping the arena back to this frame's slice: nothing to free. */
+        s->arena_size = frame->values_offset;
         s->stack_size--;
         continue;
       }
-      int tile = frame->values[frame->next++];
+      int tile = s->value_arena[frame->values_offset + frame->next++];
       s->decisions++;
       /* Rewind to the state this level started from: a previous value may have been descended into. */
       int mark = frame->trail_mark;
@@ -617,9 +821,14 @@ static int search(wfc_solver *s, int64_t deadline_nanos, int max_decisions) {
 
 static int initialise_domains(wfc_solver *s) {
   const wfc_model *m = s->model;
-  memset(s->hist, 0, sizeof(int) * ((size_t)m->tile_count + 1));
+  /*
+   * Clear the size bitsets up to the largest size any solve has used. Sizes never grow during a solve,
+   * so rows above that can never hold a stale bit.
+   */
+  memset(s->size_bits, 0, sizeof(uint64_t) * (size_t)(s->largest_size + 1) * s->bitset_words);
   memset(s->in_queue, 0, sizeof(uint64_t) * (((size_t)m->variable_count * WFC_DIRS + 63) / 64));
   s->smallest = m->tile_count + 1;
+  s->largest_size = 0;
   for (int v = 0; v < m->variable_count; v++) {
     int present = m->present[v];
     int size = m->size_by_present[present];
@@ -627,24 +836,28 @@ static int initialise_domains(wfc_solver *s) {
     int base = v * m->word_count;
     for (int word = 0; word < m->word_count; word++) s->domains[base + word] = row[word];
     s->size[v] = size;
-    s->hist[size]++;
     if (size == 0) return 0; /* nothing fits this cell: no tiling exists */
-    if (size >= 2 && size < s->smallest) s->smallest = size;
+    if (size > s->largest_size) s->largest_size = size;
+    set_size_bit(s, v, size, 1);
   }
   if (s->smallest > m->tile_count) s->smallest = 2;
   return 1;
 }
 
-static int enqueue_all(wfc_solver *s) {
+/*
+ * Seeds the worklist with every arc. The edge rule makes the starting domains differ per cell type
+ * (a border cell's domain is the patterns sampled on that edge), so the initial propagation is real
+ * work -- it is what proves "this drawing has no tiling at all" -- and skipping arcs between
+ * "full" domains is not sound here: full means full for that cell's mask, not for the whole tile set.
+ */
+static void enqueue_all(wfc_solver *s) {
   const wfc_model *m = s->model;
   for (int v = 0; v < m->variable_count; v++) {
     for (int d = 0; d < WFC_DIRS; d++) {
       if (((m->present[v] >> d) & 1) != 0) enqueue(s, v, d);
     }
   }
-  return 1;
 }
-
 static int extract_solution(wfc_solver *s, int32_t *assignment) {
   const wfc_model *m = s->model;
   for (int v = 0; v < m->variable_count; v++) {
@@ -654,9 +867,37 @@ static int extract_solution(wfc_solver *s, int32_t *assignment) {
   return 1;
 }
 
-int wfc_solver_solve(wfc_solver *s, uint32_t seed, int64_t deadline_nanos, int max_decisions,
-                     int32_t *assignment) {
-  if (s == NULL || assignment == NULL) return 0;
+void wfc_solver_finish(wfc_solver *s) {
+  if (s == NULL) return;
+  /*
+   * Called once the caller has taken the result away (the JNI layer copies it into a Java array first).
+   * Everything the next collapse would otherwise have to distrust is cleared here rather than at the
+   * start of that collapse:
+   *
+   *  - the solution buffer, so a failed or aborted solve cannot leave a previous tiling lying around
+   *    for anything that reads it out of turn;
+   *  - the search state -- frames, value arena, trail and arc queue -- so the solver sits in a
+   *    known-empty state between runs and can be pooled and reused safely;
+   *  - the model pointer, which must not outlive wfc_model_destroy.
+   *
+   * The domains, sizes and size bitsets are *not* cleared here: initialise_domains() rewrites every one
+   * of those before anything reads them, so clearing them here would be a 164 KB memset per collapse
+   * no gain. The invariant is "every buffer is written before it is read inside a solve"; the result is
+   * the only thing that outlives a solve, so that is what the handoff resets.
+   */
+  if (s->model != NULL && s->assignment != NULL) {
+    memset(s->assignment, 0, sizeof(int32_t) * (size_t)s->model->variable_count);
+  }
+  free_frames(s);
+  s->trail_size = 0;
+  s->queue_head = 0;
+  s->queue_size = 0;
+  s->model = NULL;
+}
+
+int wfc_solver_solve(wfc_solver *s, const wfc_model *model, uint32_t seed, int64_t deadline_nanos,int max_decisions) {
+  if (s == NULL || model == NULL) return 0;
+  if (!bind_model(s, model)) return 0;
   /* A previous solve that ended with frames still open (every solution does) must not leak them. */
   free_frames(s);
   s->rng = seed == 0 ? 0x9E3779B9u : seed;
@@ -667,10 +908,26 @@ int wfc_solver_solve(wfc_solver *s, uint32_t seed, int64_t deadline_nanos, int m
   s->queue_size = 0;
   s->abort_flag = 0;
 
+  s->setup_nanos = 0;
+  s->initial_propagation_nanos = 0;
+  s->search_nanos = 0;
+  s->selection_nanos = 0;
+  s->ordering_nanos = 0;
+
+  int64_t phase_started = now_nanos();
   if (!initialise_domains(s)) return 0;
   enqueue_all(s);
+  s->setup_nanos = now_nanos() - phase_started;
   if (s->abort_flag != 0) return 0;
-  if (!propagate(s, deadline_nanos)) return 0;
-  if (!search(s, deadline_nanos, max_decisions)) return 0;
-  return extract_solution(s, assignment);
+
+  phase_started = now_nanos();
+  int consistent = propagate(s, deadline_nanos);
+  s->initial_propagation_nanos = now_nanos() - phase_started;
+  if (!consistent) return 0;
+
+  phase_started = now_nanos();
+  int solved = search(s, deadline_nanos, max_decisions);
+  s->search_nanos = now_nanos() - phase_started;
+  if (!solved) return 0;
+  return extract_solution(s, s->assignment);
 }

@@ -42,10 +42,10 @@ Java_ca_justinmo_wfcbitmap_WfcNative_modelDestroy(JNIEnv *env, jobject thiz, jlo
 }
 
 JNIEXPORT jlong JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverCreate(JNIEnv *env, jobject thiz, jlong model) {
+Java_ca_justinmo_wfcbitmap_WfcNative_solverCreate(JNIEnv *env, jobject thiz) {
   (void)env;
   (void)thiz;
-  return to_handle(wfc_solver_create((const wfc_model *)from_handle(model)));
+  return to_handle(wfc_solver_create());
 }
 
 JNIEXPORT void JNICALL
@@ -63,24 +63,27 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverAbort(JNIEnv *env, jobject thiz, jlon
 }
 
 JNIEXPORT jint JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverSolve(JNIEnv *env, jobject thiz, jlong solver,
+Java_ca_justinmo_wfcbitmap_WfcNative_solverSolve(JNIEnv *env, jobject thiz, jlong solver, jlong model,
                                                  jint seed, jlong deadline_nanos, jint max_decisions,
                                                  jintArray out) {
   (void)thiz;
   wfc_solver *native_solver = (wfc_solver *)from_handle(solver);
-  if (native_solver == NULL || out == NULL) return 0;
+  const wfc_model *native_model = (const wfc_model *)from_handle(model);
+  if (native_solver == NULL || native_model == NULL || out == NULL) return 0;
   jsize length = (*env)->GetArrayLength(env, out);
-  int variable_count = wfc_solver_variable_count(native_solver);
+  int variable_count = wfc_model_variable_count(native_model);
   if (length < variable_count) return 0;
 
-  int32_t *assignment = malloc((size_t)variable_count * sizeof(int32_t));
-  if (assignment == NULL) return 0;
-  int solved = wfc_solver_solve(native_solver, (uint32_t)seed, (int64_t)deadline_nanos,
-                                (int)max_decisions, assignment);
+  int solved = wfc_solver_solve(native_solver, native_model, (uint32_t)seed, (int64_t)deadline_nanos,
+                                (int)max_decisions);
   if (solved) {
+    /* The solution already lives in the solver's buffer: copy it out, no allocation here either. */
+    const int32_t *assignment = wfc_solver_assignment(native_solver);
+    if (assignment == NULL) return 0;
     (*env)->SetIntArrayRegion(env, out, 0, variable_count, (const jint *)assignment);
   }
-  free(assignment);
+  /* The result is handed over: reset the solver so the next collapse starts clean. */
+  wfc_solver_finish(native_solver);
   return solved ? 1 : 0;
 }
 
@@ -90,6 +93,15 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverDecisions(JNIEnv *env, jobject thiz, 
   (void)thiz;
   const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
   return native_solver == NULL ? 0 : wfc_solver_decisions(native_solver);
+}
+
+JNIEXPORT jlong JNICALL
+Java_ca_justinmo_wfcbitmap_WfcNative_solverPhaseNanos(JNIEnv *env, jobject thiz, jlong solver,
+                                                      jint phase) {
+  (void)env;
+  (void)thiz;
+  const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
+  return (jlong)wfc_solver_phase_nanos(native_solver, (int)phase);
 }
 
 JNIEXPORT jlong JNICALL

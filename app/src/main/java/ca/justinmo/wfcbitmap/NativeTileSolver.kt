@@ -5,9 +5,10 @@ import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.TileSolver
 /**
  * One search on the native (C) solver.
  *
- * Every worker of a portfolio gets its own solver, all sharing one [WfcNative.modelCreate] model: the
- * compatibility tables and the per-cell starting domains depend only on the tile set and the grid, so
- * building them once instead of once per worker is free performance.
+ * The handle comes from [NativeSolverPool] and goes back there on [close], so consecutive collapses
+ * reuse the same scratch memory. The model is passed per solve and never retained by the solver, which
+ * is what makes that reuse safe across generations: the model is destroyed as soon as the collapse is
+ * done, and [WfcNative.solverSolve] clears the solver once the result has been copied out.
  *
  * Instances are single-shot: [solve] runs once, and the portfolio calls [close] afterwards.
  */
@@ -18,13 +19,13 @@ internal class NativeTileSolver(
   private val seed: Int,
 ) : TileSolver {
 
-  private val handle: Long = if (model == 0L) 0L else WfcNative.solverCreate(model)
+  private val handle: Long = if (model == 0L) 0L else NativeSolverPool.acquire()
   private val assignment = IntArray(columns * rows)
   private var closed = false
 
   override fun solve(deadlineNanos: Long, maxDecisions: Int): IntArray? {
     if (handle == 0L) return null
-    val solved = WfcNative.solverSolve(handle, seed, deadlineNanos, maxDecisions, assignment)
+    val solved = WfcNative.solverSolve(handle, model, seed, deadlineNanos, maxDecisions, assignment)
     // The array belongs to this solver, and a solver only ever runs once, so handing it back without a
     // copy is safe here.
     return if (solved == 1) assignment else null
@@ -45,8 +46,7 @@ internal class NativeTileSolver(
   override fun close() {
     if (closed) return
     closed = true
-    if (handle != 0L) {
-      WfcNative.solverDestroy(handle)
-    }
+    // Back to the pool rather than destroyed: the next collapse reuses the buffers.
+    NativeSolverPool.release(handle)
   }
 }

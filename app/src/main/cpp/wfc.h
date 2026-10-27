@@ -34,32 +34,53 @@ typedef struct wfc_solver wfc_solver;
  * @param columns output width in cells.
  * @param rows    output height in cells.
  * @return a model, or NULL when the arguments are unusable (tile_count outside 1..1024, a grid that
- *         is not positive, or nothing that fits the border rule).
+ *         is not positive).
  */
 wfc_model *wfc_model_create(const int32_t *tiles, int tile_count, int columns, int rows);
 void wfc_model_destroy(wfc_model *model);
 
-wfc_solver *wfc_solver_create(const wfc_model *model);
+/* A solver owns only scratch space; it is bound to a model by each wfc_solver_solve call, so one\n * solver can serve collapse after collapse (see wfc_solver_finish). */
+wfc_solver *wfc_solver_create(void);
 void wfc_solver_destroy(wfc_solver *solver);
 
 /* Asks the running search to stop; safe to call from any thread. */
 void wfc_solver_abort(wfc_solver *solver);
 
 /*
- * Runs one search.
+ * Runs one search. The solution lands in the solver's own buffer, read back with
+ * [wfc_solver_assignment], so no allocation happens per solve.
  *
  * @param deadline_nanos absolute CLOCK_MONOTONIC deadline, i.e. System.nanoTime() on Android.
- * @param assignment     operator-provided buffer of columns * rows ints, filled on success.
  * @return 1 when a tiling was found, 0 when there is none (root propagation emptied a domain), the
  *         deadline passed, the decision cap was hit, or the solver was aborted.
  */
-int wfc_solver_solve(wfc_solver *solver, uint32_t seed, int64_t deadline_nanos, int max_decisions,
-                     int32_t *assignment);
+int wfc_solver_solve(wfc_solver *solver, const wfc_model *model, uint32_t seed,int64_t deadline_nanos, int max_decisions);
+
+/* The tiles of the last successful solve, one per variable, valid until [wfc_solver_finish]. */
+const int32_t *wfc_solver_assignment(const wfc_solver *solver);
+
+/*
+ * Call once the result has been taken away. Clears the result buffer and the search state and drops the
+ * solver's model pointer, so the solver is clean and reusable for the next collapse (and cannot be read
+ * for a stale tiling in between).
+ */
+void wfc_solver_finish(wfc_solver *solver);
 
 int wfc_solver_decisions(const wfc_solver *solver);
 int64_t wfc_solver_revises(const wfc_solver *solver);
 
-/* How many cells the solver fills, i.e. the size of the assignment buffer it needs. */
-int wfc_solver_variable_count(const wfc_solver *solver);
+/* How many cells the model fills, i.e. the size of the assignment buffer a solve needs. */
+int wfc_model_variable_count(const wfc_model *model);
+
+/* Phase timers of the last solve, in nanoseconds: 0 setup, 1 initial propagation, 2 search,
+ * 3 variable selection (inside search), 4 tile ordering (inside search). */
+enum {
+  WFC_PHASE_SETUP = 0,
+  WFC_PHASE_INITIAL_PROPAGATION = 1,
+  WFC_PHASE_SEARCH = 2,
+  WFC_PHASE_SELECTION = 3,
+  WFC_PHASE_ORDERING = 4
+};
+int64_t wfc_solver_phase_nanos(const wfc_solver *solver, int phase);
 
 #endif /* WFC_H */
