@@ -30,7 +30,12 @@ target_link_options(wfc PRIVATE
     $<$<NOT:$<CONFIG:Debug>>:-flto=thin>
     $<$<NOT:$<CONFIG:Debug>>:-fuse-ld=lld>
     $<$<NOT:$<CONFIG:Debug>>:-Wl,--gc-sections>
-    $<$<NOT:$<CONFIG:Debug>>:-Wl,-O2>)
+    $<$<NOT:$<CONFIG:Debug>>:-Wl,-O2>
+    # 16 KB page size support: align every PT_LOAD segment of libwfc.so to 16 KB so the library can be
+    # mapped on a device with 16 KB pages (Android 15+), not only on 4 KB ones. Without it the segments
+    # come out at 0x1000 and the app is rejected on those devices. NDK r28 makes this the default;
+    # asking explicitly keeps r27 compliant and makes the requirement visible in the build.
+    -Wl,-z,max-page-size=16384)
 
 # pow() from libm for the weighted tile order, and nothing else.
 target_link_libraries(wfc m)

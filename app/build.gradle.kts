@@ -55,6 +55,7 @@ android {
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      signingConfig = signingConfigs.getByName("debug")
       // Strip the shared object: the release APK ships optimised code, not symbol tables.
       ndk {
         debugSymbolLevel = "none"
