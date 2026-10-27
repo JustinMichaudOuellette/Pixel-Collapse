@@ -3,31 +3,22 @@ package ca.justinmo.wfcbitmap
 import net.akachaki.processing.engine.array.IntArray2D
 import net.akachaki.processing.engine.enum.Direction2d8
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.BitmapWaveFunctionCell
-import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictBitmapSolver
-import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictSolverPortfolio
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import kotlin.random.Random
 
 /**
- * Guards the ported wave-function-collapse pipeline at the level the app uses it: a drawing becomes a
- * tile set, which is then grown into a bitmap.
+ * Guards the part of the pipeline that runs before the search: a drawing becomes a tile set, and the
+ * fallback that is used when the drawing cannot tile.
  *
- * These run on the JVM (no Android or Compose types), so `:app:testDebugUnitTest` covers the part of
- * [WfcGenerator] that can silently break: tile extraction and the strict solver.
+ * The search itself is C now, so it cannot be exercised on the JVM; the solver-level tests (edge rule
+ * on a real tiling, unsatisfiable drawings, cancellation) live in
+ * `androidTest/.../NativeSolverTest.kt`, where `libwfc.so` is loadable.
  *
  * The model is the *overlapping, bordered* one. Windows are sampled as the drawing lies, so the ones
  * that hang over an edge carry `null`s, and the solver only accepts a tile at a border cell when it is
- * blank in the direction that leaves the grid. The consequence -- and the point of these tests -- is
- * that pixels drawn on the edge of the drawing can only be generated on the edge of the bitmap.
- *
- * That rule is also why some drawings cannot tile at all: the drawing's border has to run all the way
- * around a 76x135 grid. `frameDrawing` below is one that cannot, and the solve proves it by emptying a
- * domain during root propagation rather than by running out of time.
+ * blank in the direction that leaves the grid. The consequence these tests pin down is that pixels
+ * drawn on the edge of the drawing can only be generated on the edge of the bitmap.
  */
 class WfcEngineTest {
 
@@ -60,9 +51,7 @@ class WfcEngineTest {
     val pixels = IntArray(SOURCE_WIDTH * SOURCE_HEIGHT)
     for (y in 0 until SOURCE_HEIGHT) {
       for (x in 0 until SOURCE_WIDTH) {
-        val dx = x - 7
-        val dy = y - 5
-        val d = dx * dx + dy * dy
+        val d = (x - 7) * (x - 7) + (y - 5) * (y - 5)
         pixels[y * SOURCE_WIDTH + x] = when {
           d < 6 -> gold
           d < 16 -> rust
@@ -74,7 +63,7 @@ class WfcEngineTest {
     return pixels
   }
 
-  /** A little creature with a solid floor: also an every-edge-is-ink drawing. */
+  /** A little creature with a solid floor. */
   private fun spriteDrawing(): IntArray {
     val pixels = IntArray(SOURCE_WIDTH * SOURCE_HEIGHT) { ink }
     fun plot(x: Int, y: Int, color: Int) {
@@ -93,8 +82,8 @@ class WfcEngineTest {
 
   /**
    * A one-pixel frame around noise. Its vertical edge is 11 distinct colours with no repetition, so it
-   * cannot be stretched around 135 rows: this drawing has no tiling under the edge rule. Pinned so the
-   * app keeps falling back deliberately instead of hanging on it.
+   * cannot be stretched around 135 rows: this drawing has no tiling under the edge rule. The device
+   * test proves that; here it only supplies the fallback's worst case.
    */
   private fun frameDrawing(): IntArray {
     val pixels = IntArray(SOURCE_WIDTH * SOURCE_HEIGHT)
@@ -112,24 +101,7 @@ class WfcEngineTest {
   }
 
   private fun tiles(pixels: IntArray): List<BitmapWaveFunctionCell> =
-    // createCells mirrors the array it is given, so pass a copy exactly like WfcGenerator does.
     BitmapWaveFunctionCell.createCells(IntArray2D(SOURCE_WIDTH, SOURCE_HEIGHT, pixels.copyOf()))
-
-  private fun solve(
-    cells: List<BitmapWaveFunctionCell>,
-    budgetMs: Long = 30_000L,
-  ): Pair<IntArray?, PortfolioReport> {
-    val portfolio = StrictSolverPortfolio(cells, OUTPUT_COLUMNS, OUTPUT_ROWS, Direction2d8.entries)
-    val result = portfolio.solve(
-      seed = 1,
-      workers = 4,
-      deadlineNanos = System.nanoTime() + budgetMs * 1_000_000,
-      maxDecisions = 1_000_000,
-    )
-    return result.assignment to PortfolioReport(cells.size, result.millis, result.entries.map { it.decisions })
-  }
-
-  private data class PortfolioReport(val tiles: Int, val millis: Long, val decisions: List<Int>)
 
   // --- extraction ---------------------------------------------------------------------------
 
@@ -149,99 +121,40 @@ class WfcEngineTest {
   }
 
   @Test
-  fun flatDrawingCollapsesToItsEdgeVariants() {
+  fun flatDrawingYieldsTheNineBorderedWindows() {
     // One pixel value still yields nine bordered windows: the interior plus the four edges and four
     // corners, the latter carrying nulls outside the source. So "flat drawing" is not an error case.
     assertEquals(9, tiles(IntArray(SOURCE_WIDTH * SOURCE_HEIGHT) { ink }).size)
   }
 
-  // --- the edge rule ------------------------------------------------------------------------
+  // --- the edge rule, at the tile level -----------------------------------------------------
 
   /**
-   * The requirement, stated as a test: what is drawn on the edge of the pattern is generated on the
-   * edge of the bitmap.
+   * The rule the solver enforces, checked on the tile set itself: a pattern that is blank in a
+   * direction was sampled on that edge of the drawing, so its centre is that edge's pixel, while a
+   * complete pattern can only occupy an interior cell.
    */
   @Test
-  fun aDrawnBorderIsGeneratedOnTheBitmapBorder() {
+  fun edgePatternsAreBlankOutwardsAndInteriorPatternsAreComplete() {
     val cells = tiles(borderedMotifDrawing())
-    val (assignment, report) = solve(cells)
-    assertNotNull("no tiling: tiles=${report.tiles} decisions=${report.decisions}", assignment)
-    assignment!!
 
-    // Every border cell uses a pattern that is blank outwards, i.e. one sampled on that edge of the
-    // drawing -- so its centre is a drawn edge pixel.
-    for (x in 0 until OUTPUT_COLUMNS) {
-      assertBlankTowards(cells[assignment[x]], Direction2d8.UP, "top row x=$x")
-      assertBlankTowards(cells[assignment[(OUTPUT_ROWS - 1) * OUTPUT_COLUMNS + x]], Direction2d8.DOWN, "bottom row x=$x")
-    }
-    for (y in 0 until OUTPUT_ROWS) {
-      assertBlankTowards(cells[assignment[y * OUTPUT_COLUMNS]], Direction2d8.LEFT, "left column y=$y")
-      assertBlankTowards(
-        cells[assignment[y * OUTPUT_COLUMNS + OUTPUT_COLUMNS - 1]],
-        Direction2d8.RIGHT,
-        "right column y=$y",
-      )
-    }
+    // Every pattern sampled on the drawing's edge is blank towards it, and shows the drawn border
+    // colour at its centre.
+    val topEdge = cells.filter { it.kernelColor(Direction2d8.UP) == null }
+    assertTrue("expected patterns blank upwards", topEdge.isNotEmpty())
+    assertTrue(
+      "a pattern blank upwards was sampled on the drawing's top row, whose pixels are gold",
+      topEdge.all { it.color == gold },
+    )
 
-    // Concretely: the bitmap's whole outline is the gold the border was drawn with, while the inside
-    // is not gold-only, so this is a collapse and not a copy.
-    for (x in 0 until OUTPUT_COLUMNS) {
-      assertEquals("top row x=$x", gold, cells[assignment[x]].color)
-      assertEquals("bottom row x=$x", gold, cells[assignment[(OUTPUT_ROWS - 1) * OUTPUT_COLUMNS + x]].color)
-    }
-    for (y in 0 until OUTPUT_ROWS) {
-      assertEquals("left column y=$y", gold, cells[assignment[y * OUTPUT_COLUMNS]].color)
-      assertEquals("right column y=$y", gold, cells[assignment[y * OUTPUT_COLUMNS + OUTPUT_COLUMNS - 1]].color)
-    }
-    val inside = (1 until OUTPUT_ROWS - 1).flatMap { y ->
-      (1 until OUTPUT_COLUMNS - 1).map { x -> cells[assignment[y * OUTPUT_COLUMNS + x]].color }
-    }
-    assertTrue("the interior should not be a solid border colour", inside.any { it != gold })
-    assertEquals("every cell must satisfy its eight neighbours", 0, countViolations(assignment, cells))
-  }
+    // And the complete patterns are the interior ones (ink or the rust motif), never the border.
+    val complete = cells.filter { cell -> cell.kernel.all { it != null } }
+    assertTrue("expected complete patterns", complete.isNotEmpty())
+    assertTrue("complete patterns are interior windows, so none is drawn border gold", complete.none { it.color == gold })
 
-  /** No hole may appear inside the bitmap: only border cells may use a pattern that is blank anywhere. */
-  @Test
-  fun interiorCellsOnlyUseCompletePatterns() {
-    val cells = tiles(ringsDrawing())
-    val (assignment, report) = solve(cells)
-    assertNotNull("no tiling: tiles=${report.tiles} decisions=${report.decisions}", assignment)
-    assignment!!
-    for (y in 1 until OUTPUT_ROWS - 1) {
-      for (x in 1 until OUTPUT_COLUMNS - 1) {
-        val cell = cells[assignment[y * OUTPUT_COLUMNS + x]]
-        assertFalse(
-          "interior cell ($x,$y) used an edge pattern: ${cell.kernel}",
-          cell.kernel.any { it == null },
-        )
-      }
-    }
-    assertEquals(0, countViolations(assignment, cells))
-  }
-
-  /**
-   * The cost of the edge rule, pinned: a border that cannot repeat enough leaves no tiling at all.
-   *
-   * The solve has to *prove* this quickly (root propagation empties a domain) rather than burn the
-   * deadline, which is what the portfolio's early exit is for.
-   */
-  @Test
-  fun drawingWhoseEdgeCannotCloseHasNoTiling() {
-    val (assignment, report) = solve(tiles(frameDrawing()), budgetMs = 30_000L)
-    assertNull("frame drawing unexpectedly tiled (decisions=${report.decisions})", assignment)
-    assertTrue("an unsatisfiable instance should be rejected quickly, not timed out", report.millis < 10_000)
-    println("frameDrawing: no tiling in ${report.millis}ms, decisions=${report.decisions}")
-  }
-
-  @Test
-  fun aRepetitiveInteriorTilesCleanly() {
-    for ((name, drawing) in listOf("rings" to ringsDrawing(), "sprite" to spriteDrawing())) {
-      val cells = tiles(drawing)
-      val (assignment, report) = solve(cells)
-      assertNotNull("$name produced no tiling (decisions=${report.decisions})", assignment)
-      println("$name: ${cells.size} tiles, ${OUTPUT_COLUMNS}x$OUTPUT_ROWS in ${report.millis}ms")
-      assertEquals("$name: neighbour mismatches", 0, countViolations(assignment!!, cells))
-    }
+    // A direction is blank only where the drawing ends: the four corners are blank in two directions.
+    val corners = cells.filter { it.kernel.any { pixel -> pixel == null } && it.kernel.count { p -> p == null } >= 3 }
+    assertTrue("expected corner patterns to be blank in more than one direction", corners.isNotEmpty())
   }
 
   // --- the fallback -------------------------------------------------------------------------
@@ -301,91 +214,12 @@ class WfcEngineTest {
     }
   }
 
-  // --- cancellation -------------------------------------------------------------------------
-
-  /**
-   * A cancelled solve has to give up rather than run to its deadline. This is what the live preview
-   * depends on: every edit cancels the solve for the previous drawing.
-   */
   @Test
-  fun cancelledSolveGivesUpInsteadOfWaitingForItsDeadline() {
-    val cells = tiles(ringsDrawing())
-    val deadline = System.nanoTime() + 60_000_000_000L
-
-    val solverStartedAt = System.nanoTime()
-    val solverAssignment = StrictBitmapSolver(
-      cells,
-      OUTPUT_COLUMNS,
-      OUTPUT_ROWS,
-      Direction2d8.entries,
-      Random(1),
-    ) { true }.solve(deadline, Int.MAX_VALUE)
-    val solverMillis = (System.nanoTime() - solverStartedAt) / 1_000_000
-    assertNull("a cancelled solver must not return a tiling", solverAssignment)
-    assertTrue("cancelled solver took ${solverMillis}ms", solverMillis < 2_000)
-
-    val portfolioStartedAt = System.nanoTime()
-    val result = StrictSolverPortfolio(cells, OUTPUT_COLUMNS, OUTPUT_ROWS, Direction2d8.entries)
-      .solve(
-        seed = 1,
-        workers = 4,
-        deadlineNanos = deadline,
-        shouldAbort = { true },
-      )
-    val portfolioMillis = (System.nanoTime() - portfolioStartedAt) / 1_000_000
-    assertNull("a cancelled portfolio must not return a tiling", result.assignment)
-    assertTrue("cancelled portfolio took ${portfolioMillis}ms", portfolioMillis < 2_000)
-  }
-
-  /** The same tile set still solves when nothing cancels it, so the check above tests the abort path. */
-  @Test
-  fun theSameTileSetStillSolvesWithoutCancellation() {
-    val cells = tiles(ringsDrawing())
-    val result = StrictSolverPortfolio(cells, OUTPUT_COLUMNS, OUTPUT_ROWS, Direction2d8.entries)
-      .solve(
-        seed = 1,
-        workers = 4,
-        deadlineNanos = System.nanoTime() + 30_000_000_000L,
-        shouldAbort = { false },
-      )
-    assertNotNull("the unaborted solve should still find a tiling", result.assignment)
-    assertEquals(0, countViolations(result.assignment!!, cells))
-  }
-
-  // --- helpers ------------------------------------------------------------------------------
-
-  private fun assertBlankTowards(cell: BitmapWaveFunctionCell, direction: Direction2d8, where: String) {
-    assertNull("$where used a pattern that is not blank towards the edge", cell.kernelColor(direction))
-  }
-
-  /**
-   * Independent check of the strict rule: for every pair of adjacent cells, the pixel one kernel
-   * shows towards the other must be the other's centre colour, and vice versa.
-   */
-  private fun countViolations(
-    assignment: IntArray,
-    cells: List<BitmapWaveFunctionCell>,
-  ): Int {
-    var violations = 0
-    for (y in 0 until OUTPUT_ROWS) {
-      for (x in 0 until OUTPUT_COLUMNS) {
-        val here = cells[assignment[y * OUTPUT_COLUMNS + x]]
-        for (direction in Direction2d8.entries) {
-          val nx = x + direction.dx
-          val ny = y + direction.dy
-          if (nx < 0 || ny < 0 || nx >= OUTPUT_COLUMNS || ny >= OUTPUT_ROWS) {
-            continue
-          }
-          val there = cells[assignment[ny * OUTPUT_COLUMNS + nx]]
-          val edge = here.kernelColor(direction)
-          val backEdge = there.kernelColor(direction.opposite())
-          if (edge != there.color || backEdge != here.color) {
-            violations++
-          }
-        }
-      }
-    }
-    return violations
+  fun aDrawingWithAPeriodicBorderIsExportedAsATileSetWithEdges() {
+    // The sprite has a solid floor, so its border is one colour and it must still produce edge tiles.
+    val cells = tiles(spriteDrawing())
+    assertTrue(cells.size >= 4)
+    assertTrue(cells.any { cell -> cell.kernelColor(Direction2d8.DOWN) == null })
   }
 
   private companion object {

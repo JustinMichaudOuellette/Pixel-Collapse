@@ -8,7 +8,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import net.akachaki.processing.engine.array.IntArray2D
-import net.akachaki.processing.engine.enum.Direction2d8
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.BitmapWaveFunctionCell
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictSolverPortfolio
 
@@ -17,9 +16,8 @@ import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictSolverPo
  *
  * The drawing is the *source image*. Every distinct 3x3 window of it becomes a tile, and the windows
  * that hang over an edge carry no pixels there ([BitmapWaveFunctionCell.createCells]), so a tile can
- * be blank towards the outside. The
- * [StrictBitmapSolver][net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictBitmapSolver]
- * then fills a much larger grid with tiles that fit together in all eight directions, and because a
+ * be blank towards the outside. The native solver (app/src/main/cpp/wfc.c) then fills a much larger
+ * grid with tiles that fit together in all eight directions, and because a
  * border cell only accepts a tile blank in the direction that leaves the grid, **pixels drawn on the
  * edge of the drawing can only be generated on the edge of the bitmap**.
  *
@@ -72,8 +70,33 @@ object WfcGenerator {
   private const val TIMEOUT_NANOS = 8_000_000_000L
   private const val MAX_DECISIONS = 1_000_000
 
+  /** Longest the hedge may grow to; beyond this a long solve should have hedged much earlier. */
+  private const val MAX_HEDGE_MS = 400L
+
+  /** Shortest the hedge may shrink to, so a run of fast collapses never disables the portfolio. */
+  private const val MIN_HEDGE_MS = 40L
+
+  /** The hedge used until a solve has been measured: see [lastSolveMillis]. */
+  private const val FAST_SOLVER_HEDGE_MS = 60L
+
   /** Solvers to run in parallel; the portfolio only uses more than one when the first is slow. */
   private const val WORKERS = 4
+
+  /**
+   * How long the first worker runs alone before the portfolio spreads to the other cores, in ms.
+   *
+   * A fixed hedge cannot be right for both ends: the native solver collapses a simple drawing in under
+   * a millisecond, where starting three more workers is pure cost, and it can spend seconds on an
+   * unlucky seed, where not starting them is the cost. Worse, a hedge *shorter* than the solve time is
+   * actively harmful -- measured on a 76x135 grid, a drawing one worker collapses in 81 ms took 108 ms
+   * once three hedged workers were competing with it for the same cores. So the hedge follows the last
+   * solve: 1.5x what a single worker needed last time, clamped so one fast collapse cannot disable the
+   * portfolio and one slow collapse cannot stall it.
+   */
+  private var lastSolveMillis: Long = 0
+  private fun hedgeMillis(): Long =
+    if (lastSolveMillis <= 0) FAST_SOLVER_HEDGE_MS
+    else (lastSolveMillis * 3 / 2).coerceIn(MIN_HEDGE_MS, MAX_HEDGE_MS)
 
   /** The solver packs tile domains into 64-bit words and a 4-bit word index; this is its ceiling. */
   private const val MAX_TILES = 1024
@@ -130,26 +153,22 @@ object WfcGenerator {
       )
     }
     val startedAt = System.currentTimeMillis()
-    // The native solver is what runs on device; it packs the same tile set into a C model that every
-    // worker shares. Without the library (JVM tests, an ABI that was not built) the portfolio falls back
-    // to the Kotlin solver, so this is a speed-up and never a dependency.
-    val nativeModel = if (WfcNative.available) {
-      WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, columns, rows)
-    } else {
-      0L
+    // The native solver is the only solver: the tile set is packed into a C model that every worker
+    // shares. If the library is missing there is nothing to fall back to, so say so plainly instead of
+    // failing somewhere deeper.
+    if (!WfcNative.available) {
+      throw GenerationException("The native WFC solver is not available on this device.")
+    }
+    val nativeModel = WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, columns, rows)
+    if (nativeModel == 0L) {
+      throw GenerationException("The native WFC solver could not build a model for this drawing.")
     }
     val result = try {
       val portfolio = StrictSolverPortfolio(
-        cells,
-        columns,
-        rows,
-        Direction2d8.entries,
+        columns = columns,
+        rows = rows,
         solverFactory = { workerSeed, workerColumns, workerRows ->
-          if (nativeModel == 0L) {
-            null
-          } else {
-            NativeTileSolver(nativeModel, workerColumns, workerRows, workerSeed)
-          }
+          NativeTileSolver(nativeModel, workerColumns, workerRows, workerSeed)
         },
       )
       // Hand the caller's cancellation down to the search. Without this the solve would run to its

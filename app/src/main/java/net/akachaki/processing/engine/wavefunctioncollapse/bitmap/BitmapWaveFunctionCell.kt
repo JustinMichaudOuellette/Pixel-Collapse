@@ -1,261 +1,28 @@
 package net.akachaki.processing.engine.wavefunctioncollapse.bitmap
 
 import net.akachaki.processing.engine.array.IntArray2D
-import net.akachaki.processing.engine.color.ColorNamer
-import net.akachaki.processing.engine.enum.Direction2d
 import net.akachaki.processing.engine.enum.Direction2d8
-import net.akachaki.processing.engine.wavefunctioncollapse.WaveFunctionCell
-import net.akachaki.processing.engine.wavefunctioncollapse.WaveFunctionState
 
+/**
+ * One tile of the overlapping model: the 3x3 window of the drawing it was sampled from, where `null`
+ * means the drawing ends before that pixel.
+ *
+ * This is now only the *tile* side of the model -- sampling, weights, and the direction/colour lookup
+ * the native solver's packing needs. The search itself lives in C (`app/src/main/cpp/wfc.c`); there is
+ * no Kotlin solver any more.
+ */
 class BitmapWaveFunctionCell(
     val kernel: Array<Int?>,
     private val probability: Float,
-) : WaveFunctionCell<BitmapWaveFunctionCell> {
+) {
 
+    /** The pixel this tile shows, i.e. the centre of its window. */
     val color: Int = checkNotNull(kernel[4])
 
-    val id: Int = NEXT_ID++
-
-    /** Static weight of this kernel (how often it appears in the source image). */
+    /** Static weight: how often this window occurs in the drawing. */
     val weight: Float get() = probability
 
-    private val possibleColors: MutableSet<Int?> = mutableSetOf()
-
-    /** Scratch buffer for [banImpossibleNeighborCellsCount]: the colours allowed in one direction. */
-    private val allowedColors = IntArray(64)
-    private var allowedColorCount = 0
-
-    /**
-     * Weighted soft check: can this kernel sit at [state] given the *collapsed* neighbours?
-     * Only this direction is checked here because it drives the probabilities; the reverse direction
-     * is a hard constraint and is enforced by [canBePlaced] when a cell is actually chosen.
-     */
-    override fun probability(state: WaveFunctionState<BitmapWaveFunctionCell>): Float {
-        for (dy in -1 .. 1) {
-            for (dx in -1 .. 1) {
-                if (dx != 0 || dy != 0) {
-                    val kernelColor = kernel[(dy + 1) * 3 + dx + 1]
-                    val neighborState = state.neighborCell(dx, dy)
-                    if (neighborState == null) {
-                        if (kernelColor != null) {
-                            return 0f
-                        }
-                    } else {
-                        if (kernelColor == null) {
-                            return 0f
-                        }
-                        val neighborCell = neighborState.cell
-                        if (neighborCell != null) {
-                            val expectedColor = neighborCell.color
-                            if (expectedColor != kernelColor) {
-                                return 0f
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return probability
-    }
-
-    /**
-     * Number of neighbour constraints this kernel would violate at [state], checking all 8
-     * neighbours in both directions. Zero means the placement is legal.
-     *
-     * This kernel must want the neighbour's centre colour where the neighbour is, **and** the
-     * neighbour's kernel must want this cell's centre colour where this cell is. Skipping the second
-     * direction is what lets a lone pixel be placed that the already-collapsed neighbour does not
-     * accept, i.e. single pixels that do not belong to the source image.
-     */
-    override fun conflictsAt(state: WaveFunctionState<BitmapWaveFunctionCell>): Int {
-        var conflicts = 0
-        for (dy in -1 .. 1) {
-            for (dx in -1 .. 1) {
-                if (dx != 0 || dy != 0) {
-                    val kernelColor = kernel[(dy + 1) * 3 + dx + 1]
-                    val neighborState = state.neighborCell(dx, dy)
-                    if (neighborState == null) {
-                        // Outside the grid: the kernel must leave that position empty.
-                        if (kernelColor != null) {
-                            conflicts++
-                        }
-                        continue
-                    }
-                    // Inside the grid: the kernel must have a pixel there.
-                    if (kernelColor == null) {
-                        conflicts++
-                        continue
-                    }
-                    val neighborCell = neighborState.cell ?: continue
-                    // What this cell requires of the neighbour's centre colour...
-                    if (neighborCell.color != kernelColor) {
-                        conflicts++
-                    }
-                    // ...and what the neighbour's kernel requires of this cell's centre colour.
-                    if (neighborCell.kernel[(1 - dy) * 3 + (1 - dx)] != color) {
-                        conflicts++
-                    }
-                }
-            }
-        }
-        return conflicts
-    }
-
-    override fun matches(possibleCell: WaveFunctionState.PossibleCell<BitmapWaveFunctionCell>): Boolean {
-        return this.color == possibleCell.cell.color
-    }
-
-    override fun banImpossibleNeighborCell(
-        state: WaveFunctionState<BitmapWaveFunctionCell>,
-        direction: Direction2d,
-        neighbor: WaveFunctionState<BitmapWaveFunctionCell>
-    ): List<WaveFunctionState.PossibleCell<BitmapWaveFunctionCell>> {
-        possibleColors.clear()
-        for (i in 0 until state.possibleCells.size) {
-            val possibleCell = state.possibleCells[i]
-            if (!possibleCell.isBanned && possibleCell.cell.color == color && possibleCell.probability > 0f) {
-                possibleColors.add(possibleCell.cell.kernelColor(direction as Direction2d8))
-            }
-        }
-        val bannedCells = mutableListOf<WaveFunctionState.PossibleCell<BitmapWaveFunctionCell>>()
-        for (i in 0 until neighbor.possibleCells.size) {
-            val possibleCell = neighbor.possibleCells[i]
-            if (!possibleColors.contains(possibleCell.cell.color)) {
-                possibleCell.ban()
-                bannedCells.add(possibleCell)
-            }
-        }
-        return bannedCells
-    }
-
-    /**
-     * Domain-aware version of [banImpossibleNeighborCell], used by the localized-erasure strategy.
-     *
-     * A neighbouring cell can keep a cell if this state still allows its centre colour in the given
-     * direction. When this state is collapsed the kernel is fixed, so exactly one colour is allowed;
-     * while it is not collapsed every cell that could still be picked contributes its colour.
-     */
-    override fun banImpossibleNeighborCells(
-        state: WaveFunctionState<BitmapWaveFunctionCell>,
-        direction: Direction2d,
-        neighbor: WaveFunctionState<BitmapWaveFunctionCell>
-    ): List<WaveFunctionState.PossibleCell<BitmapWaveFunctionCell>> {
-        // Collapsed: keep the original single-cell contract so the propagation this strategy drives
-        // prunes exactly like the rest of the engine.
-        if (state.cell != null) {
-            return banImpossibleNeighborCell(state, direction, neighbor)
-        }
-        // Not collapsed: every cell that could still be picked contributes a colour.
-        val direction8 = direction as Direction2d8
-        val allowedColors = mutableSetOf<Int?>()
-        for (i in 0 until state.possibleCells.size) {
-            val possibleCell = state.possibleCells[i]
-            if (!possibleCell.isBanned && possibleCell.probability > 0f) {
-                allowedColors.add(possibleCell.cell.kernelColor(direction8))
-            }
-        }
-        val bannedCells = mutableListOf<WaveFunctionState.PossibleCell<BitmapWaveFunctionCell>>()
-        for (i in 0 until neighbor.possibleCells.size) {
-            val possibleCell = neighbor.possibleCells[i]
-            // Only report cells banned by this call, so callers can tell whether anything changed.
-            if (possibleCell.isBanned) {
-                continue
-            }
-            if (!allowedColors.contains(possibleCell.cell.color)) {
-                possibleCell.ban()
-                bannedCells.add(possibleCell)
-            }
-        }
-        return bannedCells
-    }
-
-    /**
-     * Allocation-free [banImpossibleNeighborCellsCount]: the propagation calls this for every
-     * (cell, direction) pair, so it must not build a list or a set.
-     *
-     * While the source state is not collapsed, the colours its remaining cells allow are collected in
-     * a small stack buffer (there are only a handful of colours per image); a cell whose centre colour
-     * is not among them is banned. The return value is the number of cells banned.
-     */
-    override fun banImpossibleNeighborCellsCount(
-        state: WaveFunctionState<BitmapWaveFunctionCell>,
-        direction: Direction2d,
-        neighbor: WaveFunctionState<BitmapWaveFunctionCell>,
-    ): Int {
-        val direction8 = direction as Direction2d8
-        allowedColorCount = 0
-        if (state.cell != null) {
-            // Collapsed: the same union as [banImpossibleNeighborCell] — only the cells that this
-            // kernel's colour covers contribute, and the kernel itself is fixed.
-            for (i in 0 until state.possibleCells.size) {
-                val possibleCell = state.possibleCells[i]
-                if (possibleCell.isBanned || possibleCell.cell.color != color) {
-                    continue
-                }
-                if (possibleCell.probability <= 0f) {
-                    continue
-                }
-                val kernelColor = possibleCell.cell.kernelColor(direction8) ?: continue
-                if (!isAllowedColor(kernelColor) && allowedColorCount < allowedColors.size) {
-                    allowedColors[allowedColorCount++] = kernelColor
-                }
-            }
-            var banned = 0
-            for (i in 0 until neighbor.possibleCells.size) {
-                val possibleCell = neighbor.possibleCells[i]
-                if (isAllowedColor(possibleCell.cell.color)) {
-                    continue
-                }
-                possibleCell.ban()
-                banned++
-            }
-            return banned
-        }
-        // Not collapsed: every cell that could still be picked contributes the colour it needs in
-        // this direction, and the neighbour keeps the cells whose centre colour is among them.
-        for (i in 0 until state.possibleCells.size) {
-            val possibleCell = state.possibleCells[i]
-            if (possibleCell.isBanned || possibleCell.probability <= 0f) {
-                continue
-            }
-            val kernelColor = possibleCell.cell.kernelColor(direction8) ?: continue
-            if (!isAllowedColor(kernelColor) && allowedColorCount < allowedColors.size) {
-                allowedColors[allowedColorCount++] = kernelColor
-            }
-        }
-        var banned = 0
-        for (i in 0 until neighbor.possibleCells.size) {
-            val possibleCell = neighbor.possibleCells[i]
-            if (possibleCell.isBanned || isAllowedColor(possibleCell.cell.color)) {
-                continue
-            }
-            possibleCell.ban()
-            banned++
-        }
-        return banned
-    }
-
-    private fun isAllowedColor(color: Int): Boolean {
-        for (i in 0 until allowedColorCount) {
-            if (allowedColors[i] == color) {
-                return true
-            }
-        }
-        return false
-    }
-
-    override fun cellShortDescription(): String {
-        return ColorNamer.closestColorName(color)
-    }
-
-    override fun cellFullDescription(): String {
-        return "id: %d \n%-15s %-15s %-15s\n%-15s %-15s %-15s\n%-15s %-15s %-15s\n".format(
-        id,
-            *kernel.map { color ->
-                ColorNamer.closestColorName(color)
-            }.toTypedArray())
-    }
-
+    /** The colour this kernel shows towards [direction], or null where the drawing ends. */
     fun kernelColor(direction: Direction2d8): Int? {
         val i = when (direction) {
             Direction2d8.LEFT -> 3
@@ -286,28 +53,25 @@ class BitmapWaveFunctionCell(
 
     companion object {
 
-        private var NEXT_ID = 1
-
         /**
          * Builds the tile set from every 3x3 window of the drawing, sampled as it lies: a window that
          * hangs over an edge of the drawing has no pixel there, and the kernel records that as `null`.
          *
          * Those blanks are what give a drawing an edge. A kernel is blank in a direction only where
-         * the drawing ends, so [StrictBitmapSolver] can require the output's border cells to be blank
-         * outwards, which is the same as requiring them to use a pattern sampled on the matching edge
-         * of the drawing -- and in turn means a pixel drawn on the edge of the drawing can only be
-         * generated on the edge of the bitmap.
+         * the drawing ends, so the solver requires border cells to be blank outwards, which is the same
+         * as requiring them to use a pattern sampled on the matching edge of the drawing -- and in turn
+         * means a pixel drawn on the edge of the drawing can only be generated on the edge of the
+         * bitmap.
          *
          * The drawing is **not** mirrored here, and that is deliberate. Mirroring the image would also
-         * mirror the borders, so a pattern sampled on the drawing's right edge would carry a
-         * "blank to the right" mask and land on the bitmap's *left* edge with the wrong colours: the
-         * edge would still be an edge, but not the one that was drawn. Every tile is exactly a window
-         * of the drawing, so a pixel stays on the edge it was put on.
+         * mirror the borders, so a pattern sampled on the drawing's right edge would carry a "blank to
+         * the right" mask and land on the bitmap's *left* edge with the wrong colours: the edge would
+         * still be an edge, but not the one that was drawn. Every tile is exactly a window of the
+         * drawing, so a pixel stays on the edge it was put on.
          *
          * Note the trade this makes. Because the drawing's edge must then close around the output, a
          * border that cannot repeat enough has *no* tiling at all, which is a real possibility and the
-         * reason [net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictSolverPortfolio]
-         * returns early when every worker gives up.
+         * reason [StrictSolverPortfolio] returns early when every worker gives up.
          */
         fun createCells(
             pixels: IntArray2D,

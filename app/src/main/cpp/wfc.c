@@ -52,6 +52,17 @@ struct wfc_model {
 
   uint64_t *domain_by_present; /* [present * word_count + word] */
   int *size_by_present;
+
+  /*
+   * Arc seeding support. A cell's starting domain depends only on its own present-mask, so cells fall
+   * into at most a handful of classes (nine for a bordered tile set). This table says, for a pair of
+   * those classes and a direction, whether the two full domains already support each other: when they
+   * do, the arc cannot prune anything at initialisation and need not be queued.
+   */
+  int class_of_mask[256];
+  int class_count;
+  unsigned char *class_masks;      /* [class] present-mask of that class */
+  unsigned char *class_consistent; /* [(class * class_count + class) * WFC_DIRS + direction] */
 };
 
 typedef struct {
@@ -177,8 +188,9 @@ wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int
 
   m->domain_by_present = calloc(256 * (size_t)m->word_count, sizeof(uint64_t));
   m->size_by_present = calloc(256, sizeof(int));
+  m->class_masks = calloc(256, sizeof(unsigned char));
   if (m->tiles == NULL || m->present == NULL || m->step_offset == NULL || m->compat == NULL ||
-      m->domain_by_present == NULL || m->size_by_present == NULL) {
+      m->domain_by_present == NULL || m->size_by_present == NULL || m->class_masks == NULL) {
     wfc_model_destroy(m);
     return NULL;
   }
@@ -246,6 +258,53 @@ wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int
     }
     m->size_by_present[p] = count;
   }
+
+  /*
+   * Build the arc-seeding table. A cell's starting domain depends only on its present-mask, so cells
+   * fall into a handful of classes; two full domains that already support each other in a direction
+   * cannot prune anything at initialisation, and queueing those arcs was most of the setup cost of a
+   * small collapse (~82,000 arcs on a 76x135 grid, almost all of them no-ops).
+   *
+   * Only the *initial* arcs are skipped: once a domain shrinks, the neighbour-enqueue in revise() puts
+   * the affected arcs back on the worklist, so nothing that can prune is ever missed.
+   */
+  m->class_count = 0;
+  for (int p = 0; p < 256; p++) m->class_of_mask[p] = -1;
+  for (int v = 0; v < m->variable_count; v++) {
+    int p = m->present[v];
+    if (m->class_of_mask[p] >= 0) continue;
+    m->class_of_mask[p] = m->class_count;
+    m->class_masks[m->class_count] = (unsigned char)p;
+    m->class_count++;
+  }
+  size_t classes = (size_t)m->class_count;
+  m->class_consistent = calloc(classes * classes * WFC_DIRS, sizeof(unsigned char));
+  if (m->class_consistent == NULL) return NULL;
+  for (int cv = 0; cv < m->class_count; cv++) {
+    for (int cn = 0; cn < m->class_count; cn++) {
+      int mask_v = m->class_masks[cv];
+      int mask_n = m->class_masks[cn];
+      const uint64_t *domain_v = m->domain_by_present + (size_t)mask_v * m->word_count;
+      const uint64_t *domain_n = m->domain_by_present + (size_t)mask_n * m->word_count;
+      for (int d = 0; d < WFC_DIRS; d++) {
+        int consistent = 1;
+        for (int tile = 0; tile < tile_count && consistent; tile++) {
+          if ((domain_v[tile >> 6] & (1ull << (tile & 63))) == 0) continue;
+          const uint64_t *row = m->compat + (size_t)(d * tile_count + tile) * m->word_count;
+          int supported = 0;
+          for (int k = 0; k < m->word_count; k++) {
+            if ((row[k] & domain_n[k]) != 0) {
+              supported = 1;
+              break;
+            }
+          }
+          if (!supported) consistent = 0;
+        }
+        m->class_consistent[((size_t)cv * m->class_count + cn) * WFC_DIRS + d] =
+          (unsigned char)consistent;
+      }
+    }
+  }
   return m;
 }
 
@@ -258,6 +317,8 @@ void wfc_model_destroy(wfc_model *model) {
 
   free(model->domain_by_present);
   free(model->size_by_present);
+  free(model->class_masks);
+  free(model->class_consistent);
   free(model);
 }
 
@@ -845,16 +906,26 @@ static int initialise_domains(wfc_solver *s) {
 }
 
 /*
- * Seeds the worklist with every arc. The edge rule makes the starting domains differ per cell type
- * (a border cell's domain is the patterns sampled on that edge), so the initial propagation is real
- * work -- it is what proves "this drawing has no tiling at all" -- and skipping arcs between
- * "full" domains is not sound here: full means full for that cell's mask, not for the whole tile set.
+ * Seeds the worklist with the arcs that can actually prune.
+ *
+ * The edge rule makes the starting domains differ per cell type, so "the full domain" means full for
+ * that cell's present-mask, not the whole tile set -- which is why an earlier attempt at skipping
+ * "full to full" arcs was wrong. The model precomputes the real question instead: for this pair of
+ * domain classes and this direction, does every tile of the first domain already have a supporter in
+ * the second? If it does, revise() cannot remove anything, now or until some neighbour shrinks -- and
+ * when that happens, revise() enqueues the arc itself.
  */
-static void enqueue_all(wfc_solver *s) {
+static void enqueue_seed_arcs(wfc_solver *s) {
   const wfc_model *m = s->model;
   for (int v = 0; v < m->variable_count; v++) {
+    int class_v = m->class_of_mask[m->present[v]];
     for (int d = 0; d < WFC_DIRS; d++) {
-      if (((m->present[v] >> d) & 1) != 0) enqueue(s, v, d);
+      if (((m->present[v] >> d) & 1) == 0) continue;
+      int neighbour = v + m->step_offset[d];
+      int class_n = m->class_of_mask[m->present[neighbour]];
+      if (m->class_consistent[((size_t)class_v * m->class_count + class_n) * WFC_DIRS + d] == 0) {
+        enqueue(s, v, d);
+      }
     }
   }
 }
@@ -916,7 +987,7 @@ int wfc_solver_solve(wfc_solver *s, const wfc_model *model, uint32_t seed, int64
 
   int64_t phase_started = now_nanos();
   if (!initialise_domains(s)) return 0;
-  enqueue_all(s);
+  enqueue_seed_arcs(s);
   s->setup_nanos = now_nanos() - phase_started;
   if (s->abort_flag != 0) return 0;
 
