@@ -38,22 +38,26 @@ import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictSolverPo
 object WfcGenerator {
 
   /**
-   * Output bitmap geometry: 9:16, 270 pixels tall.
+   * Output bitmap geometry: 9:16, 540 pixels tall.
    *
-   * A 9:16 image 270 pixels tall is 151.875 wide, so 152 is the closest integer width -- off by one
-   * eighth of a pixel, i.e. 0.08%. Nothing an image format can express closer than that.
+   * A 9:16 image 540 pixels tall is 303.75 wide, so 304 is the closest integer width -- off by one
+   * eighth of a pixel, i.e. 0.08%, exactly as it was at 152x270. Doubling the height keeps the same
+   * aspect and the same fractional error; nothing an image format can express closer than that.
    */
-  const val BITMAP_WIDTH = 152
-  const val BITMAP_HEIGHT = 270
+  const val BITMAP_WIDTH = 304
+  const val BITMAP_HEIGHT = 540
 
   /**
-   * Pixels per generated cell: the bitmap is an integer nearest-neighbour upscale of the pattern, so
-   * cells stay square and their edges land on pixel boundaries.
+   * Pixels per synthesized cell.
    *
-   * This is 2 rather than 1 because the cell grid is what the solver actually has to fill. At one
-   * pixel per cell that is 152x270 = 41,040 cells, and the strict search does not finish that (it ran
-   * the whole 20 s budget on two of four probe drawings); at 76x135 it solves in 0.1-0.6 s. The
-   * bitmap keeps the requested 152x270 either way.
+   * This is what sets the *size of the pattern's pixels on screen*: the image is [BITMAP_WIDTH] x
+   * [BITMAP_HEIGHT] and the grid is that divided by this, so halving it doubles the number of cells and
+   * therefore draws each synthesized pixel at half the size. The image size itself does not change.
+   *
+   * It is 2, i.e. 152x270 = 41,040 cells. That is four times the cell count of the previous 76x135
+   * grid, so the search has four times the work and four times the memory; see the note on
+   * [TIMEOUT_NANOS] for what that does to the worst case. One pixel per cell (304x540 cells) was not
+   * viable in earlier probes.
    */
   const val PIXELS_PER_CELL = 2
 
@@ -137,14 +141,13 @@ object WfcGenerator {
    */
   data class Output(
     /**
-     * The picture at cell resolution ([columns] x [rows]), which is what the preview draws.
+     * The generated image: [columns] x [rows] cells expanded to [BITMAP_WIDTH] x [BITMAP_HEIGHT] pixels,
+     * i.e. a [PIXELS_PER_CELL] square per cell.
      *
-     * The generated image is an integer upscale of exactly this, so uploading the small one and letting
-     * the compositor scale it with nearest neighbour shows the same pixels for a quarter of the texture
-     * upload (41 KB instead of 164 KB per update).
+     * This is the image the app hands to the preview and the one a caller would save; there is no
+     * separately-scaled copy.
      */
-    val display: Bitmap,
-    private val publish: () -> Bitmap,
+    val bitmap: Bitmap,
     val columns: Int,
     val rows: Int,
     val tileCount: Int,
@@ -161,18 +164,8 @@ object WfcGenerator {
     /** Time spent sampling the tile set and building the native model, in milliseconds. */
     val extractMillis: Long = 0,
   ) {
-    /**
-     * The generated bitmap at the published size ([BITMAP_WIDTH] x [BITMAP_HEIGHT]).
-     *
-     * Expanded on first use from [display] with nearest neighbour, which is exact: the published bitmap
-     * is [PIXELS_PER_CELL] times the cell grid in both directions. Nothing in the live path reads this,
-     * so a generation that is only displayed pays nothing for it; a caller that wants the full-size
-     * image (saving, or a test) gets it and pays once.
-     */
-    val bitmap: Bitmap by lazy(LazyThreadSafetyMode.PUBLICATION) { publish() }
-
-    /** What the preview draws: the cell-resolution bitmap. */
-    val image: ImageBitmap by lazy(LazyThreadSafetyMode.PUBLICATION) { display.asImageBitmap() }
+    /** What the preview draws: the generated image itself. */
+    val image: ImageBitmap by lazy(LazyThreadSafetyMode.PUBLICATION) { bitmap.asImageBitmap() }
   }
 
   /**
@@ -275,7 +268,7 @@ object WfcGenerator {
     // drawing.
     val renderStartedAt = System.nanoTime()
     val target = synchronized(cacheLock) { renderTarget(columns, rows) }
-    val display = if (assignment != null) {
+    val bitmap = if (assignment != null) {
       target.renderSolved(assignment, sources, centers, columns, rows)
     } else {
       target.renderColours(
@@ -286,8 +279,7 @@ object WfcGenerator {
     }
     val renderMillis = (System.nanoTime() - renderStartedAt) / 1_000_000
     val output = Output(
-      display = display,
-      publish = { Bitmap.createScaledBitmap(display, BITMAP_WIDTH, BITMAP_HEIGHT, false) },
+      bitmap = bitmap,
       columns = columns,
       rows = rows,
       tileCount = tileCount,
@@ -337,18 +329,19 @@ object WfcGenerator {
   /**
    * Two reusable bitmaps and one reusable pixel buffer, so a collapse stops allocating pixels.
    *
-   * Each generation used to allocate a 164 KB `IntArray`, copy it into a fresh 164 KB `Bitmap` and drop
-   * both -- 328 KB of garbage per keystroke, plus the extra copy. Both now live here. The two bitmaps
-   * alternate because the preview may still be drawing the previous frame while the next one is being
-   * written: the one on screen is never the one being filled in.
+   * Each generation used to allocate a 656 KB `IntArray`, copy it into a fresh `Bitmap` and drop both;
+   * both now live here. The two bitmaps alternate because the preview may still be drawing the previous
+   * frame while the next one is being written: the one on screen is never the one being filled in.
    *
-   * The bitmaps are at *cell* resolution ([columns] x [rows]). The published image is an integer upscale
-   * of exactly this, so the preview scales it up with nearest neighbour in the compositor instead: same
-   * pixels on screen, a quarter of the texture upload, and a quarter of the writing here.
+   * Each cell is drawn as a [PIXELS_PER_CELL] square, so the bitmaps are exactly
+   * [BITMAP_WIDTH] x [BITMAP_HEIGHT] and are the generated image the app hands out.
    */
   private class RenderTarget(val columns: Int, val rows: Int) {
-    private val bitmaps = Array(2) { Bitmap.createBitmap(columns, rows, Bitmap.Config.ARGB_8888) }
-    private val pixels = IntArray(columns * rows)
+    private val scale = PIXELS_PER_CELL
+    private val width = columns * scale
+    private val height = rows * scale
+    private val bitmaps = Array(2) { Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888) }
+    private val pixels = IntArray(width * height)
     private var next = 0
 
     /**
@@ -367,7 +360,8 @@ object WfcGenerator {
       for (y in 0 until rows) {
         val rowBase = y * columns
         for (x in 0 until columns) {
-          pixels[rowBase + x] = centres[sources[assignment[rowBase + x]]]
+          val colour = centres[sources[assignment[rowBase + x]]]
+          fill(x, y, colour)
         }
       }
       return publish()
@@ -375,15 +369,30 @@ object WfcGenerator {
 
     /** Draws a ready-made grid of cell colours, e.g. the stretched fallback. */
     fun renderColours(cellColours: IntArray, columns: Int, rows: Int): Bitmap {
-      cellColours.copyInto(pixels, 0, 0, columns * rows)
+      for (y in 0 until rows) {
+        val rowBase = y * columns
+        for (x in 0 until columns) {
+          fill(x, y, cellColours[rowBase + x])
+        }
+      }
       return publish()
+    }
+
+    /** Expands one cell to a [scale] square of one colour, keeping every cell edge pixel-aligned. */
+    private fun fill(x: Int, y: Int, colour: Int) {
+      val pixelX = x * scale
+      val rowBase = y * scale * width
+      for (dy in 0 until scale) {
+        val base = rowBase + dy * width + pixelX
+        for (dx in 0 until scale) pixels[base + dx] = colour
+      }
     }
 
     /** Copies the filled buffer into the next bitmap: the one on screen is never written. */
     private fun publish(): Bitmap {
       val bitmap = bitmaps[next]
       next = (next + 1) % bitmaps.size
-      bitmap.setPixels(pixels, 0, columns, 0, 0, columns, rows)
+      bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
       return bitmap
     }
   }

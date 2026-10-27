@@ -155,7 +155,7 @@ class NativeSolverBenchmarkTest {
   private companion object {
     const val SOURCE_WIDTH = 16
     const val SOURCE_HEIGHT = 11
-    const val OUTPUT_COLUMNS = 76
-    const val OUTPUT_ROWS = 135
+    const val OUTPUT_COLUMNS = 152
+    const val OUTPUT_ROWS = 270
   }
 }

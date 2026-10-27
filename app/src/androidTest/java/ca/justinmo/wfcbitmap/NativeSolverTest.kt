@@ -400,39 +400,41 @@ class NativeSolverTest {
   }
 
   /**
-   * The live path draws [WfcGenerator.Output.display] (cell resolution) and publishes [Output.bitmap] at
-   * the 152x270 size lazily. Both must show the same picture, and the published one must be an exact
-   * nearest-neighbour upscale -- the preview relies on being able to scale the small one instead.
+   * The generated image is the full [WfcGenerator.BITMAP_WIDTH] x [WfcGenerator.BITMAP_HEIGHT], built
+   * from a grid of [WfcGenerator.PIXELS_PER_CELL] squares: one cell is one square, so the number of
+   * synthesized pixels is what sets how large they look.
    */
   @Test
-  fun generationPublishesTheFullSizeBitmapFromTheCellSizedDisplay() = runBlocking {
+  fun generationPublishesAtTheFullSizeWithOneSquarePerSynthesizedPixel() = runBlocking {
     val output = WfcGenerator.generate(
       borderedDrawing(),
       SOURCE_WIDTH,
       SOURCE_HEIGHT,
       seed = 1,
     )
-    assertEquals("the display bitmap is the cell grid", OUTPUT_COLUMNS, output.display.width)
-    assertEquals(OUTPUT_ROWS, output.display.height)
+    val image = output.bitmap
+    assertEquals(WfcGenerator.BITMAP_WIDTH, image.width)
+    assertEquals(WfcGenerator.BITMAP_HEIGHT, image.height)
+    assertEquals(
+      "the grid is the image divided by the square size",
+      WfcGenerator.BITMAP_WIDTH / WfcGenerator.PIXELS_PER_CELL,
+      WfcGenerator.DEFAULT_COLUMNS,
+    )
 
-    val full = output.bitmap
-    assertEquals(WfcGenerator.BITMAP_WIDTH, full.width)
-    assertEquals(WfcGenerator.BITMAP_HEIGHT, full.height)
-
-    // Nearest neighbour by exactly 2: every 2x2 block of the published bitmap is one colour, and it is
-    // the colour the display bitmap has at the same cell.
-    val block = IntArray(4)
-    val cell = IntArray(1)
-    for (y in 0 until OUTPUT_ROWS step 13) {
-      for (x in 0 until OUTPUT_COLUMNS step 11) {
-        full.getPixels(block, 0, 2, x * 2, y * 2, 2, 2)
-        output.display.getPixels(cell, 0, 1, x, y, 1, 1)
-        assertEquals("block at ($x,$y) is not uniform", block[0], block[1])
-        assertEquals("block at ($x,$y) is not uniform", block[0], block[2])
-        assertEquals("block at ($x,$y) is not uniform", block[0], block[3])
-        assertEquals("block at ($x,$y) does not match the cell", cell[0], block[0])
+    // Each cell is a solid square of one colour.
+    val scale = WfcGenerator.PIXELS_PER_CELL
+    val block = IntArray(scale * scale)
+    val colours = HashSet<Int>()
+    for (y in 0 until WfcGenerator.DEFAULT_ROWS step 13) {
+      for (x in 0 until WfcGenerator.DEFAULT_COLUMNS step 11) {
+        image.getPixels(block, 0, scale, x * scale, y * scale, scale, scale)
+        for (index in block.indices) {
+          assertEquals("cell ($x,$y) is not uniform", block[0], block[index])
+        }
+        colours.add(block[0])
       }
     }
+    assertTrue("expected the sampled cells to cover some colours", colours.size > 1)
   }
 
   /**
@@ -451,7 +453,7 @@ class NativeSolverTest {
     edited[5 * SOURCE_WIDTH + 5] = green
     val changed = WfcGenerator.generate(edited, SOURCE_WIDTH, SOURCE_HEIGHT, seed = 1)
     assertFalse("a new pattern must produce a new output", first === changed)
-    assertEquals(OUTPUT_COLUMNS, changed.display.width)
+    assertEquals(WfcGenerator.BITMAP_WIDTH, changed.bitmap.width)
   }
 
   // --- helpers ------------------------------------------------------------------------------

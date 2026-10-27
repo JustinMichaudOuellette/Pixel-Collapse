@@ -95,8 +95,17 @@ struct wfc_solver {
    */
   uint64_t *size_bits;
   int bitset_words;
-  int largest_size;
   int smallest;
+
+  /*
+   * What the buffers are actually sized for. Compared on every bind: comparing the model *pointer* is
+   * not enough, because a freed model can be reallocated at the same address and a stale binding then
+   * looks current -- which is how a pooled solver ended up clearing a result buffer sized for a
+   * 76x135 grid with the variable count of a 152x270 one.
+   */
+  int bound_variables;
+  int bound_words;
+  int bound_tiles;
 
   /* Capacities of the buffers above, so a pooled solver only grows them when a model needs more room. */
   int capacity_variables;
@@ -438,7 +447,18 @@ wfc_solver *wfc_solver_create(void) {
  * per keystroke was a measurable slice of a small solve.
  */
 static int bind_model(wfc_solver *s, const wfc_model *m) {
-  if (s->model == m) return 1;
+  if (s->model == m && s->bound_variables == m->variable_count &&
+      s->bound_words == m->word_count && s->bound_tiles == m->tile_count) {
+    return 1;
+  }
+  /*
+   * The size bitsets are one row per domain size and one *bit per variable*, so their row width follows
+   * the grid. Growing the grid therefore invalidates them even when the tile count is unchanged -- a
+   * pooled solver that ran a 76x135 grid and is then handed a 152x270 one would otherwise write past a
+   * buffer sized for a quarter of the bits, which is a heap corruption that only shows up as a crash in
+   * a worker thread. Both shapes are tracked: rows (tile count) and width (variable count).
+   */
+  int bitset_grew = s->bitset_words != ((m->variable_count + 63) >> 6);
   if (s->capacity_variables < m->variable_count || s->capacity_words < m->word_count) {
     size_t vars = (size_t)m->variable_count;
     uint64_t *domains = realloc(s->domains, vars * m->word_count * sizeof(uint64_t));
@@ -453,12 +473,18 @@ static int bind_model(wfc_solver *s, const wfc_model *m) {
     int32_t *assignment = realloc(s->assignment, vars * sizeof(int32_t));
     if (assignment == NULL) return 0;
     s->assignment = assignment;
-    s->bitset_words = (m->variable_count + 63) >> 6;
+    s->bitset_words = (int)((m->variable_count + 63) >> 6);
+    bitset_grew = 1;
     s->capacity_variables = m->variable_count;
     s->capacity_words = m->word_count;
   }
-  if (s->capacity_tiles < m->tile_count || s->size_bits == NULL) {
-    size_t rows = (size_t)(m->tile_count + 1);
+  if (s->capacity_tiles < m->tile_count || s->size_bits == NULL || bitset_grew) {
+    /*
+     * Sized for the larger of the two: a buffer that shrank on a model with fewer tiles would then be
+     * written past by the next solve, which clears rows up to the largest domain size it has seen. Rows
+     * are one per domain size, so capacity_tiles is the number of rows minus one.
+     */
+    size_t rows = (size_t)(m->tile_count > s->capacity_tiles ? m->tile_count : s->capacity_tiles) + 1;
     size_t words = rows * s->bitset_words;
     uint64_t *bits = realloc(s->size_bits, words * sizeof(uint64_t));
     if (bits == NULL) return 0;
@@ -466,15 +492,18 @@ static int bind_model(wfc_solver *s, const wfc_model *m) {
     /*
      * realloc does not zero, and rows the *first* solve never writes would otherwise hold whatever the
      * allocator left there -- which select_variable happily reads as candidate bits. Clearing here (on
-     * allocation only, which is rare) is what lets the per-solve clear stay bounded by largest_size.
+     * allocation only, which is rare) keeps the per-solve clear from seeing allocator leftovers.
      */
     memset(s->size_bits, 0, words * sizeof(uint64_t));
     double *keys = realloc(s->keys_scratch, (size_t)m->tile_count * sizeof(double));
     if (keys == NULL) return 0;
     s->keys_scratch = keys;
-    s->capacity_tiles = m->tile_count;
+    s->capacity_tiles = (int)rows - 1;
   }
   s->model = m;
+  s->bound_variables = m->variable_count;
+  s->bound_words = m->word_count;
+  s->bound_tiles = m->tile_count;
   return 1;
 }
 
@@ -1013,13 +1042,14 @@ static int search(wfc_solver *s, int64_t deadline_nanos, int max_decisions) {
 static int initialise_domains(wfc_solver *s) {
   const wfc_model *m = s->model;
   /*
-   * Clear the size bitsets up to the largest size any solve has used. Sizes never grow during a solve,
-   * so rows above that can never hold a stale bit.
+   * Clear every bitset row the buffer has, not just the rows up to the previous solve's largest domain
+   * size: a model with fewer tiles than the last one would otherwise leave rows that this solve never
+   * writes and select_variable still reads. The whole buffer is a few hundred KB at 152x270, so clearing
+   * it is tens of microseconds.
    */
-  memset(s->size_bits, 0, sizeof(uint64_t) * (size_t)(s->largest_size + 1) * s->bitset_words);
+  memset(s->size_bits, 0, sizeof(uint64_t) * (size_t)(s->capacity_tiles + 1) * s->bitset_words);
   memset(s->in_queue, 0, sizeof(uint64_t) * (((size_t)m->variable_count * WFC_DIRS + 63) / 64));
   s->smallest = m->tile_count + 1;
-  s->largest_size = 0;
   for (int v = 0; v < m->variable_count; v++) {
     int present = m->present[v];
     int size = m->size_by_present[present];
@@ -1034,7 +1064,6 @@ static int initialise_domains(wfc_solver *s) {
     memcpy(&s->domains[base], row, sizeof(uint64_t) * (size_t)m->word_count);
     s->size[v] = size;
     if (size == 0) return 0; /* nothing fits this cell: no tiling exists */
-    if (size > s->largest_size) s->largest_size = size;
     set_size_bit(s, v, size, 1);
   }
   if (s->smallest > m->tile_count) s->smallest = 2;
@@ -1092,8 +1121,8 @@ void wfc_solver_finish(wfc_solver *s) {
    * no gain. The invariant is "every buffer is written before it is read inside a solve"; the result is
    * the only thing that outlives a solve, so that is what the handoff resets.
    */
-  if (s->model != NULL && s->assignment != NULL) {
-    memset(s->assignment, 0, sizeof(int32_t) * (size_t)s->model->variable_count);
+  if (s->assignment != NULL && s->bound_variables > 0) {
+    memset(s->assignment, 0, sizeof(int32_t) * (size_t)s->bound_variables);
   }
   free_frames(s);
   s->trail_size = 0;
