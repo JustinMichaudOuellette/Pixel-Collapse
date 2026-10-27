@@ -115,11 +115,9 @@ object WfcGenerator {
   private var targets: RenderTarget? = null
 
   private fun renderTarget(columns: Int, rows: Int): RenderTarget {
-    val width = columns * PIXELS_PER_CELL
-    val height = rows * PIXELS_PER_CELL
     val existing = targets
-    if (existing != null && existing.width == width && existing.height == height) return existing
-    return RenderTarget(width, height).also { targets = it }
+    if (existing != null && existing.columns == columns && existing.rows == rows) return existing
+    return RenderTarget(columns, rows).also { targets = it }
   }
   private fun hedgeMillis(): Long =
     if (lastSolveMillis <= 0) FAST_SOLVER_HEDGE_MS
@@ -138,7 +136,15 @@ object WfcGenerator {
    * nothing to carry once the solve has produced it.
    */
   data class Output(
-    val bitmap: Bitmap,
+    /**
+     * The picture at cell resolution ([columns] x [rows]), which is what the preview draws.
+     *
+     * The generated image is an integer upscale of exactly this, so uploading the small one and letting
+     * the compositor scale it with nearest neighbour shows the same pixels for a quarter of the texture
+     * upload (41 KB instead of 164 KB per update).
+     */
+    val display: Bitmap,
+    private val publish: () -> Bitmap,
     val columns: Int,
     val rows: Int,
     val tileCount: Int,
@@ -152,8 +158,21 @@ object WfcGenerator {
     val renderMillis: Long = 0,
     /** Time the solver portfolio reported for itself, in milliseconds. */
     val solveMillis: Long = 0,
+    /** Time spent sampling the tile set and building the native model, in milliseconds. */
+    val extractMillis: Long = 0,
   ) {
-    val image: ImageBitmap = bitmap.asImageBitmap()
+    /**
+     * The generated bitmap at the published size ([BITMAP_WIDTH] x [BITMAP_HEIGHT]).
+     *
+     * Expanded on first use from [display] with nearest neighbour, which is exact: the published bitmap
+     * is [PIXELS_PER_CELL] times the cell grid in both directions. Nothing in the live path reads this,
+     * so a generation that is only displayed pays nothing for it; a caller that wants the full-size
+     * image (saving, or a test) gets it and pays once.
+     */
+    val bitmap: Bitmap by lazy(LazyThreadSafetyMode.PUBLICATION) { publish() }
+
+    /** What the preview draws: the cell-resolution bitmap. */
+    val image: ImageBitmap by lazy(LazyThreadSafetyMode.PUBLICATION) { display.asImageBitmap() }
   }
 
   /**
@@ -181,6 +200,7 @@ object WfcGenerator {
      * guarded, because a cancelled generation can still be inside its extraction when the next starts.
      */
     val packed: IntArray
+    val extractStartedAt = System.nanoTime()
     synchronized(cacheLock) {
       val sampled = tally.sample(source)
       if (sampled.isEmpty()) {
@@ -200,6 +220,7 @@ object WfcGenerator {
         return@withContext reusable
       }
     }
+    val extractNanos = System.nanoTime() - extractStartedAt
     val startedAt = System.currentTimeMillis()
     // The native solver is the only solver: the tile set is packed into a C model that every worker
     // shares. If the library is missing there is nothing to fall back to, so say so plainly instead of
@@ -254,7 +275,7 @@ object WfcGenerator {
     // drawing.
     val renderStartedAt = System.nanoTime()
     val target = synchronized(cacheLock) { renderTarget(columns, rows) }
-    val bitmap = if (assignment != null) {
+    val display = if (assignment != null) {
       target.renderSolved(assignment, sources, centers, columns, rows)
     } else {
       target.renderColours(
@@ -265,7 +286,8 @@ object WfcGenerator {
     }
     val renderMillis = (System.nanoTime() - renderStartedAt) / 1_000_000
     val output = Output(
-      bitmap = bitmap,
+      display = display,
+      publish = { Bitmap.createScaledBitmap(display, BITMAP_WIDTH, BITMAP_HEIGHT, false) },
       columns = columns,
       rows = rows,
       tileCount = tileCount,
@@ -276,6 +298,7 @@ object WfcGenerator {
       usedFallback = usedFallback,
       renderMillis = renderMillis,
       solveMillis = result.millis,
+      extractMillis = extractNanos / 1_000_000,
     )
     synchronized(cacheLock) {
       cachedPacked = packed
@@ -319,13 +342,13 @@ object WfcGenerator {
    * alternate because the preview may still be drawing the previous frame while the next one is being
    * written: the one on screen is never the one being filled in.
    *
-   * Expands one cell to [PIXELS_PER_CELL]^2 pixels: an integer scale keeps every cell a flat block of
-   * one colour, which is what makes the generated image look like the drawing's pixels rather than a
-   * blur of them.
+   * The bitmaps are at *cell* resolution ([columns] x [rows]). The published image is an integer upscale
+   * of exactly this, so the preview scales it up with nearest neighbour in the compositor instead: same
+   * pixels on screen, a quarter of the texture upload, and a quarter of the writing here.
    */
-  private class RenderTarget(val width: Int, val height: Int) {
-    private val bitmaps = Array(2) { Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888) }
-    private val pixels = IntArray(width * height)
+  private class RenderTarget(val columns: Int, val rows: Int) {
+    private val bitmaps = Array(2) { Bitmap.createBitmap(columns, rows, Bitmap.Config.ARGB_8888) }
+    private val pixels = IntArray(columns * rows)
     private var next = 0
 
     /**
@@ -341,17 +364,10 @@ object WfcGenerator {
       columns: Int,
       rows: Int,
     ): Bitmap {
-      val scale = width / columns
       for (y in 0 until rows) {
         val rowBase = y * columns
-        val pixelRowBase = y * scale * width
         for (x in 0 until columns) {
-          val colour = centres[sources[assignment[rowBase + x]]]
-          val pixelX = x * scale
-          for (dy in 0 until scale) {
-            val base = pixelRowBase + dy * width + pixelX
-            for (dx in 0 until scale) pixels[base + dx] = colour
-          }
+          pixels[rowBase + x] = centres[sources[assignment[rowBase + x]]]
         }
       }
       return publish()
@@ -359,19 +375,7 @@ object WfcGenerator {
 
     /** Draws a ready-made grid of cell colours, e.g. the stretched fallback. */
     fun renderColours(cellColours: IntArray, columns: Int, rows: Int): Bitmap {
-      val scale = width / columns
-      for (y in 0 until rows) {
-        val rowBase = y * columns
-        val pixelRowBase = y * scale * width
-        for (x in 0 until columns) {
-          val colour = cellColours[rowBase + x]
-          val pixelX = x * scale
-          for (dy in 0 until scale) {
-            val base = pixelRowBase + dy * width + pixelX
-            for (dx in 0 until scale) pixels[base + dx] = colour
-          }
-        }
-      }
+      cellColours.copyInto(pixels, 0, 0, columns * rows)
       return publish()
     }
 
@@ -379,7 +383,7 @@ object WfcGenerator {
     private fun publish(): Bitmap {
       val bitmap = bitmaps[next]
       next = (next + 1) % bitmaps.size
-      bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+      bitmap.setPixels(pixels, 0, columns, 0, 0, columns, rows)
       return bitmap
     }
   }

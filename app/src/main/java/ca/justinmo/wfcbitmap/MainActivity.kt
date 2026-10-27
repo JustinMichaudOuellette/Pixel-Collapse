@@ -13,12 +13,14 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -55,11 +57,20 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * How long the drawing has to sit still before a solve starts. Editing is a stream of taps, and
- * every solve is a full wave-function collapse, so regenerating on each tap would only ever finish
- * work for drawings that no longer exist.
+ * How long the drawing has to sit still before a solve starts.
+ *
+ * Zero, because the solve is cancellable: a newer edit aborts the running one within a few tens of
+ * milliseconds (see [WfcGenerator]), so waiting first only adds latency to every single tap. Measured
+ * end to end with [LatencyMeter] on a Pixel 7a, tap to the frame that shows the new preview:
+ *
+ * | debounce | tap -> frame  | of which "wait" |
+ * |----------|--------------|-----------------|
+ * | 150 ms   | 203-253 ms   | 156-166 ms      |
+ * | 0 ms     | 35-80 ms     | 3-14 ms         |
+ *
+ * The remainder is the collapse itself (11-44 ms) plus the frame pipeline (9-23 ms).
  */
-private const val PREVIEW_DEBOUNCE_MS = 150L
+private const val PREVIEW_DEBOUNCE_MS = 0L
 
 /**
  * One fixed seed: the preview should follow the drawing, not the dice. A seed that was reseeded on
@@ -80,6 +91,15 @@ private const val TAG = "WfcPreview"
 fun PixelEditor(modifier: Modifier = Modifier) {
   val gridState = remember { BitmapEditor.PixelGridState() }
   var output by remember { mutableStateOf<WfcGenerator.Output?>(null) }
+  // End-to-end measurement: tap detected -> the frame that shows the new preview is committed.
+  val view = LocalView.current
+  val latency = remember { LatencyMeter() }
+  /*
+   * Which variation is on screen. Edits keep the seed, so an edit changes what it touched and leaves the
+   * rest of the picture alone; tapping the preview advances it, which is how you ask for another
+   * arrangement of the same drawing.
+   */
+  var seed by remember { mutableIntStateOf(PREVIEW_SEED) }
 
   // Rebuild the bitmap whenever the drawing changes. `collectLatest` is what makes a newer edit
   // *cancel* the solve that is still running for an older one: the generator hands the coroutine's
@@ -88,8 +108,9 @@ fun PixelEditor(modifier: Modifier = Modifier) {
   // The debounce below is inside the cancelled body, so a continuous stroke starts no solve at all
   // until the user pauses.
   LaunchedEffect(gridState) {
-    snapshotFlow { gridState.revision }
-      .collectLatest { revision ->
+    snapshotFlow { gridState.revision to seed }
+      .collectLatest { request ->
+        val revision = request.first
         delay(PREVIEW_DEBOUNCE_MS)
         if (gridState.revision != revision) {
           return@collectLatest
@@ -99,12 +120,13 @@ fun PixelEditor(modifier: Modifier = Modifier) {
         val columns = gridState.columns
         val rows = gridState.rows
         val pixels = IntArray(columns * rows) { gridState.pixels[it].toArgb() }
+        val generationStart = System.nanoTime()
         val generated = try {
           WfcGenerator.generate(
             pixels = pixels,
             sourceWidth = columns,
             sourceHeight = rows,
-            seed = PREVIEW_SEED,
+            seed = request.second,
           )
         } catch (e: CancellationException) {
           // The composable went away; let the cancellation through instead of reporting it.
@@ -116,6 +138,7 @@ fun PixelEditor(modifier: Modifier = Modifier) {
           Log.w(TAG, "Could not generate a bitmap for the current drawing", e)
           null
         }
+        val generationEnd = System.nanoTime()
         if (generated != null) {
           if (generated.usedFallback) {
             // The drawing's edge could not close around the grid, so there is no tiling that keeps it
@@ -125,11 +148,16 @@ fun PixelEditor(modifier: Modifier = Modifier) {
           }
           Log.i(
             TAG,
-            "Generated ${generated.bitmap.width}x${generated.bitmap.height} bitmap from " +
+            "Generated ${generated.columns * WfcGenerator.PIXELS_PER_CELL}x" +
+              "${generated.rows * WfcGenerator.PIXELS_PER_CELL} bitmap from " +
               "${generated.columns}x${generated.rows} cells, ${generated.tileCount} patterns, " +
-              "${generated.millis} ms (solve ${generated.solveMillis} ms, render ${generated.renderMillis} ms)",
+              "${generated.millis} ms (extract ${generated.extractMillis} ms, " +
+              "solve ${generated.solveMillis} ms, render ${generated.renderMillis} ms)",
           )
           output = generated
+          // The state write above schedules the recomposition; this reports when the frame carrying it
+          // actually reaches the compositor.
+          latency.registerCommit(view, generationStart, generationEnd, generated)
         }
       }
   }
@@ -137,6 +165,18 @@ fun PixelEditor(modifier: Modifier = Modifier) {
   PixelEditorScreen(
     modifier = modifier,
     gridState = gridState,
-    preview = { WfcPreview(output = output) },
+    // Start the clock the moment the editor detects the tap; the whole pipeline is measured from here.
+    onTap = { latency.tap() },
+    preview = {
+      WfcPreview(
+        output = output,
+        // Next variation of the same drawing: advancing the seed re-solves from scratch, and because
+        // the seed is part of what the preview generation watches, this triggers a regeneration.
+        onTap = {
+          latency.tap()
+          seed++
+        },
+      )
+    },
   )
 }

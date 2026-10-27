@@ -12,6 +12,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -396,6 +397,61 @@ class NativeSolverTest {
     } finally {
       for (model in models) WfcNative.modelDestroy(model)
     }
+  }
+
+  /**
+   * The live path draws [WfcGenerator.Output.display] (cell resolution) and publishes [Output.bitmap] at
+   * the 152x270 size lazily. Both must show the same picture, and the published one must be an exact
+   * nearest-neighbour upscale -- the preview relies on being able to scale the small one instead.
+   */
+  @Test
+  fun generationPublishesTheFullSizeBitmapFromTheCellSizedDisplay() = runBlocking {
+    val output = WfcGenerator.generate(
+      borderedDrawing(),
+      SOURCE_WIDTH,
+      SOURCE_HEIGHT,
+      seed = 1,
+    )
+    assertEquals("the display bitmap is the cell grid", OUTPUT_COLUMNS, output.display.width)
+    assertEquals(OUTPUT_ROWS, output.display.height)
+
+    val full = output.bitmap
+    assertEquals(WfcGenerator.BITMAP_WIDTH, full.width)
+    assertEquals(WfcGenerator.BITMAP_HEIGHT, full.height)
+
+    // Nearest neighbour by exactly 2: every 2x2 block of the published bitmap is one colour, and it is
+    // the colour the display bitmap has at the same cell.
+    val block = IntArray(4)
+    val cell = IntArray(1)
+    for (y in 0 until OUTPUT_ROWS step 13) {
+      for (x in 0 until OUTPUT_COLUMNS step 11) {
+        full.getPixels(block, 0, 2, x * 2, y * 2, 2, 2)
+        output.display.getPixels(cell, 0, 1, x, y, 1, 1)
+        assertEquals("block at ($x,$y) is not uniform", block[0], block[1])
+        assertEquals("block at ($x,$y) is not uniform", block[0], block[2])
+        assertEquals("block at ($x,$y) is not uniform", block[0], block[3])
+        assertEquals("block at ($x,$y) does not match the cell", cell[0], block[0])
+      }
+    }
+  }
+
+  /**
+   * The cache: an edit that leaves the tile set alone must hand back the same output (so the preview is
+   * not redrawn at all), while an edit that adds a pattern must produce a new one.
+   */
+  @Test
+  fun unchangedTileSetIsReusedAndANewPatternIsNot() = runBlocking {
+    val pixels = borderedDrawing()
+    val first = WfcGenerator.generate(pixels, SOURCE_WIDTH, SOURCE_HEIGHT, seed = 1)
+    val repeated = WfcGenerator.generate(pixels, SOURCE_WIDTH, SOURCE_HEIGHT, seed = 1)
+    assertTrue("the same drawing must reuse the previous output", first === repeated)
+
+    // A pixel that introduces a pattern the drawing did not have before.
+    val edited = pixels.copyOf()
+    edited[5 * SOURCE_WIDTH + 5] = green
+    val changed = WfcGenerator.generate(edited, SOURCE_WIDTH, SOURCE_HEIGHT, seed = 1)
+    assertFalse("a new pattern must produce a new output", first === changed)
+    assertEquals(OUTPUT_COLUMNS, changed.display.width)
   }
 
   // --- helpers ------------------------------------------------------------------------------

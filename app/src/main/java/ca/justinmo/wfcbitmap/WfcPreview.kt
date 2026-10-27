@@ -1,5 +1,6 @@
 package ca.justinmo.wfcbitmap
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,13 +21,21 @@ import androidx.compose.ui.layout.ContentScale
  *
  * @param output the last generated bitmap, or null before the first one is ready. Holding on to the
  *   previous output is what keeps the preview steady while a newer edit is being solved.
+ * @param onTap called when the preview is tapped: the caller advances the seed and regenerates.
  */
 @Composable
 fun WfcPreview(
   output: WfcGenerator.Output?,
   modifier: Modifier = Modifier,
+  onTap: () -> Unit = {},
 ) {
-  Box(modifier = modifier.fillMaxSize()) {
+  Box(
+    modifier = modifier
+      .fillMaxSize()
+      // A tap asks for the next variation: same drawing, next seed. The ripple is the only feedback
+      // the preview has, which is why it is left on.
+      .clickable(onClickLabel = "Generate a new variation", onClick = onTap),
+  ) {
     if (output != null) {
       Image(
         bitmap = output.image,

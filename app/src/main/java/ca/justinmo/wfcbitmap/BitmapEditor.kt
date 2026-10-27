@@ -73,6 +73,12 @@ object BitmapEditor {
 
     fun getPixel(col: Int, row: Int): Color = pixels[row * columns + col]
 
+    /** The colour each cell had before its last paint, so a second tap can put it back. */
+    private val previousColors = arrayOfNulls<Color>(columns * rows)
+
+    /** The cell the last paint touched; only that cell can be reverted by another tap. */
+    private var lastPainted = -1
+
     fun setPixel(col: Int, row: Int, color: Color) {
       val index = row * columns + col
       if (pixels[index] == color) {
@@ -83,7 +89,36 @@ object BitmapEditor {
       revision++
     }
 
+    /**
+     * Handles a tap on a cell: paints it with [color], or puts back the colour it had before, when the
+     * tap lands on the cell the previous tap just painted.
+     *
+     * Tapping the same cell twice is therefore "undo that paint": first tap paints, second tap restores
+     * whatever was there before, third tap paints again. Tapping another cell in between starts a new
+     * paint, so the revert only ever applies to the cell the previous tap set.
+     */
+    fun paint(col: Int, row: Int, color: Color) {
+      val index = row * columns + col
+      val current = pixels[index]
+      val previous = previousColors[index]
+      if (index == lastPainted && previous != null && current == color) {
+        pixels[index] = previous
+        previousColors[index] = null
+        lastPainted = -1
+        revision++
+        return
+      }
+      if (current != color) {
+        previousColors[index] = current
+        pixels[index] = color
+        revision++
+      }
+      lastPainted = index
+    }
+
     fun clear() {
+      lastPainted = -1
+      previousColors.fill(null)
       if (pixels.all { it == defaultColor }) {
         return
       }
@@ -104,6 +139,13 @@ object BitmapEditor {
   fun PixelEditorScreen(
     modifier: Modifier = Modifier,
     gridState: PixelGridState = remember { PixelGridState() },
+    /**
+     * Called when a tap that may edit the grid is detected, before the cell changes.
+     *
+     * It exists for measurement: this is the earliest point at which the app knows a person touched the
+     * drawing, so an end-to-end latency can be timed from here to the frame that shows the result.
+     */
+    onTap: () -> Unit = {},
     preview: @Composable () -> Unit = {},
   ) {
     var selectedColor by remember { mutableStateOf(Color.Black) }
@@ -133,6 +175,7 @@ object BitmapEditor {
             gridState = gridState,
             selectedColor = selectedColor,
             baseCellSizePx = baseCellSizePx,
+            onTap = onTap,
           )
         }
 
@@ -165,6 +208,7 @@ object BitmapEditor {
     minZoom: Float = 0.5f,
     maxZoom: Float = 10f,
     baseCellSizePx: Int,
+    onTap: () -> Unit = {},
   ) {
     var scale by remember { mutableStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -199,8 +243,11 @@ object BitmapEditor {
         // Single-finger draw
         .pointerInput(gridState, selectedColor) {
           detectTapGestures { tapOffset ->
+            // Report the gesture before the pixel changes: everything the preview does afterwards is
+            // what the latency measurement is about.
+            onTap()
             tapToPixel(tapOffset)?.let { (col, row) ->
-              gridState.setPixel(col, row, selectedColor)
+              gridState.paint(col, row, selectedColor)
             }
           }
         }
