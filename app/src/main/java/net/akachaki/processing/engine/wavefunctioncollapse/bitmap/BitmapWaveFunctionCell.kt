@@ -288,6 +288,25 @@ class BitmapWaveFunctionCell(
 
         private var NEXT_ID = 1
 
+        /**
+         * Builds the tile set from every 3x3 window of the drawing, sampled as it lies: a window that
+         * hangs over an edge of the drawing has no pixel there, and the kernel records that as `null`.
+         *
+         * Those blanks are what give a drawing an edge. A kernel is blank in a direction only where
+         * the drawing ends, so [StrictBitmapSolver] can require the output's border cells to be blank
+         * outwards, which is the same as requiring them to use a pattern sampled on the matching edge
+         * of the drawing -- and in turn means a pixel drawn on the edge of the drawing can only be
+         * generated on the edge of the bitmap.
+         *
+         * The set is sampled twice, the second time on a mirrored copy of the drawing, so the mirror
+         * images of the drawn patterns are available too. Callers must pass an array they own:
+         * [IntArray2D.mirrorX] reverses it in place.
+         *
+         * Note the trade this makes. Because the drawing's edge must then close around the output, a
+         * border that cannot repeat enough has *no* tiling at all, which is a real possibility and the
+         * reason [net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictSolverPortfolio]
+         * returns early when every worker gives up.
+         */
         fun createCells(
             pixels: IntArray2D,
         ): List<BitmapWaveFunctionCell> {
@@ -295,50 +314,6 @@ class BitmapWaveFunctionCell(
             computePossibilities(pixels, possibilities)
             pixels.mirrorX()
             computePossibilities(pixels, possibilities)
-            return pruneUnsupported(possibilities.map { (kernel, count) ->
-                BitmapWaveFunctionCell(kernel.toTypedArray(), count.toFloat())
-            })
-        }
-
-        /**
-         * Builds the tile set by sampling every 3x3 window of the drawing **with wrap-around**: a
-         * window that runs off the left edge continues from the right edge, and likewise top/bottom.
-         *
-         * This is what makes an arbitrary drawing actually produce a bitmap. Two properties follow
-         * from it:
-         *
-         *  - every kernel is complete (no `null` holes), so there are no special edge or corner tiles
-         *    and any tile may sit anywhere in the output;
-         *  - the periodic extension of the drawing is itself a valid tiling, because every window it
-         *    contains is one of the kernels extracted here, and neighbouring windows agree on their
-         *    shared pixels by construction. A solution therefore *always* exists, for any grid size,
-         *    which is exactly the guarantee [StrictBitmapSolver] is given when it is left to fill a
-         *    finite rectangle.
-         *
-         * The result reads as the pattern continuing past the edges of the output rather than as a
-         * framed picture, which is the usual look of the overlapping model.
-         *
-         * @param pixels the source drawing; unlike [createCells] it is not modified.
-         */
-        fun createWrappedCells(
-            pixels: IntArray2D,
-        ): List<BitmapWaveFunctionCell> {
-            val possibilities = mutableMapOf<List<Int?>, Int>()
-            val width = pixels.width
-            val height = pixels.height
-            for (y in 0 until height) {
-                for (x in 0 until width) {
-                    val kernel = MutableList<Int?>(9) { null }
-                    for (dy in -1..1) {
-                        for (dx in -1..1) {
-                            kernel[(dy + 1) * 3 + dx + 1] =
-                                pixels[Math.floorMod(x + dx, width), Math.floorMod(y + dy, height)]
-                        }
-                    }
-                    val count = possibilities[kernel]
-                    possibilities[kernel] = (count ?: 0) + 1
-                }
-            }
             return pruneUnsupported(possibilities.map { (kernel, count) ->
                 BitmapWaveFunctionCell(kernel.toTypedArray(), count.toFloat())
             })

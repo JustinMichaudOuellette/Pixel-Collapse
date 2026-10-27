@@ -15,18 +15,19 @@ import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictSolverPo
 /**
  * Bridges the pixel editor to the wave-function-collapse engine: turns the drawing into a *bitmap*.
  *
- * The drawing is the *source image*. Every distinct 3x3 window of it becomes a tile, sampled with
- * wrap-around ([BitmapWaveFunctionCell.createWrappedCells]) so that the drawing's pattern can
- * continue past its own edges, and
+ * The drawing is the *source image*. Every distinct 3x3 window of it becomes a tile, and the windows
+ * that hang over an edge carry no pixels there ([BitmapWaveFunctionCell.createCells]), so a tile can
+ * be blank towards the outside. The
  * [StrictBitmapSolver][net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictBitmapSolver]
- * then fills a much larger grid with tiles that fit together in all eight directions. The result is
- * a picture built only from patterns that actually occur in the drawing.
+ * then fills a much larger grid with tiles that fit together in all eight directions, and because a
+ * border cell only accepts a tile blank in the direction that leaves the grid, **pixels drawn on the
+ * edge of the drawing can only be generated on the edge of the bitmap**.
  *
- * Because the tile set is closed under wrap-around, the drawing's periodic extension is always a
- * valid tiling, so *any* drawing produces a bitmap; [generate] only falls back to that periodic
- * extension (same picture, no shuffled variety) if the search cannot finish within its budget.
- * [Output.usedFallback] says which one happened, which is what lets the editor log a slow search
- * instead of silently showing a picture that stopped varying.
+ * That edge rule is also the one limitation worth knowing: the drawing's border has to be repetitive
+ * enough to run around the whole 76x135 grid. A border that cannot be closed yields no tiling, and
+ * [generate] then falls back to the drawing stretched across the grid -- the one construction that
+ * keeps the drawing's edges on the bitmap's edges without solving anything. [Output.usedFallback] says
+ * which happened, which is what lets the editor log it instead of silently showing a different picture.
  *
  * The bitmap is [BITMAP_WIDTH] x [BITMAP_HEIGHT] (9:16, 270 tall). The grid the solver fills is
  * [DEFAULT_COLUMNS] x [DEFAULT_ROWS] cells, each drawn as a [PIXELS_PER_CELL] square of that bitmap:
@@ -95,7 +96,7 @@ object WfcGenerator {
     val seed: Int,
     val wonBySeed: Int?,
     val workers: Int,
-    /** True when the solver ran out of budget and the drawing's periodic extension was used. */
+    /** True when no tiling exists (or none was found in time) and the stretched drawing was used. */
     val usedFallback: Boolean,
   ) {
     val image: ImageBitmap = bitmap.asImageBitmap()
@@ -116,7 +117,9 @@ object WfcGenerator {
       throw GenerationException("The drawing is empty - draw a pattern first.")
     }
     val source = IntArray2D(sourceWidth, sourceHeight, pixels.copyOf())
-    val cells = BitmapWaveFunctionCell.createWrappedCells(source)
+    // Bordered extraction: the windows that hang over an edge are blank there, which is what the
+    // solver's edge rule needs to keep the drawing's edges on the bitmap's edges.
+    val cells = BitmapWaveFunctionCell.createCells(source)
     if (cells.isEmpty()) {
       throw GenerationException("The drawing is empty - draw a pattern first.")
     }
@@ -140,7 +143,7 @@ object WfcGenerator {
       shouldAbort = { !scope.isActive },
     )
     // Null now means either "no tiling found" or "we were cancelled"; only the first one should fall
-    // back to the drawing's own tiling. Letting the cancellation through is what makes it the second.
+    // back to the stretched drawing. Letting the cancellation through is what makes it the second.
     ensureActive()
     val millis = System.currentTimeMillis() - startedAt
     val assignment = result.assignment
@@ -150,7 +153,7 @@ object WfcGenerator {
     val cellColors = if (assignment != null) {
       IntArray(columns * rows) { cells[assignment[it]].color }
     } else {
-      periodicCrop(pixels, sourceWidth, sourceHeight, columns, rows)
+      stretchedDrawing(pixels, sourceWidth, sourceHeight, columns, rows)
     }
     Output(
       bitmap = render(cellColors, columns, rows),
@@ -166,14 +169,16 @@ object WfcGenerator {
   }
 
   /**
-   * The drawing repeated periodically and cropped to [columns] x [rows].
+   * The drawing, stretched by nearest neighbour across the whole [columns] x [rows] grid.
    *
-   * This is not a guess: every 3x3 window of it is a window of the drawing (wrap-around sampling),
-   * so it is a tiling of the drawing's own tile set -- the certificate that the instance the solver
-   * was given is satisfiable. It is what the search would be guaranteed to find if it had unlimited
-   * time, and it is what keeps "draw something, get a bitmap" unconditional.
+   * This is the fallback when the edge rule finds no tiling, and it is chosen because of the edge
+   * rule itself: the outermost cells map to the drawing's outermost pixels, so the drawing's edges
+   * really are the bitmap's edges -- which is the one thing the tiling is required to preserve.
+   *
+   * It is a stretch, not a tiling: the picture is the drawing magnified, with its pixel boundaries
+   * landing on the grid instead of a new arrangement of its 3x3 patterns.
    */
-  private fun periodicCrop(
+  private fun stretchedDrawing(
     pixels: IntArray,
     sourceWidth: Int,
     sourceHeight: Int,
@@ -182,7 +187,11 @@ object WfcGenerator {
   ): IntArray = IntArray(columns * rows) { index ->
     val x = index % columns
     val y = index / columns
-    pixels[(y % sourceHeight) * sourceWidth + (x % sourceWidth)]
+    // x * width / columns rather than a modulo: the last column maps to the drawing's last column,
+    // so the right edge stays the right edge.
+    val sx = (x.toLong() * sourceWidth / columns).toInt().coerceIn(0, sourceWidth - 1)
+    val sy = (y.toLong() * sourceHeight / rows).toInt().coerceIn(0, sourceHeight - 1)
+    pixels[sy * sourceWidth + sx]
   }
 
   /**

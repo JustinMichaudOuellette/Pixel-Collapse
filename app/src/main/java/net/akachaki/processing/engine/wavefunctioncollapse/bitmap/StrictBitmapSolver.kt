@@ -96,12 +96,19 @@ class StrictBitmapSolver(
      * `variableCount * tileCount` comparisons with `variableCount` word copies during setup.
      *
      * The signature holds the directions that have a neighbour **inside** the grid, and a tile is in
-     * the domain when it has a pixel in every one of them. What a tile shows outside the grid does not
-     * matter: the output is a *crop* of the pattern, so the cells beyond the last row or column are
-     * simply not part of the picture. Requiring the tile to be blank exactly there (the older rule)
-     * made the output a closed picture instead, which rejected any tile set whose kernels are all
-     * complete -- e.g. the wrap-around extraction in [BitmapWaveFunctionCell.createWrappedCells] --
-     * with an empty domain on every border cell.
+     * the domain only when it has a pixel in *exactly* those directions: present inside, blank
+     * outside. That is what keeps the drawing's edges on the bitmap's edges. A kernel is blank in a
+     * direction only where the drawing ends, so a border cell can only use a pattern sampled on the
+     * matching edge of the drawing, and that pattern can only sit on that edge: its blank pixel
+     * points into the grid, which no cell with a neighbour there accepts.
+     *
+     * The price is that the drawing's edge must be able to run all the way around the output -- a
+     * border sequence that never repeats cannot be stretched across 76 columns -- and a drawing that
+     * cannot do it yields no tiling at all. [WfcGenerator] then falls back to the drawing stretched,
+     * which keeps the edges on the edges. Accepting blank-or-complete kernels instead (the "crop"
+     * rule) makes every border cell satisfiable, but then a drawn edge pixel can land anywhere in the
+     * picture and nothing is guaranteed to be on the edge, which is the opposite of what an edge is
+     * for.
      */
     private val domainByPresent = LongArray(256 * wordCount)
     private val sizeByPresent = IntArray(256)
@@ -258,10 +265,8 @@ class StrictBitmapSolver(
             val base = p * wordCount
             var count = 0
             for (t in 0 until tileCount) {
-                // Present in every direction that has a neighbour in the grid; unconstrained outside
-                // it. `and p == p` also keeps every tile for the all-present interior cells, so a
-                // complete kernel can still never leave a hole *inside* the output.
-                if ((tilePresentMask[t] and p) == p) {
+                // Exactly the in-grid directions: present inside, blank outside. See [domainByPresent].
+                if (tilePresentMask[t] == p) {
                     domainByPresent[base + (t ushr 6)] =
                         domainByPresent[base + (t ushr 6)] or (1L shl (t and 63))
                     count++

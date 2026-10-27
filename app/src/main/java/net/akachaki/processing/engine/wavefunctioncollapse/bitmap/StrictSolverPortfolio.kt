@@ -151,7 +151,7 @@ class StrictSolverPortfolio(
                 submitted++
                 if (index == 0 && width > 1 && hedge > 0) {
                     // Let the lone worker try first; only fan out if it is still running.
-                    if (awaitSolved(solved, hedge, shouldAbort)) {
+                    if (awaitOutcome(solved, finished, hedge, shouldAbort)) {
                         break
                     }
                 }
@@ -160,7 +160,7 @@ class StrictSolverPortfolio(
             repeat(width - submitted) { finished.countDown() }
             if (!shouldAbort()) {
                 val remainingMs = ((deadlineNanos - System.nanoTime()) / 1_000_000).coerceAtLeast(0L)
-                awaitSolved(solved, remainingMs + 1_000L, shouldAbort)
+                awaitOutcome(solved, finished, remainingMs + 1_000L, shouldAbort)
             }
             if (shouldAbort()) {
                 for (solver in solvers) {
@@ -182,16 +182,21 @@ class StrictSolverPortfolio(
     }
 
     /**
-     * Waits for a solution for up to [millis], giving up early when [shouldAbort] turns true.
+     * Waits for an outcome: a solution, every worker finishing without one, an abort, or [millis]
+     * running out.
      *
-     * @return true when a solution arrived, false on timeout or abort.
+     * @return true when a solution arrived, false otherwise.
      *
-     * The wait has to be polled rather than one long [CountDownLatch.await]: an aborted solve produces
-     * no solution, so a single blocking wait would keep the caller (the UI, in this app) stuck until
-     * the deadline.
+     * The wait has to be polled rather than one long [CountDownLatch.await], for two reasons. An
+     * aborted or unsatisfiable instance produces no solution at all, so a single blocking wait would
+     * keep the caller (the UI, in this app) stuck until the deadline -- and with the edge rule, "no
+     * tiling at all" is a normal outcome that root propagation proves in milliseconds, not something
+     * worth waiting minutes for. The `finished` count covers exactly that case: every worker has
+     * given up, so there is nothing left to wait for.
      */
-    private fun awaitSolved(
+    private fun awaitOutcome(
         solved: CountDownLatch,
+        finished: CountDownLatch,
         millis: Long,
         shouldAbort: () -> Boolean,
     ): Boolean {
@@ -199,6 +204,9 @@ class StrictSolverPortfolio(
         while (true) {
             if (solved.await(ABORT_POLL_MS, TimeUnit.MILLISECONDS)) {
                 return true
+            }
+            if (finished.count == 0L) {
+                return false
             }
             if (shouldAbort()) {
                 return false

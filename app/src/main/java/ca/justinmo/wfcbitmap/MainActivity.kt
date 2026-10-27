@@ -118,10 +118,10 @@ fun PixelEditor(modifier: Modifier = Modifier) {
         }
         if (generated != null) {
           if (generated.usedFallback) {
-            // Still a bitmap, but the drawing's own tiling rather than a shuffled one. Nothing on
-            // screen can say so, so leave a trace for whoever wonders why the preview stopped
-            // varying.
-            Log.i(TAG, "Search timed out; preview shows the drawing's periodic tiling")
+            // The drawing's edge could not close around the grid, so there is no tiling that keeps it
+            // and the preview shows the drawing stretched instead. Nothing on screen can say that, so
+            // leave a trace for whoever wonders why the preview stopped rearranging patterns.
+            Log.i(TAG, "No tiling under the edge rule; preview shows the drawing stretched")
           }
           Log.i(
             TAG,
