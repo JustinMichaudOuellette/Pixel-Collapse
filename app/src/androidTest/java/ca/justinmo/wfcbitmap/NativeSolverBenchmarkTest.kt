@@ -70,24 +70,33 @@ class NativeSolverBenchmarkTest {
   }
 
   private fun run(label: String, pixels: IntArray, repeats: Int) {
+    // The pipeline around the solver runs on every edit too, so time it here as well.
+    val extractStartedAt = System.nanoTime()
     val cells = tiles(pixels)
+    val extractNanos = System.nanoTime() - extractStartedAt
+    val packStartedAt = System.nanoTime()
     val packed = WfcNative.packTiles(cells)
+    val packNanos = System.nanoTime() - packStartedAt
     // Warm up once so the first-run JIT/page-fault cost does not land on the averages.
     solveOnce(packed, cells.size)?.let { }
 
     val totals = Totals()
     var solved = 0
+    var modelTileCount = 0
     /*
      * One solver for every repeat, exactly like the pool: the app keeps its worker solvers alive across
      * collapses, so the model is the only thing built per edit.
      */
     val solver = WfcNative.solverCreate()
     check(solver != 0L)
+    // Ask for the per-decision split; the extra clock reads are part of these numbers.
+    WfcNative.solverSetFineProfiling(solver, true)
     repeat(repeats) {
       val createStartedAt = System.nanoTime()
       val model = WfcNative.modelCreate(packed, cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS)
       check(model != 0L)
       totals.create += System.nanoTime() - createStartedAt
+      if (modelTileCount == 0) modelTileCount = WfcNative.modelTileCount(model)
 
       val startedAt = System.nanoTime()
       val out = IntArray(OUTPUT_COLUMNS * OUTPUT_ROWS)
@@ -108,7 +117,11 @@ class NativeSolverBenchmarkTest {
 
     fun ms(value: Long) = "%.2f".format(value / 1_000_000.0 / repeats)
     println(
-      "PROFILE $label tiles=${cells.size} solved=$solved/$repeats  " +
+      "PIPELINE $label extraction=" + "%.2f".format(extractNanos / 1_000_000.0) +
+        "ms packing=" + "%.2f".format(packNanos / 1_000_000.0) + "ms",
+    )
+    println(
+      "PROFILE $label sampled=${cells.size} model=$modelTileCount solved=$solved/$repeats  " +
         "wall=${ms(totals.wall)}ms  create=${ms(totals.create)}ms  " +
         "setup=${ms(totals.setup)}  initial=${ms(totals.initial)}  search=${ms(totals.search)}  " +
         "of which select=${ms(totals.selection)} order=${ms(totals.ordering)}  " +

@@ -34,6 +34,29 @@ Java_ca_justinmo_wfcbitmap_WfcNative_modelCreate(JNIEnv *env, jobject thiz, jint
   return to_handle(model);
 }
 
+JNIEXPORT jint JNICALL
+Java_ca_justinmo_wfcbitmap_WfcNative_modelTileCount(JNIEnv *env, jobject thiz, jlong model) {
+  (void)env;
+  (void)thiz;
+  return (jint)wfc_model_tile_count((const wfc_model *)from_handle(model));
+}
+
+JNIEXPORT jint JNICALL
+Java_ca_justinmo_wfcbitmap_WfcNative_modelTileSource(JNIEnv *env, jobject thiz, jlong model,
+                                                     jint tile) {
+  (void)env;
+  (void)thiz;
+  return (jint)wfc_model_tile_source((const wfc_model *)from_handle(model), (int)tile);
+}
+
+JNIEXPORT jint JNICALL
+Java_ca_justinmo_wfcbitmap_WfcNative_modelTileCenter(JNIEnv *env, jobject thiz, jlong model,
+                                                     jint tile) {
+  (void)env;
+  (void)thiz;
+  return (jint)wfc_model_tile_center((const wfc_model *)from_handle(model), (int)tile);
+}
+
 JNIEXPORT void JNICALL
 Java_ca_justinmo_wfcbitmap_WfcNative_modelDestroy(JNIEnv *env, jobject thiz, jlong model) {
   (void)env;
@@ -93,6 +116,14 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverDecisions(JNIEnv *env, jobject thiz, 
   (void)thiz;
   const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
   return native_solver == NULL ? 0 : wfc_solver_decisions(native_solver);
+}
+
+JNIEXPORT void JNICALL
+Java_ca_justinmo_wfcbitmap_WfcNative_solverSetFineProfiling(JNIEnv *env, jobject thiz, jlong solver,
+                                                          jboolean enabled) {
+  (void)env;
+  (void)thiz;
+  wfc_solver_set_fine_profile((wfc_solver *)from_handle(solver), enabled ? 1 : 0);
 }
 
 JNIEXPORT jlong JNICALL

@@ -71,6 +71,17 @@ internal object WfcNative {
 
   external fun modelDestroy(model: Long)
 
+  /**
+   * How many tiles survived the model's own consistency pass, and where each one came from in the packed
+   * array. The model prunes patterns that can never be placed, so a solve result indexes *these* tiles.
+   */
+  external fun modelTileCount(model: Long): Int
+
+  external fun modelTileSource(model: Long, tile: Int): Int
+
+  /** The ARGB pixel a model tile shows. Valid only while the model is alive. */
+  external fun modelTileCenter(model: Long, tile: Int): Int
+
   external fun solverCreate(): Long
 
   external fun solverDestroy(solver: Long)
@@ -87,6 +98,14 @@ internal object WfcNative {
 
   /** Phase timers of the last solve, in nanoseconds; see the phase constants below. */
   external fun solverPhaseNanos(solver: Long, phase: Int): Long
+
+  /**
+   * Enables the per-decision phase probes (selection and ordering).
+   *
+   * Off by default: they cost a clock read per decision, which is nothing where clock_gettime is a
+   * vDSO call and microseconds per decision where it is a syscall. Only the benchmark turns them on.
+   */
+  external fun solverSetFineProfiling(solver: Long, enabled: Boolean)
 
   /** Indices for [solverPhaseNanos]. */
   object Phase {

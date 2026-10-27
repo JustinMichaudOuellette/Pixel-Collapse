@@ -72,6 +72,21 @@ int64_t wfc_solver_revises(const wfc_solver *solver);
 /* How many cells the model fills, i.e. the size of the assignment buffer a solve needs. */
 int wfc_model_variable_count(const wfc_model *model);
 
+/*
+ * How many tiles survived the model's own arc-consistency pass. wfc_model_create prunes patterns that
+ * can never be placed, so this can be smaller than the tile count passed in.
+ */
+int wfc_model_tile_count(const wfc_model *model);
+
+/*
+ * The index, in the caller's packed array, of the tile at [tile] in the model. Solve results are model
+ * tile indices; this is how a caller turns one back into the pattern it sampled.
+ */
+int wfc_model_tile_source(const wfc_model *model, int tile);
+
+/* The ARGB pixel a model tile shows (its window centre). */
+int wfc_model_tile_center(const wfc_model *model, int tile);
+
 /* Phase timers of the last solve, in nanoseconds: 0 setup, 1 initial propagation, 2 search,
  * 3 variable selection (inside search), 4 tile ordering (inside search). */
 enum {
@@ -82,5 +97,11 @@ enum {
   WFC_PHASE_ORDERING = 4
 };
 int64_t wfc_solver_phase_nanos(const wfc_solver *solver, int phase);
+
+/*
+ * Turns the per-decision phase probes on. They cost a clock read per decision, which is negligible
+ * where clock_gettime is a vDSO call and large where it is a syscall, so they are off by default.
+ */
+void wfc_solver_set_fine_profile(wfc_solver *solver, int enabled);
 
 #endif /* WFC_H */

@@ -32,6 +32,7 @@ static const int DY[WFC_DIRS] = {0, -1, -1, -1, 0, 1, 1, 1};
 #define CLOCK_EVERY 512
 
 
+
 typedef struct {
   int mask;        /* direction bits where the kernel has a pixel */
   int weight;      /* how often the pattern occurs in the drawing */
@@ -46,6 +47,12 @@ struct wfc_model {
   int variable_count;
   int word_count;
   wfc_tile *tiles;
+  /*
+   * Index into the caller's packed array for each surviving tile. wfc_model_create prunes tiles that
+   * can never be placed next to anything, so tile indices here are compacted; the caller needs this
+   * map to read a solved cell back as the pattern it sampled.
+   */
+  int *source;
   int *present;                /* per variable: direction bits with a neighbour inside the grid */
   int *step_offset;            /* per direction: dy * columns + dx */
   uint64_t *compat;            /* [(direction * tile_count + tile) * word_count + word] */
@@ -132,6 +139,7 @@ struct wfc_solver {
   volatile int abort_flag;
 
   /* Phase timers, so a slow solve can be attributed to a phase instead of guessed at. */
+  int fine_profile;
   int64_t setup_nanos;
   int64_t initial_propagation_nanos;
   int64_t search_nanos;
@@ -182,6 +190,7 @@ wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int
   m->word_count = (tile_count + 63) >> 6;
 
   m->tiles = calloc((size_t)tile_count, sizeof(wfc_tile));
+  m->source = calloc((size_t)tile_count, sizeof(int));
   m->present = calloc((size_t)m->variable_count, sizeof(int));
   m->step_offset = calloc(WFC_DIRS, sizeof(int));
   m->compat = calloc((size_t)WFC_DIRS * tile_count * m->word_count, sizeof(uint64_t));
@@ -189,7 +198,8 @@ wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int
   m->domain_by_present = calloc(256 * (size_t)m->word_count, sizeof(uint64_t));
   m->size_by_present = calloc(256, sizeof(int));
   m->class_masks = calloc(256, sizeof(unsigned char));
-  if (m->tiles == NULL || m->present == NULL || m->step_offset == NULL || m->compat == NULL ||
+  if (m->tiles == NULL || m->source == NULL || m->present == NULL || m->step_offset == NULL ||
+      m->compat == NULL ||
       m->domain_by_present == NULL || m->size_by_present == NULL || m->class_masks == NULL) {
     wfc_model_destroy(m);
     return NULL;
@@ -202,7 +212,82 @@ wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int
     tile->weight = packed[1] > 0 ? packed[1] : 1;
     for (int slot = 0; slot < 9; slot++) tile->kernel[slot] = packed[2 + slot];
     tile->centre = tile->kernel[4];
+    m->source[t] = t;
   }
+
+  /*
+   * Arc consistency on the tile set itself: drop every pattern that can never be placed next to any
+   * other pattern in some direction where it has a pixel.
+   *
+   * This used to run in Kotlin on every edit, as a fixpoint over a LinkedHashSet inside a lambda: it
+   * cost 7 ms for a 9-pattern drawing and 23 ms for a 104-pattern one, i.e. more than the collapse
+   * itself. Here it is the same algorithm on plain arrays, running where the compatibility table is
+   * needed anyway.
+   *
+   * A pattern with a pixel towards `d` needs a partner `u` whose centre is that pixel and whose own
+   * pixel towards `-d` is this pattern's centre. A pattern with no pixel towards `d` needs no support:
+   * that is where the drawing ends.
+   */
+  {
+    unsigned char *dead = calloc((size_t)tile_count, sizeof(unsigned char));
+    if (dead == NULL) {
+      wfc_model_destroy(m);
+      return NULL;
+    }
+    int changed = 1;
+    while (changed) {
+      changed = 0;
+      for (int t = 0; t < tile_count; t++) {
+        if (dead[t]) continue;
+        const wfc_tile *ct = &m->tiles[t];
+        int supported = 1;
+        for (int d = 0; d < WFC_DIRS && supported; d++) {
+          if ((ct->mask & (1 << d)) == 0) continue;
+          int required = ct->kernel[WFC_DIR_SLOT[d]];
+          int opposite = OPPOSITE[d];
+          int slot_back = WFC_DIR_SLOT[opposite];
+          int found = 0;
+          for (int u = 0; u < tile_count && !found; u++) {
+            if (dead[u]) continue;
+            const wfc_tile *cu = &m->tiles[u];
+            if (cu->centre != required) continue;
+            if ((cu->mask & (1 << opposite)) == 0) continue;
+            if (cu->kernel[slot_back] != ct->centre) continue;
+            found = 1;
+          }
+          if (!found) supported = 0;
+        }
+        if (!supported) {
+          dead[t] = 1;
+          changed = 1;
+        }
+      }
+    }
+    /* Compact the survivors, remembering which packed tile each one came from. */
+    int kept = 0;
+    for (int t = 0; t < tile_count; t++) {
+      if (dead[t]) continue;
+      m->tiles[kept] = m->tiles[t];
+      m->source[kept] = m->source[t];
+      kept++;
+    }
+    free(dead);
+    if (kept == 0) {
+      /* Nothing survived, so no drawing can be tiled: the caller falls back to the stretch. */
+      wfc_model_destroy(m);
+      return NULL;
+    }
+    tile_count = kept;
+    m->tile_count = kept;
+    m->word_count = (kept + 63) >> 6;
+  }
+
+  /*
+   * The compatibility and domain tables were sized for the unpruned tile set, so they have to be
+   * cleared before the survivors are written in with the (possibly narrower) new word stride.
+   */
+  memset(m->compat, 0, sizeof(uint64_t) * (size_t)WFC_DIRS * (size_t)tile_count * m->word_count);
+  memset(m->domain_by_present, 0, sizeof(uint64_t) * 256 * (size_t)m->word_count);
 
   for (int d = 0; d < WFC_DIRS; d++) m->step_offset[d] = DY[d] * columns + DX[d];
 
@@ -311,6 +396,7 @@ wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int
 void wfc_model_destroy(wfc_model *model) {
   if (model == NULL) return;
   free(model->tiles);
+  free(model->source);
   free(model->present);
   free(model->step_offset);
   free(model->compat);
@@ -420,8 +506,24 @@ int wfc_solver_decisions(const wfc_solver *solver) { return solver->decisions; }
 
 int64_t wfc_solver_revises(const wfc_solver *solver) { return solver->revises; }
 
+int wfc_model_tile_count(const wfc_model *model) { return model == NULL ? 0 : model->tile_count; }
+
+int wfc_model_tile_center(const wfc_model *model, int tile) {
+  if (model == NULL || tile < 0 || tile >= model->tile_count) return 0;
+  return model->tiles[tile].centre;
+}
+
+int wfc_model_tile_source(const wfc_model *model, int tile) {
+  if (model == NULL || tile < 0 || tile >= model->tile_count) return -1;
+  return model->source[tile];
+}
+
 int wfc_model_variable_count(const wfc_model *model) {
   return model == NULL ? 0 : model->variable_count;
+}
+
+void wfc_solver_set_fine_profile(wfc_solver *solver, int enabled) {
+  if (solver != NULL) solver->fine_profile = enabled;
 }
 
 int64_t wfc_solver_phase_nanos(const wfc_solver *solver, int phase) {
@@ -600,24 +702,59 @@ static int revise(wfc_solver *s, int v, int d) {
         set_word(s, v, word, kept);
       }
     }
+  } else if (words == 2) {
+    /*
+     * The dominant tile-set size (65..128 patterns) handled as one 128-bit AND per candidate.
+     *
+     * The two words of a domain and of a compatibility row are adjacent, so they load as one 16-byte
+     * value and the support test becomes a single AND plus a zero test instead of two loads, two ANDs
+     * and an OR. The rows live right next to each other (16 bytes apart), which keeps this loop in L1.
+     *
+     * Loaded through memcpy rather than a cast because the compatibility table is a uint64_t array;
+     * clang turns that into the same 128-bit load without the aliasing trouble.
+     */
+    const uint64_t *neighbour_pair = s->domains + n_base;
+    uint64_t neighbour0 = neighbour_pair[0];
+    uint64_t neighbour1 = neighbour_pair[1];
+    __uint128_t neighbour_bits = ((__uint128_t)neighbour1 << 64) | neighbour0;
+    for (int word = 0; word < 2; word++) {
+      uint64_t current = s->domains[v_base + word];
+      if (current == 0) continue;
+      uint64_t remaining = current;
+      uint64_t bits = current;
+      while (bits != 0) {
+        int bit = ctz(bits);
+        bits &= bits - 1;
+        int tile = (word << 6) + bit;
+        const uint64_t *row = m->compat + (size_t)(d * tiles + tile) * 2;
+        __uint128_t partners;
+        memcpy(&partners, row, sizeof(partners));
+        if ((partners & neighbour_bits) == 0) remaining &= ~(1ull << bit);
+      }
+      if (remaining != current) {
+        removed += popcount(current) - popcount(remaining);
+        set_word(s, v, word, remaining);
+      }
+    }
   } else {
     /*
-     * Exact revision: for each candidate tile, ask the neighbour's domain whether any of its tiles
-     * supports it.
+     * Exact revision, candidate by candidate: ask the neighbour's domain whether any of its tiles
+     * supports each candidate.
      *
-     * This is O(tiles * words) per revision, and a word-parallel version is tempting: precompute a
-     * support table (union of the partners of each *word* of tiles) and answer the whole domain with a
-     * few word operations. It was tried and measured, and it is a large loss on this model. The table
-     * can only union the partners of every tile in a word, so it prunes less than this scan; weaker
-     * pruning means domains stay wide, and this search is fast precisely because propagation collapses
-     * the grid with almost no decisions. On a 76x135 grid, 104 tiles: this exact scan solves `rings`
-     * with 23 decisions and ~1M revisions in ~95 ms, while the word-parallel version needed the full
-     * 1,000,000-decision cap and never found a tiling. Precision, not raw ops, is what wins here.
-     */
-    /*
-     * One and two words cover every tile set this app can produce (up to 128 patterns), so they are
-     * spelled out: no inner support loop, no per-word indexing, and the neighbour's words hoisted into
-     * registers. The generic loop below handles the rare wider tile set.
+     * Two faster-looking alternatives were tried and measured on a 76x135 grid, and both lost:
+     *
+     *  - A word-parallel support table (union of the partners of each *word* of tiles) can only
+     *    over-approximate, because a word holds 64 tiles. Weaker pruning keeps domains wide, and this
+     *    search is fast precisely because propagation collapses the grid with almost no decisions:
+     *    `rings` (104 tiles) solves with 23 decisions here, while the table version burned the full
+     *    1,000,000-decision cap and never found a tiling.
+     *  - Walking the neighbour's domain instead of the candidates (exact, and cheaper whenever the
+     *    neighbour is smaller) computes the same sets and leaves the trajectory untouched, but measured
+     *    47% slower on `bordered`: the union of rows costs a read-modify-write per tile, while the
+     *    scan below reads one row per candidate and early-exits... it does not early-exit, but its
+     *    hoisted words keep it ahead.
+     *
+     * Precision and a tight inner loop beat fewer operations here.
      */
     if (words == 1) {
       const uint64_t neighbour_bits = s->domains[n_base];
@@ -628,34 +765,12 @@ static int revise(wfc_solver *s, int v, int d) {
         while (bits != 0) {
           int bit = ctz(bits);
           bits &= bits - 1;
-          const uint64_t *row = m->compat + (size_t)(d * tiles + (bit)) * 1;
+          const uint64_t *row = m->compat + (size_t)(d * tiles + bit);
           if ((row[0] & neighbour_bits) == 0) remaining &= ~(1ull << bit);
         }
         if (remaining != current) {
           removed += popcount(current) - popcount(remaining);
           set_word(s, v, 0, remaining);
-        }
-      }
-    } else if (words == 2) {
-      const uint64_t neighbour0 = s->domains[n_base];
-      const uint64_t neighbour1 = s->domains[n_base + 1];
-      for (int word = 0; word < 2; word++) {
-        uint64_t current = s->domains[v_base + word];
-        if (current == 0) continue;
-        uint64_t remaining = current;
-        uint64_t bits = current;
-        while (bits != 0) {
-          int bit = ctz(bits);
-          bits &= bits - 1;
-          int tile = (word << 6) + bit;
-          const uint64_t *row = m->compat + (size_t)(d * tiles + tile) * 2;
-          if (((row[0] & neighbour0) | (row[1] & neighbour1)) == 0) {
-            remaining &= ~(1ull << bit);
-          }
-        }
-        if (remaining != current) {
-          removed += popcount(current) - popcount(remaining);
-          set_word(s, v, word, remaining);
         }
       }
     } else {
@@ -684,6 +799,7 @@ static int revise(wfc_solver *s, int v, int d) {
       }
     }
   }
+
   s->revises++;
   if (s->size[v] == 0) return 0;
   if (removed != 0) {
@@ -827,15 +943,20 @@ static int search(wfc_solver *s, int64_t deadline_nanos, int max_decisions) {
       free_frames(s);
       return 0;
     }
-    int64_t phase_started = now_nanos();
+    /*
+     * The two per-decision probes are off unless asked for. Each costs a clock read, and on a device
+     * where clock_gettime is a syscall rather than a vDSO call that is microseconds per decision --
+     * enough to show up as most of the "selection" time it is supposed to be measuring.
+     */
+    int64_t phase_started = s->fine_profile ? now_nanos() : 0;
     int v = select_variable(s);
-    s->selection_nanos += now_nanos() - phase_started;
+    if (s->fine_profile) s->selection_nanos += now_nanos() - phase_started;
     if (v < 0) {
       free_frames(s);
       return 1;
     }
 
-    phase_started = now_nanos();
+    phase_started = s->fine_profile ? now_nanos() : 0;
     int count = s->size[v];
     int values_offset = reserve_values(s, count);
     if (values_offset < 0) {
@@ -844,7 +965,7 @@ static int search(wfc_solver *s, int64_t deadline_nanos, int max_decisions) {
     }
     int *values = s->value_arena + values_offset;
     collect_values(s, v, values, count);
-    s->ordering_nanos += now_nanos() - phase_started;
+    if (s->fine_profile) s->ordering_nanos += now_nanos() - phase_started;
     if (!push_frame(s, v, values_offset, count, s->trail_size)) {
       free_frames(s);
       return 0;

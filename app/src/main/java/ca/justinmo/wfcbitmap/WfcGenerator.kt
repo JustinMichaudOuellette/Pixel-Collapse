@@ -94,6 +94,33 @@ object WfcGenerator {
    * portfolio and one slow collapse cannot stall it.
    */
   private var lastSolveMillis: Long = 0
+
+  /*
+   * Incremental extraction and result reuse.
+   *
+   * The tally keeps the window counts of the previous drawing so an edit only re-tallies the nine
+   * windows around each changed pixel, and cachedPacked is the tile set the cached bitmap was made
+   * from. Since a collapse is seeded, the same tile set on the same grid always gives the same picture,
+   * so an edit that introduces no new pattern returns the previous output instead of re-solving -- which
+   * is most edits, because drawing over an area whose patterns already exist changes counts only if it
+   * changes a colour.
+   */
+  private val cacheLock = Any()
+  private val tally = WindowTally()
+  private var cachedPacked: IntArray = IntArray(0)
+  private var cachedOutput: Output? = null
+  private var cachedSeed: Int = Int.MIN_VALUE
+
+  /** The reusable bitmaps the collapse is drawn into. Guarded by [cacheLock]. */
+  private var targets: RenderTarget? = null
+
+  private fun renderTarget(columns: Int, rows: Int): RenderTarget {
+    val width = columns * PIXELS_PER_CELL
+    val height = rows * PIXELS_PER_CELL
+    val existing = targets
+    if (existing != null && existing.width == width && existing.height == height) return existing
+    return RenderTarget(width, height).also { targets = it }
+  }
   private fun hedgeMillis(): Long =
     if (lastSolveMillis <= 0) FAST_SOLVER_HEDGE_MS
     else (lastSolveMillis * 3 / 2).coerceIn(MIN_HEDGE_MS, MAX_HEDGE_MS)
@@ -121,6 +148,10 @@ object WfcGenerator {
     val workers: Int,
     /** True when no tiling exists (or none was found in time) and the stretched drawing was used. */
     val usedFallback: Boolean,
+    /** Time spent turning the solved cells into pixels, in milliseconds. */
+    val renderMillis: Long = 0,
+    /** Time the solver portfolio reported for itself, in milliseconds. */
+    val solveMillis: Long = 0,
   ) {
     val image: ImageBitmap = bitmap.asImageBitmap()
   }
@@ -140,17 +171,34 @@ object WfcGenerator {
       throw GenerationException("The drawing is empty - draw a pattern first.")
     }
     val source = IntArray2D(sourceWidth, sourceHeight, pixels.copyOf())
-    // Bordered extraction: the windows that hang over an edge are blank there, which is what the
-    // solver's edge rule needs to keep the drawing's edges on the bitmap's edges.
-    val cells = BitmapWaveFunctionCell.createCells(source)
-    if (cells.isEmpty()) {
-      throw GenerationException("The drawing is empty - draw a pattern first.")
-    }
-    if (cells.size > MAX_TILES) {
-      throw GenerationException(
-        "The drawing has ${cells.size} distinct 3x3 patterns; at most $MAX_TILES are supported. " +
-          "Draw with fewer colours or simpler shapes.",
-      )
+    /*
+     * Bordered extraction: the windows that hang over an edge are blank there, which is what the
+     * solver's edge rule needs to keep the drawing's edges on the bitmap's edges.
+     *
+     * Sampling is incremental (WindowTally), and the packed tile set doubles as the cache key: because
+     * the collapse is seeded, an edit that leaves the tile set untouched would produce exactly the
+     * bitmap already on screen, so it is handed straight back. Both the tally and the cache are
+     * guarded, because a cancelled generation can still be inside its extraction when the next starts.
+     */
+    val packed: IntArray
+    synchronized(cacheLock) {
+      val sampled = tally.sample(source)
+      if (sampled.isEmpty()) {
+        throw GenerationException("The drawing is empty - draw a pattern first.")
+      }
+      if (sampled.size > MAX_TILES) {
+        throw GenerationException(
+          "The drawing has ${sampled.size} distinct 3x3 patterns; at most $MAX_TILES are supported. " +
+            "Draw with fewer colours or simpler shapes.",
+        )
+      }
+      packed = WfcNative.packTiles(sampled)
+      val reusable = cachedOutput
+      if (reusable != null && cachedSeed == seed && columns == reusable.columns &&
+        rows == reusable.rows && cachedPacked.contentEquals(packed)
+      ) {
+        return@withContext reusable
+      }
     }
     val startedAt = System.currentTimeMillis()
     // The native solver is the only solver: the tile set is packed into a C model that every worker
@@ -159,10 +207,18 @@ object WfcGenerator {
     if (!WfcNative.available) {
       throw GenerationException("The native WFC solver is not available on this device.")
     }
-    val nativeModel = WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, columns, rows)
+    /*
+     * The model prunes the tile set itself (patterns that can never be placed next to anything), so the
+     * indices a solve returns are model tiles, and `sources` maps each one back to its sampled pattern.
+     */
+    val nativeModel = WfcNative.modelCreate(packed, packed.size / WfcNative.PACKED_TILE_INTS, columns, rows)
     if (nativeModel == 0L) {
-      throw GenerationException("The native WFC solver could not build a model for this drawing.")
+      throw GenerationException("No pattern in this drawing can touch another, so it cannot be tiled.")
     }
+    val tileCount = WfcNative.modelTileCount(nativeModel)
+    val sources = IntArray(tileCount) { tile -> WfcNative.modelTileSource(nativeModel, tile) }
+    // Read the colours while the model is alive: it is destroyed as soon as the solve returns.
+    val centers = IntArray(tileCount) { tile -> WfcNative.modelTileCenter(nativeModel, tile) }
     val result = try {
       val portfolio = StrictSolverPortfolio(
         columns = columns,
@@ -193,24 +249,40 @@ object WfcGenerator {
     val millis = System.currentTimeMillis() - startedAt
     val assignment = result.assignment
     val usedFallback = assignment == null
-    // Tile -> its centre colour is exactly the pixel the cell represents, and the strict rule
-    // guarantees every neighbour relation in the result is one that holds in the drawing.
-    val cellColors = if (assignment != null) {
-      IntArray(columns * rows) { cells[assignment[it]].color }
+    // A model tile's centre colour is exactly the pixel the cell represents (the model kept the packed
+    // kernels), and the strict rule guarantees every neighbour relation in the result holds in the
+    // drawing.
+    val renderStartedAt = System.nanoTime()
+    val target = synchronized(cacheLock) { renderTarget(columns, rows) }
+    val bitmap = if (assignment != null) {
+      target.renderSolved(assignment, sources, centers, columns, rows)
     } else {
-      stretchedDrawing(pixels, sourceWidth, sourceHeight, columns, rows)
+      target.renderColours(
+        stretchedDrawing(pixels, sourceWidth, sourceHeight, columns, rows),
+        columns,
+        rows,
+      )
     }
-    Output(
-      bitmap = render(cellColors, columns, rows),
+    val renderMillis = (System.nanoTime() - renderStartedAt) / 1_000_000
+    val output = Output(
+      bitmap = bitmap,
       columns = columns,
       rows = rows,
-      tileCount = cells.size,
+      tileCount = tileCount,
       millis = millis,
       seed = seed,
       wonBySeed = result.seed,
       workers = result.entries.size,
       usedFallback = usedFallback,
+      renderMillis = renderMillis,
+      solveMillis = result.millis,
     )
+    synchronized(cacheLock) {
+      cachedPacked = packed
+      cachedOutput = output
+      cachedSeed = seed
+    }
+    output
   }
 
   /**
@@ -240,30 +312,75 @@ object WfcGenerator {
   }
 
   /**
-   * Expands one cell per pixel to [PIXELS_PER_CELL]^2 pixels each.
+   * Two reusable bitmaps and one reusable pixel buffer, so a collapse stops allocating pixels.
    *
-   * An integer scale keeps every cell a flat block of one colour, which is what makes the generated
-   * image look like the drawing's pixels rather than a blur of them.
+   * Each generation used to allocate a 164 KB `IntArray`, copy it into a fresh 164 KB `Bitmap` and drop
+   * both -- 328 KB of garbage per keystroke, plus the extra copy. Both now live here. The two bitmaps
+   * alternate because the preview may still be drawing the previous frame while the next one is being
+   * written: the one on screen is never the one being filled in.
+   *
+   * Expands one cell to [PIXELS_PER_CELL]^2 pixels: an integer scale keeps every cell a flat block of
+   * one colour, which is what makes the generated image look like the drawing's pixels rather than a
+   * blur of them.
    */
-  private fun render(cellColors: IntArray, columns: Int, rows: Int): Bitmap {
-    val scale = PIXELS_PER_CELL
-    val width = columns * scale
-    val height = rows * scale
-    val argb = IntArray(width * height)
-    for (y in 0 until rows) {
-      val rowBase = y * columns
-      val pixelRowBase = y * scale * width
-      for (x in 0 until columns) {
-        val color = cellColors[rowBase + x]
-        val pixelX = x * scale
-        for (dy in 0 until scale) {
-          val base = pixelRowBase + dy * width + pixelX
-          for (dx in 0 until scale) {
-            argb[base + dx] = color
+  private class RenderTarget(val width: Int, val height: Int) {
+    private val bitmaps = Array(2) { Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888) }
+    private val pixels = IntArray(width * height)
+    private var next = 0
+
+    /**
+     * Draws a solved grid: cell (x, y) shows `centres[sources[assignment[y * columns + x]]]`.
+     *
+     * The lookup happens here rather than into an intermediate colour array, so a collapse keeps no
+     * pixel-side allocation at all.
+     */
+    fun renderSolved(
+      assignment: IntArray,
+      sources: IntArray,
+      centres: IntArray,
+      columns: Int,
+      rows: Int,
+    ): Bitmap {
+      val scale = width / columns
+      for (y in 0 until rows) {
+        val rowBase = y * columns
+        val pixelRowBase = y * scale * width
+        for (x in 0 until columns) {
+          val colour = centres[sources[assignment[rowBase + x]]]
+          val pixelX = x * scale
+          for (dy in 0 until scale) {
+            val base = pixelRowBase + dy * width + pixelX
+            for (dx in 0 until scale) pixels[base + dx] = colour
           }
         }
       }
+      return publish()
     }
-    return Bitmap.createBitmap(argb, width, height, Bitmap.Config.ARGB_8888)
+
+    /** Draws a ready-made grid of cell colours, e.g. the stretched fallback. */
+    fun renderColours(cellColours: IntArray, columns: Int, rows: Int): Bitmap {
+      val scale = width / columns
+      for (y in 0 until rows) {
+        val rowBase = y * columns
+        val pixelRowBase = y * scale * width
+        for (x in 0 until columns) {
+          val colour = cellColours[rowBase + x]
+          val pixelX = x * scale
+          for (dy in 0 until scale) {
+            val base = pixelRowBase + dy * width + pixelX
+            for (dx in 0 until scale) pixels[base + dx] = colour
+          }
+        }
+      }
+      return publish()
+    }
+
+    /** Copies the filled buffer into the next bitmap: the one on screen is never written. */
+    private fun publish(): Bitmap {
+      val bitmap = bitmaps[next]
+      next = (next + 1) % bitmaps.size
+      bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+      return bitmap
+    }
   }
 }

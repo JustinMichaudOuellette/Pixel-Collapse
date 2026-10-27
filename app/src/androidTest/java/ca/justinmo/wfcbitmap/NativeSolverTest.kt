@@ -17,9 +17,13 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * The device-side half of the engine tests: everything that needs the C solver.
  *
- * The C solver is the only solver now, so these are the tests that would have caught a wrong edge
- * rule, a stale reuse of a pooled solver, or a solve that ignores its abort flag. The tile-level and
- * fallback tests stay on the JVM in [WfcEngineTest].
+ * The C solver is the only solver now, so these are the tests that would catch a wrong edge rule, a
+ * stale reuse of a pooled solver, or a solve that ignores its abort flag. The tile-level and fallback
+ * tests stay on the JVM in [WfcEngineTest].
+ *
+ * Since the native model prunes the tile set itself, a solve result indexes *model* tiles. [ModelTiles]
+ * is the view that maps one back to the pattern that was sampled, so the assertions can still talk about
+ * kernels and colours.
  */
 @RunWith(AndroidJUnit4::class)
 class NativeSolverTest {
@@ -104,15 +108,36 @@ class NativeSolverTest {
   private fun tiles(pixels: IntArray): List<BitmapWaveFunctionCell> =
     BitmapWaveFunctionCell.createCells(IntArray2D(SOURCE_WIDTH, SOURCE_HEIGHT, pixels.copyOf()))
 
+  // --- solved results, seen through the model's tiles ---------------------------------------
+
+  /** The tile set as the native model sees it: compacted, with each tile traced back to its pattern. */
+  private class ModelTiles(
+    private val cells: List<BitmapWaveFunctionCell>,
+    private val sources: IntArray,
+  ) {
+    fun colour(tile: Int): Int = cells[sources[tile]].color
+
+    fun kernel(tile: Int): Array<Int?> = cells[sources[tile]].kernel
+
+    fun kernelColour(tile: Int, direction: Direction2d8): Int? =
+      cells[sources[tile]].kernelColor(direction)
+  }
+
+  private class Solved(val assignment: IntArray?, val tiles: ModelTiles?, val millis: Long)
+
+  private fun modelTiles(cells: List<BitmapWaveFunctionCell>, model: Long): ModelTiles =
+    ModelTiles(cells, IntArray(WfcNative.modelTileCount(model)) { WfcNative.modelTileSource(model, it) })
+
   /** Runs one native solve on a single seed, the way one portfolio worker does. */
-  private fun solve(cells: List<BitmapWaveFunctionCell>, seed: Int = 1): Pair<IntArray?, Long> {
+  private fun solve(cells: List<BitmapWaveFunctionCell>, seed: Int = 1): Solved {
     val model = WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS)
-    assertTrue("native model could not be created", model != 0L)
+    if (model == 0L) return Solved(null, null, 0)
+    val tiles = modelTiles(cells, model)
     val solver = NativeTileSolver(model, OUTPUT_COLUMNS, OUTPUT_ROWS, seed = seed)
     val startedAt = System.nanoTime()
     return try {
-      solver.solve(System.nanoTime() + 60_000_000_000L, 1_000_000) to
-        ((System.nanoTime() - startedAt) / 1_000_000)
+      val assignment = solver.solve(System.nanoTime() + 60_000_000_000L, 1_000_000)
+      Solved(assignment, if (assignment == null) null else tiles, (System.nanoTime() - startedAt) / 1_000_000)
     } finally {
       solver.close()
       WfcNative.modelDestroy(model)
@@ -130,11 +155,11 @@ class NativeSolverTest {
   fun flatDrawingCollapsesToItsEdgeVariants() {
     val cells = tiles(flatDrawing())
     assertEquals(9, cells.size)
-    val (assignment, millis) = solve(cells)
-    assertNotNull("the flat tile set must still tile", assignment)
-    println("flat: ${cells.size} tiles in ${millis}ms")
-    assertEquals(0, violations(assignment!!, cells))
-    assertBorderPatternsAreBlankOutwards("flat", assignment, cells)
+    val solved = solve(cells)
+    assertNotNull("the flat tile set must still tile", solved.assignment)
+    println("flat: ${cells.size} sampled patterns in ${solved.millis}ms")
+    assertEquals(0, violations(solved))
+    assertBorderPatternsAreBlankOutwards("flat", solved)
   }
 
   /**
@@ -144,47 +169,53 @@ class NativeSolverTest {
   @Test
   fun drawnBorderIsGeneratedOnTheBitmapBorder() {
     val cells = tiles(borderedDrawing())
-    val (assignment, millis) = solve(cells)
-    assertNotNull("no tiling for the bordered drawing", assignment)
-    assignment!!
-    println("bordered: ${cells.size} tiles in ${millis}ms")
-    assertBorderPatternsAreBlankOutwards("bordered", assignment, cells)
+    val solved = solve(cells)
+    assertNotNull("no tiling for the bordered drawing", solved.assignment)
+    println("bordered: ${cells.size} sampled patterns in ${solved.millis}ms")
+    assertBorderPatternsAreBlankOutwards("bordered", solved)
 
-    // Concretely: the bitmap's whole outline is the gold the border was drawn with, while the inside
-    // is not gold-only, so this is a collapse and not a copy.
+    // Concretely: the bitmap's whole outline is the gold the border was drawn with, while the inside is
+    // not gold-only, so this is a collapse and not a copy.
+    val assignment = solved.assignment!!
+    val tiles = solved.tiles!!
     for (x in 0 until OUTPUT_COLUMNS) {
-      assertEquals("top row x=$x", gold, cells[assignment[x]].color)
-      assertEquals("bottom row x=$x", gold, cells[assignment[(OUTPUT_ROWS - 1) * OUTPUT_COLUMNS + x]].color)
+      assertEquals("top row x=$x", gold, tiles.colour(assignment[x]))
+      assertEquals("bottom row x=$x", gold, tiles.colour(assignment[(OUTPUT_ROWS - 1) * OUTPUT_COLUMNS + x]))
     }
     for (y in 0 until OUTPUT_ROWS) {
-      assertEquals("left column y=$y", gold, cells[assignment[y * OUTPUT_COLUMNS]].color)
-      assertEquals("right column y=$y", gold, cells[assignment[y * OUTPUT_COLUMNS + OUTPUT_COLUMNS - 1]].color)
+      assertEquals("left column y=$y", gold, tiles.colour(assignment[y * OUTPUT_COLUMNS]))
+      assertEquals(
+        "right column y=$y",
+        gold,
+        tiles.colour(assignment[y * OUTPUT_COLUMNS + OUTPUT_COLUMNS - 1]),
+      )
     }
     val inside = (1 until OUTPUT_ROWS - 1).flatMap { y ->
-      (1 until OUTPUT_COLUMNS - 1).map { x -> cells[assignment[y * OUTPUT_COLUMNS + x]].color }
+      (1 until OUTPUT_COLUMNS - 1).map { x -> tiles.colour(assignment[y * OUTPUT_COLUMNS + x]) }
     }
     assertTrue("the interior should not be a solid border colour", inside.any { it != gold })
-    assertEquals("every cell must satisfy its eight neighbours", 0, violations(assignment, cells))
+    assertEquals("every cell must satisfy its eight neighbours", 0, violations(solved))
   }
 
   /** No hole may appear inside the bitmap: only border cells may use a pattern that is blank anywhere. */
   @Test
   fun interiorCellsOnlyUseCompletePatterns() {
     val cells = tiles(ringsDrawing())
-    val (assignment, millis) = solve(cells)
-    assertNotNull("no tiling for the rings drawing", assignment)
-    assignment!!
-    println("rings: ${cells.size} tiles in ${millis}ms")
+    val solved = solve(cells)
+    assertNotNull("no tiling for the rings drawing", solved.assignment)
+    println("rings: ${cells.size} sampled patterns in ${solved.millis}ms")
+    val assignment = solved.assignment!!
+    val tiles = solved.tiles!!
     for (y in 1 until OUTPUT_ROWS - 1) {
       for (x in 1 until OUTPUT_COLUMNS - 1) {
-        val cell = cells[assignment[y * OUTPUT_COLUMNS + x]]
+        val tile = assignment[y * OUTPUT_COLUMNS + x]
         assertFalse(
-          "interior cell ($x,$y) used an edge pattern: ${cell.kernel}",
-          cell.kernel.any { it == null },
+          "interior cell ($x,$y) used an edge pattern: ${tiles.kernel(tile).contentToString()}",
+          tiles.kernel(tile).any { it == null },
         )
       }
     }
-    assertEquals(0, violations(assignment, cells))
+    assertEquals(0, violations(solved))
   }
 
   /**
@@ -195,21 +226,24 @@ class NativeSolverTest {
    */
   @Test
   fun drawingWhoseEdgeCannotCloseHasNoTiling() {
-    val (assignment, millis) = solve(tiles(frameDrawing()))
-    assertNull("the frame drawing unexpectedly tiled", assignment)
-    assertTrue("an unsatisfiable instance should be rejected quickly, not timed out (took ${millis}ms)", millis < 10_000)
-    println("frame: no tiling in ${millis}ms")
+    val solved = solve(tiles(frameDrawing()))
+    assertNull("the frame drawing unexpectedly tiled", solved.assignment)
+    assertTrue(
+      "an unsatisfiable instance should be rejected quickly, not timed out (took ${solved.millis}ms)",
+      solved.millis < 10_000,
+    )
+    println("frame: no tiling in ${solved.millis}ms")
   }
 
   @Test
   fun repetitiveDrawingsTileCleanly() {
     for ((name, drawing) in listOf("rings" to ringsDrawing(), "sprite" to spriteDrawing())) {
       val cells = tiles(drawing)
-      val (assignment, millis) = solve(cells)
-      assertNotNull("$name produced no tiling", assignment)
-      println("$name: ${cells.size} tiles, ${OUTPUT_COLUMNS}x$OUTPUT_ROWS in ${millis}ms")
-      assertEquals("$name: neighbour mismatches", 0, violations(assignment!!, cells))
-      assertBorderPatternsAreBlankOutwards(name, assignment, cells)
+      val solved = solve(cells)
+      assertNotNull("$name produced no tiling", solved.assignment)
+      println("$name: ${cells.size} sampled patterns, ${OUTPUT_COLUMNS}x$OUTPUT_ROWS in ${solved.millis}ms")
+      assertEquals("$name: neighbour mismatches", 0, violations(solved))
+      assertBorderPatternsAreBlankOutwards(name, solved)
     }
   }
 
@@ -229,17 +263,19 @@ class NativeSolverTest {
     for (y in 0 until SOURCE_HEIGHT) pixels[y * SOURCE_WIDTH] = rust
     val cells = tiles(pixels)
 
-    val (assignment, _) = solve(cells)
-    assertNotNull("native solver found no tiling for the asymmetric border", assignment)
-    assertEquals(0, violations(assignment!!, cells))
+    val solved = solve(cells)
+    assertNotNull("native solver found no tiling for the asymmetric border", solved.assignment)
+    assertEquals(0, violations(solved))
 
-    val leftColumn = (0 until OUTPUT_ROWS).map { cells[assignment[it * OUTPUT_COLUMNS]].color }.toSet()
+    val assignment = solved.assignment!!
+    val tiles = solved.tiles!!
+    val leftColumn = (0 until OUTPUT_ROWS).map { tiles.colour(assignment[it * OUTPUT_COLUMNS]) }.toSet()
     val rightColumn = (0 until OUTPUT_ROWS)
-      .map { cells[assignment[it * OUTPUT_COLUMNS + OUTPUT_COLUMNS - 1]].color }
+      .map { tiles.colour(assignment[it * OUTPUT_COLUMNS + OUTPUT_COLUMNS - 1]) }
       .toSet()
     assertEquals("the drawing's left column is rust, so the bitmap's left column must be too", setOf(rust), leftColumn)
     assertEquals("the drawing's right column is ink, so the bitmap's right column must be too", setOf(ink), rightColumn)
-    assertBorderPatternsAreBlankOutwards("asymmetric", assignment, cells)
+    assertBorderPatternsAreBlankOutwards("asymmetric", solved)
   }
 
   /** The portfolio drives the native solver through the factory, one pooled solver per worker. */
@@ -261,7 +297,7 @@ class NativeSolverTest {
       )
       val assignment = result.assignment
       assertNotNull("the portfolio found no tiling through the native solver", assignment)
-      assertEquals(0, violations(assignment!!, cells))
+      assertEquals(0, violations(Solved(assignment, modelTiles(cells, model), result.millis)))
       println("native portfolio: ${result.millis}ms, seeds=${result.entries.map { it.decisions }}")
     } finally {
       WfcNative.modelDestroy(model)
@@ -317,9 +353,6 @@ class NativeSolverTest {
   /**
    * A pooled solver is reused across collapses, so a later solve must inherit nothing from an earlier
    * one -- not the domains, and not the result of a solve that failed.
-   *
-   * The pool hands the same native handle to consecutive collapses here, which is exactly what the app
-   * does when the user keeps drawing.
    */
   @Test
   fun reusedSolverStartsClean() {
@@ -337,18 +370,19 @@ class NativeSolverTest {
       val firstSolver = NativeTileSolver(ringsModel, OUTPUT_COLUMNS, OUTPUT_ROWS, seed = 1)
       val first = firstSolver.solve(deadline, 1_000_000)
       assertNotNull("the first collapse on a fresh solver must succeed", first)
-      assertEquals(0, violations(first!!, ringsCells))
+      assertEquals(0, violations(Solved(first!!, modelTiles(ringsCells, ringsModel), 0)))
       firstSolver.close()
 
       // Same pooled handle, different drawing, flat tile set (nine patterns, no decisions to make).
       val secondSolver = NativeTileSolver(flatModel, OUTPUT_COLUMNS, OUTPUT_ROWS, seed = 1)
       val second = secondSolver.solve(deadline, 1_000_000)
       assertNotNull("the second collapse on a reused solver must succeed", second)
-      assertEquals(0, violations(second!!, flatCells))
-      assertBorderPatternsAreBlankOutwards("reused-flat", second, flatCells)
+      val secondView = Solved(second!!, modelTiles(flatCells, flatModel), 0)
+      assertEquals(0, violations(secondView))
+      assertBorderPatternsAreBlankOutwards("reused-flat", secondView)
       secondSolver.close()
 
-      // And a drawing with no tiling must report exactly that, not a leftover tiling.
+      // A drawing with no tiling must report exactly that, not a leftover tiling.
       val thirdSolver = NativeTileSolver(frameModel, OUTPUT_COLUMNS, OUTPUT_ROWS, seed = 1)
       assertNull("a reused solver must not hand back a stale tiling", thirdSolver.solve(deadline, 1_000_000))
       thirdSolver.close()
@@ -357,57 +391,58 @@ class NativeSolverTest {
       val fourthSolver = NativeTileSolver(ringsModel, OUTPUT_COLUMNS, OUTPUT_ROWS, seed = 5)
       val fourth = fourthSolver.solve(deadline, 1_000_000)
       assertNotNull("the pooled solver must still solve after a failed collapse", fourth)
-      assertEquals(0, violations(fourth!!, ringsCells))
+      assertEquals(0, violations(Solved(fourth!!, modelTiles(ringsCells, ringsModel), 0)))
       fourthSolver.close()
     } finally {
       for (model in models) WfcNative.modelDestroy(model)
     }
   }
+
   // --- helpers ------------------------------------------------------------------------------
 
-  private fun assertBorderPatternsAreBlankOutwards(
-    label: String,
-    assignment: IntArray,
-    cells: List<BitmapWaveFunctionCell>,
-  ) {
+  private fun assertBorderPatternsAreBlankOutwards(label: String, solved: Solved) {
+    val assignment = solved.assignment ?: return
+    val tiles = solved.tiles ?: return
     for (x in 0 until OUTPUT_COLUMNS) {
       assertEquals(
         "$label: top row $x is not a drawing-edge pattern",
         null,
-        cells[assignment[x]].kernelColor(Direction2d8.UP),
+        tiles.kernelColour(assignment[x], Direction2d8.UP),
       )
       assertEquals(
         "$label: bottom row $x is not a drawing-edge pattern",
         null,
-        cells[assignment[(OUTPUT_ROWS - 1) * OUTPUT_COLUMNS + x]].kernelColor(Direction2d8.DOWN),
+        tiles.kernelColour(assignment[(OUTPUT_ROWS - 1) * OUTPUT_COLUMNS + x], Direction2d8.DOWN),
       )
     }
     for (y in 0 until OUTPUT_ROWS) {
       assertEquals(
         "$label: left column $y is not a drawing-edge pattern",
         null,
-        cells[assignment[y * OUTPUT_COLUMNS]].kernelColor(Direction2d8.LEFT),
+        tiles.kernelColour(assignment[y * OUTPUT_COLUMNS], Direction2d8.LEFT),
       )
       assertEquals(
         "$label: right column $y is not a drawing-edge pattern",
         null,
-        cells[assignment[y * OUTPUT_COLUMNS + OUTPUT_COLUMNS - 1]].kernelColor(Direction2d8.RIGHT),
+        tiles.kernelColour(assignment[y * OUTPUT_COLUMNS + OUTPUT_COLUMNS - 1], Direction2d8.RIGHT),
       )
     }
   }
 
-  private fun violations(assignment: IntArray, cells: List<BitmapWaveFunctionCell>): Int {
+  private fun violations(solved: Solved): Int {
+    val assignment = solved.assignment ?: return 0
+    val tiles = solved.tiles ?: return 0
     var bad = 0
     for (y in 0 until OUTPUT_ROWS) {
       for (x in 0 until OUTPUT_COLUMNS) {
-        val here = cells[assignment[y * OUTPUT_COLUMNS + x]]
+        val here = assignment[y * OUTPUT_COLUMNS + x]
         for (direction in Direction2d8.entries) {
           val nx = x + direction.dx
           val ny = y + direction.dy
           if (nx < 0 || ny < 0 || nx >= OUTPUT_COLUMNS || ny >= OUTPUT_ROWS) continue
-          val there = cells[assignment[ny * OUTPUT_COLUMNS + nx]]
-          if (here.kernelColor(direction) != there.color ||
-            there.kernelColor(direction.opposite()) != here.color
+          val there = assignment[ny * OUTPUT_COLUMNS + nx]
+          if (tiles.kernelColour(here, direction) != tiles.colour(there) ||
+            tiles.kernelColour(there, direction.opposite()) != tiles.colour(here)
           ) {
             bad++
           }

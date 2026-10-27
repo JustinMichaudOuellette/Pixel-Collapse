@@ -7,9 +7,9 @@ import net.akachaki.processing.engine.enum.Direction2d8
  * One tile of the overlapping model: the 3x3 window of the drawing it was sampled from, where `null`
  * means the drawing ends before that pixel.
  *
- * This is now only the *tile* side of the model -- sampling, weights, and the direction/colour lookup
- * the native solver's packing needs. The search itself lives in C (`app/src/main/cpp/wfc.c`); there is
- * no Kotlin solver any more.
+ * This is only the *tile* side of the model -- sampling, weights, and the direction/colour lookup the
+ * native solver's packing needs. The search, and the consistency pruning of the tile set itself, live
+ * in C (`app/src/main/cpp/wfc.c`); there is no Kotlin solver any more.
  */
 class BitmapWaveFunctionCell(
     val kernel: Array<Int?>,
@@ -53,13 +53,39 @@ class BitmapWaveFunctionCell(
 
     companion object {
 
+        /** Number of pixels in a window, i.e. the length of a kernel and of a counting key. */
+        const val KERNEL_SIZE = 9
+
         /**
-         * Builds the tile set from every 3x3 window of the drawing, sampled as it lies: a window that
-         * hangs over an edge of the drawing has no pixel there, and the kernel records that as `null`.
+         * Canonical tile order: by the window itself, blanks first.
          *
-         * Those blanks are what give a drawing an edge. A kernel is blank in a direction only where
-         * the drawing ends, so the solver requires border cells to be blank outwards, which is the same
-         * as requiring them to use a pattern sampled on the matching edge of the drawing -- and in turn
+         * The order matters because it is the tile index the solver stores in its result. Sorting makes
+         * the tile set a function of the drawing alone rather than of the order windows were visited
+         * in, which is what lets [ca.justinmo.wfcbitmap.WfcGenerator] recognise "this edit did not
+         * change the tile set" and reuse the previous collapse instead of re-solving.
+         */
+        private val CANONICAL_ORDER = Comparator<List<Int?>> { a, b ->
+            for (i in 0 until KERNEL_SIZE) {
+                val left = a[i]
+                val right = b[i]
+                val order = when {
+                    left == right -> 0
+                    left == null -> -1
+                    right == null -> 1
+                    else -> left.compareTo(right)
+                }
+                if (order != 0) return@Comparator order
+            }
+            0
+        }
+
+        /**
+         * Samples every 3x3 window of the drawing, as it lies: a window that hangs over an edge of the
+         * drawing has no pixel there, and the kernel records that as `null`.
+         *
+         * Those blanks are what give a drawing an edge. A kernel is blank in a direction only where the
+         * drawing ends, so the solver requires border cells to be blank outwards, which is the same as
+         * requiring them to use a pattern sampled on the matching edge of the drawing -- and in turn
          * means a pixel drawn on the edge of the drawing can only be generated on the edge of the
          * bitmap.
          *
@@ -69,68 +95,63 @@ class BitmapWaveFunctionCell(
          * still be an edge, but not the one that was drawn. Every tile is exactly a window of the
          * drawing, so a pixel stays on the edge it was put on.
          *
-         * Note the trade this makes. Because the drawing's edge must then close around the output, a
-         * border that cannot repeat enough has *no* tiling at all, which is a real possibility and the
-         * reason [StrictSolverPortfolio] returns early when every worker gives up.
+         * Patterns that can never be placed next to anything are dropped by the native model, not here.
+         *
+         * Note the trade the edge rule makes. Because the drawing's edge must then close around the
+         * output, a border that cannot repeat enough has *no* tiling at all, and
+         * [StrictSolverPortfolio] then returns nothing, which is why the caller falls back to the
+         * stretched drawing.
          */
         fun createCells(
             pixels: IntArray2D,
         ): List<BitmapWaveFunctionCell> {
-            val possibilities = mutableMapOf<List<Int?>, Int>()
-            computePossibilities(pixels, possibilities)
-            return pruneUnsupported(possibilities.map { (kernel, count) ->
-                BitmapWaveFunctionCell(kernel.toTypedArray(), count.toFloat())
-            })
+            val counts = mutableMapOf<List<Int?>, Int>()
+            countWindows(pixels, counts)
+            return createCells(counts)
         }
 
         /**
-         * Arc consistency on the tile set itself: drops every kernel that can never be placed next to
-         * any other kernel in some direction.
+         * Builds the tile set from window counts: one tile per distinct window, weighted by how often
+         * it occurs, in canonical order.
          *
-         * This is a one-off preprocessing step (a few hundred thousand comparisons), and it pays off
-         * twice: the domains the search carries are smaller, and the tiles that could only ever cause
-         * a contradiction are gone before the first collapse. A direction where the kernel has no
-         * pixel (grid border) needs no support.
+         * Takes counts rather than pixels so an edit can update only the windows it touched
+         * ([ca.justinmo.wfcbitmap.WindowTally]) and still produce exactly the tile set a full resample
+         * would.
          */
-        fun pruneUnsupported(cells: List<BitmapWaveFunctionCell>): List<BitmapWaveFunctionCell> {
-            val alive = LinkedHashSet(cells)
-            var changed = true
-            while (changed) {
-                changed = false
-                val iterator = alive.iterator()
-                while (iterator.hasNext()) {
-                    val cell = iterator.next()
-                    val supported = Direction2d8.entries.all { direction ->
-                        val requiredColor = cell.kernelColor(direction)
-                        requiredColor == null || alive.any { other ->
-                            other.color == requiredColor &&
-                                other.kernelColor(direction.opposite()) == cell.color
-                        }
-                    }
-                    if (!supported) {
-                        iterator.remove()
-                        changed = true
-                    }
-                }
+        fun createCells(counts: Map<List<Int?>, Int>): List<BitmapWaveFunctionCell> {
+            val kernels = counts.keys.sortedWith(CANONICAL_ORDER)
+            return kernels.map { kernel ->
+                BitmapWaveFunctionCell(kernel.toTypedArray(), (counts[kernel] ?: 0).toFloat())
             }
-            return alive.toList()
         }
 
-        private fun computePossibilities(
-            pixels: IntArray2D,
-            possibilities: MutableMap<List<Int?>, Int>
-        ) {
+        /** Counts every window of [pixels], adding into [counts]. */
+        fun countWindows(pixels: IntArray2D, counts: MutableMap<List<Int?>, Int>) {
             for (y in 0 until pixels.height) {
                 for (x in 0 until pixels.width) {
-                    val kernel = MutableList<Int?>(9) { null }
-                    for (dx in -1..1) {
-                        for (dy in -1..1) {
-                            kernel[(dy + 1) * 3 + dx + 1] = pixels.getOrNull(x + dx, y + dy)
-                        }
-                    }
-                    val count = possibilities[kernel]
-                    possibilities[kernel] = (count ?: 0) + 1
+                    add(counts, windowAt(pixels, x, y), 1)
                 }
+            }
+        }
+
+        /** The window centred on (x, y), or all-null where that is outside the drawing. */
+        fun windowAt(pixels: IntArray2D, x: Int, y: Int): List<Int?> {
+            val kernel = MutableList<Int?>(KERNEL_SIZE) { null }
+            for (dx in -1..1) {
+                for (dy in -1..1) {
+                    kernel[(dy + 1) * 3 + dx + 1] = pixels.getOrNull(x + dx, y + dy)
+                }
+            }
+            return kernel
+        }
+
+        /** Adds [delta] to the count of [kernel], dropping the entry when it reaches zero. */
+        fun add(counts: MutableMap<List<Int?>, Int>, kernel: List<Int?>, delta: Int) {
+            val updated = (counts[kernel] ?: 0) + delta
+            if (updated <= 0) {
+                counts.remove(kernel)
+            } else {
+                counts[kernel] = updated
             }
         }
     }

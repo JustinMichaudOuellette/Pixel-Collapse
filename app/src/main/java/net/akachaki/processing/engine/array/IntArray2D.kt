@@ -36,16 +36,6 @@ class IntArray2D(
             }
         }
 
-    fun mirrorX() {
-        for (x in 0 until width / 2) {
-            for (y in 0 until height) {
-                val xx = width - x - 1
-                val previous = get(x, y)
-                set(x, y, get(xx, y))
-                set(xx, y, previous)
-            }
-        }
-    }
 
     companion object {
             inline fun create(width: Int, height: Int, initial: (x: Int, y: Int) -> Int): IntArray2D =

@@ -127,7 +127,7 @@ fun PixelEditor(modifier: Modifier = Modifier) {
             TAG,
             "Generated ${generated.bitmap.width}x${generated.bitmap.height} bitmap from " +
               "${generated.columns}x${generated.rows} cells, ${generated.tileCount} patterns, " +
-              "${generated.millis} ms",
+              "${generated.millis} ms (solve ${generated.solveMillis} ms, render ${generated.renderMillis} ms)",
           )
           output = generated
         }

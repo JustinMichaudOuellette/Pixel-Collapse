@@ -222,6 +222,71 @@ class WfcEngineTest {
     assertTrue(cells.any { cell -> cell.kernelColor(Direction2d8.DOWN) == null })
   }
 
+  // --- incremental extraction ---------------------------------------------------------------
+
+  /**
+   * The point of [WindowTally]: an edit only re-tallies the windows it touched, and the tile set it
+   * produces must be exactly the one a full resample would. If this drifts, the live preview would show
+   * a different picture depending on the order pixels were drawn in.
+   */
+  @Test
+  fun incrementalSamplingMatchesAFullResample() {
+    val tally = WindowTally()
+    val pixels = borderedMotifDrawing()
+    val first = tally.sample(IntArray2D(SOURCE_WIDTH, SOURCE_HEIGHT, pixels.copyOf()))
+
+    // A few local edits: a run of single pixels, which is what drawing does.
+    val edited = pixels.copyOf()
+    for (step in 0 until 24) {
+      val x = 2 + step % 12
+      val y = 2 + (step * 7) % 7
+      edited[y * SOURCE_WIDTH + x] = when (step % 3) {
+        0 -> rust
+        1 -> slate
+        else -> gold
+      }
+      val incremental = tally.sample(IntArray2D(SOURCE_WIDTH, SOURCE_HEIGHT, edited.copyOf()))
+      val full = BitmapWaveFunctionCell.createCells(
+        IntArray2D(SOURCE_WIDTH, SOURCE_HEIGHT, edited.copyOf()),
+      )
+      assertEquals(
+        "step ${step}: incremental tiles differ from a full resample",
+        full.map { it.kernel.toList() to it.weight },
+        incremental.map { it.kernel.toList() to it.weight },
+      )
+    }
+    assertTrue("the drawing should still produce tiles", first.isNotEmpty())
+  }
+
+  /** Re-sampling an unchanged drawing must produce the identical tile set, so the result can be reused. */
+  @Test
+  fun resamplingAnUnchangedDrawingIsIdentical() {
+    val tally = WindowTally()
+    val pixels = ringsDrawing()
+    val once = tally.sample(IntArray2D(SOURCE_WIDTH, SOURCE_HEIGHT, pixels.copyOf()))
+    val twice = tally.sample(IntArray2D(SOURCE_WIDTH, SOURCE_HEIGHT, pixels.copyOf()))
+    assertEquals(once.size, twice.size)
+    for (i in once.indices) {
+      assertEquals(once[i].kernel.toList(), twice[i].kernel.toList())
+      assertEquals(once[i].weight, twice[i].weight, 0.0f)
+    }
+  }
+
+  /** A window that hangs over the edge keeps its blanks, however the tally got there. */
+  @Test
+  fun incrementalSamplingKeepsEdgeWindowsBlank() {
+    val tally = WindowTally()
+    val pixels = IntArray(SOURCE_WIDTH * SOURCE_HEIGHT) { ink }
+    tally.sample(IntArray2D(SOURCE_WIDTH, SOURCE_HEIGHT, pixels.copyOf()))
+    pixels[5 * SOURCE_WIDTH + 5] = gold
+    val cells = tally.sample(IntArray2D(SOURCE_WIDTH, SOURCE_HEIGHT, pixels.copyOf()))
+    val full = BitmapWaveFunctionCell.createCells(
+      IntArray2D(SOURCE_WIDTH, SOURCE_HEIGHT, pixels.copyOf()),
+    )
+    assertEquals(full.map { it.kernel.toList() }, cells.map { it.kernel.toList() })
+    assertTrue("an edge window must still be blank outwards", cells.any { cell -> cell.kernel.any { it == null } })
+  }
+
   private companion object {
     /** The editor's grid, i.e. what the app is actually asked to fold. */
     const val SOURCE_WIDTH = 16
