@@ -1,0 +1,260 @@
+package ca.justinmo.wfcbitmap
+
+import android.content.ContentResolver
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import androidx.annotation.RequiresApi
+import androidx.core.content.FileProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+/**
+ * Writes a picture into the device's gallery.
+ *
+ * There are two code paths because the storage model changed in API 29: from Q on, a row is inserted
+ * into [MediaStore] and the PNG is streamed into that row, which needs no permission at all; before Q
+ * the file has to be written into shared storage directly, which needs WRITE_EXTERNAL_STORAGE.
+ *
+ * The bitmap is not copied here. Callers hand over a bitmap they own -- the generator reuses its render
+ * targets, so handing over a live one would let the next generation repaint the pixels mid-encode.
+ */
+object ImageSaver {
+
+  /** Gallery folder the saved pictures appear in, under the device's Pictures directory. */
+  const val ALBUM = "WFCBitmap"
+
+  /** Cache folder shared pictures are written to; matches the path in `res/xml/file_paths.xml`. */
+  const val SHARE_FOLDER = "shared"
+
+  /** Suffix of the [FileProvider] authority, which is `${applicationId}.fileprovider`. */
+  const val FILE_PROVIDER_SUFFIX = ".fileprovider"
+
+  /** MIME type of what is written; also what the gallery row is filed under. */
+  private const val MIME_TYPE = "image/png"
+
+  /**
+   * True on the API levels where writing into the gallery still needs a runtime grant of
+   * WRITE_EXTERNAL_STORAGE (26-28). From API 29 the [MediaStore] insert needs none.
+   *
+   * @param sdk the API level to answer for; defaults to the running device.
+   */
+  fun needsLegacyWritePermission(sdk: Int = Build.VERSION.SDK_INT): Boolean = sdk < API_LEVEL_Q
+
+  /** The permission [needsLegacyWritePermission] talks about. */
+  const val LEGACY_WRITE_PERMISSION = android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+
+  /**
+   * `Build.VERSION_CODES.Q` as a plain number: the check above stays a comparison of two ints, which
+   * keeps it a unit test rather than something that needs a device.
+   */
+  private const val API_LEVEL_Q = 29
+
+  /**
+   * A gallery-unique-looking file name for a picture saved at [timestampMillis].
+   *
+   * Seconds are not enough on their own -- two saves in the same second would collide -- so the
+   * millisecond remainder is appended. The extension is part of the name because MediaStore uses it to
+   * decide how the file is treated.
+   */
+  fun fileName(timestampMillis: Long): String {
+    val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(timestampMillis))
+    // Zero-padded so names sort in the order they were saved.
+    val millis = String.format(Locale.US, "%03d", timestampMillis % 1000)
+    return "wfc-$stamp-$millis.png"
+  }
+
+  /**
+   * The pixel size [bitmap] is written at when the output is set to [scale].
+   *
+   * Scaling happens on the way out, not in the solver: the structure of the picture is decided by the
+   * grid, and asking for more pixels only asks for a bigger copy of it.
+   */
+  fun scaledSize(width: Int, height: Int, scale: Int): Pair<Int, Int> {
+    val safeScale = scale.coerceAtLeast(1)
+    return width * safeScale to height * safeScale
+  }
+
+  /**
+   * [bitmap], or an enlarged copy of it when [scale] is above 1.
+   *
+   * Nearest neighbour on purpose: the picture is pixel art, and a smooth filter would blur exactly the
+   * edges the drawing put there. The caller owns the result and must recycle it when it is not [bitmap].
+   */
+  fun atScale(bitmap: Bitmap, scale: Int): Bitmap {
+    val (width, height) = scaledSize(bitmap.width, bitmap.height, scale)
+    if (width == bitmap.width && height == bitmap.height) return bitmap
+    return Bitmap.createScaledBitmap(bitmap, width, height, false)
+  }
+
+  /**
+   * Writes [bitmap] into the gallery as a PNG and returns the URI it was written to.
+   *
+   * @param name file name including the extension; see [fileName].
+   * @param scale output scale; see [scaledSize].
+   * @throws IOException when the gallery refuses the row or the encode fails, after cleaning up.
+   */
+  suspend fun saveToGallery(
+    context: Context,
+    bitmap: Bitmap,
+    name: String = fileName(System.currentTimeMillis()),
+    scale: Int = 1,
+  ): Uri = withContext(Dispatchers.IO) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      writeThroughMediaStore(context, bitmap, name, scale)
+    } else {
+      writeToSharedStorage(context, bitmap, name, scale)
+    }
+  }
+
+  /**
+   * Writes [bitmap] to the app's cache for sharing and returns the URI a share sheet can hand out.
+   *
+   * The cache is the right home for a shared picture: it is temporary by definition, the app does not
+   * need permission to write it, and the [FileProvider] declared in the manifest is the only way out.
+   *
+   * @param scale output scale; see [scaledSize].
+   */
+  suspend fun prepareShare(
+    context: Context,
+    bitmap: Bitmap,
+    scale: Int = 1,
+  ): Uri = withContext(Dispatchers.IO) {
+    val name = fileName(System.currentTimeMillis())
+    val dir = File(context.cacheDir, SHARE_FOLDER)
+    if (!dir.isDirectory && !dir.mkdirs()) {
+      throw IOException("Could not create $dir")
+    }
+    // Drop yesterday's shares so the cache cannot grow forever, but leave recent ones alone: the app a
+    // picture was handed to may still be reading it.
+    val cutoff = System.currentTimeMillis() - SHARE_LIFETIME_MS
+    dir.listFiles()?.forEach { old -> if (old.lastModified() < cutoff) old.delete() }
+    val file = File(dir, name)
+
+    val scaled = atScale(bitmap, scale)
+    try {
+      file.outputStream().use { out ->
+        if (!scaled.compress(Bitmap.CompressFormat.PNG, PNG_QUALITY, out)) {
+          throw IOException("The picture could not be encoded as PNG")
+        }
+      }
+    } finally {
+      if (scaled !== bitmap) scaled.recycle()
+    }
+
+    FileProvider.getUriForFile(context, "${context.packageName}$FILE_PROVIDER_SUFFIX", file)
+  }
+
+  /** The share intent for a picture written by [prepareShare]. */
+  fun shareIntent(picture: Uri): Intent =
+    Intent(Intent.ACTION_SEND)
+      .setType(MIME_TYPE)
+      .putExtra(Intent.EXTRA_STREAM, picture)
+      .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+  /**
+   * API 29+: insert the row first, stream the PNG into it, then publish it.
+   *
+   * The row is inserted with `IS_PENDING` set so no other app can see a half-written picture, and
+   * deleted again if the encode fails, so a failure leaves no empty entry in the gallery.
+   */
+  @RequiresApi(Build.VERSION_CODES.Q)
+  private fun writeThroughMediaStore(context: Context, bitmap: Bitmap, name: String, scale: Int): Uri {
+    val resolver = context.contentResolver
+    val pending = ContentValues().apply {
+      put(MediaStore.Images.Media.DISPLAY_NAME, name)
+      put(MediaStore.Images.Media.MIME_TYPE, MIME_TYPE)
+      put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/$ALBUM")
+      put(MediaStore.Images.Media.IS_PENDING, 1)
+    }
+    val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, pending)
+      ?: throw IOException("The gallery would not create an entry for $name")
+
+    val scaled = atScale(bitmap, scale)
+    try {
+      encodeInto(resolver, uri, scaled)
+      resolver.update(
+        uri,
+        ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) },
+        null,
+        null,
+      )
+    } catch (e: Throwable) {
+      runCatching { resolver.delete(uri, null, null) }
+      throw e
+    } finally {
+      if (scaled !== bitmap) scaled.recycle()
+    }
+    return uri
+  }
+
+  /**
+   * API 26-28: write the file into shared storage, then add the gallery row that points at it.
+   *
+   * @throws IOException when the album cannot be created or the write fails.
+   */
+  @Suppress("DEPRECATION")
+  private fun writeToSharedStorage(context: Context, bitmap: Bitmap, name: String, scale: Int): Uri {
+    val pictures = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+    val album = File(pictures, ALBUM)
+    if (!album.isDirectory && !album.mkdirs()) {
+      throw IOException("Could not create $album")
+    }
+    val file = File(album, name)
+    val scaled = atScale(bitmap, scale)
+    try {
+      file.outputStream().use { out ->
+        if (!scaled.compress(Bitmap.CompressFormat.PNG, PNG_QUALITY, out)) {
+          throw IOException("The picture could not be encoded as PNG")
+        }
+      }
+    } finally {
+      if (scaled !== bitmap) scaled.recycle()
+    }
+
+    // Registering the file is what makes it appear in the gallery; a media scan would do the same but
+    // only whenever the scanner next runs. A failed insert takes the file with it, so a failure does
+    // not leave a picture in Pictures/ that nothing knows about.
+    val values = ContentValues().apply {
+      put(MediaStore.Images.Media.DISPLAY_NAME, name)
+      put(MediaStore.Images.Media.MIME_TYPE, MIME_TYPE)
+      put(MediaStore.Images.Media.DATA, file.absolutePath)
+    }
+    return context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+      ?: run {
+        file.delete()
+        throw IOException("The gallery would not accept $file")
+      }
+  }
+
+  /** Streams the PNG into an already-inserted gallery row. */
+  private fun encodeInto(
+    resolver: ContentResolver,
+    uri: Uri,
+    bitmap: Bitmap,
+  ) {
+    val out = resolver.openOutputStream(uri)
+      ?: throw IOException("The gallery entry for $uri cannot be written")
+    out.use {
+      if (!bitmap.compress(Bitmap.CompressFormat.PNG, PNG_QUALITY, it)) {
+        throw IOException("The picture could not be encoded as PNG")
+      }
+    }
+  }
+
+  /** Ignored by the PNG encoder -- PNG is lossless -- but the API still wants a number. */
+  private const val PNG_QUALITY = 100
+
+  /** How long a shared picture is left in the cache before the next share clears it away. */
+  private const val SHARE_LIFETIME_MS = 60L * 60 * 1000
+}

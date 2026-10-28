@@ -1,10 +1,16 @@
 package ca.justinmo.wfcbitmap
 
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -20,8 +26,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -103,6 +111,12 @@ fun PixelEditor(modifier: Modifier = Modifier) {
   var notice by remember { mutableStateOf<String?>(null) }
 
   /*
+   * What the picture is: its shape and the size it is written at. Changing the shape regenerates, because
+   * the solver grid follows it; changing the size does not, because scaling happens on the way out.
+   */
+  var outputSettings by remember { mutableStateOf(BitmapEditor.OutputSettings()) }
+
+  /*
    * Generation is started straight from the gesture, not from observing the drawing.
    *
    * Observing costs a frame: `revision` is snapshot state, Compose delivers apply-notifications on a
@@ -122,6 +136,10 @@ fun PixelEditor(modifier: Modifier = Modifier) {
     val rows = gridState.rows
     val pixels = IntArray(columns * rows) { gridState.pixels[it].toArgb() }
     val requestedSeed = seed
+    // The shape of the output is a solving decision: the grid the solver fills is what gives the picture
+    // its proportions, and [WfcGenerator.gridForAspect] keeps the cell count (and so the cost) fixed
+    // whatever shape is chosen.
+    val (outputColumns, outputRows) = WfcGenerator.gridForAspect(outputSettings.aspect.ratio)
     generation.job?.cancel()
     generation.job = scope.launch {
       latency.bodyStart()
@@ -132,6 +150,8 @@ fun PixelEditor(modifier: Modifier = Modifier) {
           sourceWidth = columns,
           sourceHeight = rows,
           seed = requestedSeed,
+          columns = outputColumns,
+          rows = outputRows,
         )
       } catch (e: CancellationException) {
         // A newer edit replaced this one; let the cancellation through instead of reporting it.
@@ -178,15 +198,107 @@ fun PixelEditor(modifier: Modifier = Modifier) {
   // First picture for the drawing as it starts out.
   LaunchedEffect(Unit) { requestGeneration() }
 
+  // A different output shape is a different grid to solve, so the picture has to be rebuilt for it.
+  LaunchedEffect(outputSettings.aspect) { requestGeneration() }
+
+  /*
+   * Saving and sharing write the picture that is on screen, which is the generated bitmap.
+   *
+   * The bitmap is copied here, on the main thread, before the write: the generator reuses its render
+   * targets, so the live bitmap can be repainted by the next generation while the encoder is reading
+   * it. A 304x540 copy is cheap enough to belong on the main thread.
+   */
+  val context = LocalContext.current
+  var pictureToSave by remember { mutableStateOf<Bitmap?>(null) }
+
+  /** The picture at the output size that was chosen, copied off the generator's reusable bitmap. */
+  fun currentPicture(): Bitmap? = output?.bitmap?.copy(Bitmap.Config.ARGB_8888, false)
+
+  fun writePicture(picture: Bitmap) {
+    scope.launch {
+      val outcome = runCatching {
+        ImageSaver.saveToGallery(context, picture, scale = outputSettings.scale.factor)
+      }
+      val message = outcome.fold(
+        onSuccess = { "Saved to the gallery" },
+        onFailure = { error ->
+          Log.w(TAG, "Could not save the picture", error)
+          "Could not save the picture"
+        },
+      )
+      Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  // Only reached on API 26-28; from 29 the write needs no permission and never gets here.
+  val writePermission = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestPermission()
+  ) { granted ->
+    val picture = pictureToSave
+    pictureToSave = null
+    if (granted && picture != null) {
+      writePicture(picture)
+    } else {
+      Toast.makeText(context, "Saving needs permission to write pictures", Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  fun savePicture() {
+    val picture = currentPicture()
+    if (picture == null) {
+      Toast.makeText(context, "Still drawing - nothing to save yet", Toast.LENGTH_SHORT).show()
+      return
+    }
+    val needsPermission = ImageSaver.needsLegacyWritePermission() &&
+      ContextCompat.checkSelfPermission(context, ImageSaver.LEGACY_WRITE_PERMISSION) !=
+      PackageManager.PERMISSION_GRANTED
+    if (needsPermission) {
+      pictureToSave = picture
+      writePermission.launch(ImageSaver.LEGACY_WRITE_PERMISSION)
+    } else {
+      writePicture(picture)
+    }
+  }
+
+  /*
+   * Sharing hands the same picture to whatever app will take it. It goes through the app's cache and the
+   * FileProvider declared in the manifest, which is why this needs no permission and cannot expose
+   * anything else.
+   */
+  fun sharePicture() {
+    val picture = currentPicture()
+    if (picture == null) {
+      Toast.makeText(context, "Still drawing - nothing to share yet", Toast.LENGTH_SHORT).show()
+      return
+    }
+    scope.launch {
+      val outcome = runCatching {
+        val uri = ImageSaver.prepareShare(context, picture, scale = outputSettings.scale.factor)
+        context.startActivity(Intent.createChooser(ImageSaver.shareIntent(uri), "Share the picture"))
+      }
+      if (outcome.isFailure) {
+        Log.w(TAG, "Could not share the picture", outcome.exceptionOrNull())
+        Toast.makeText(context, "Could not share the picture", Toast.LENGTH_SHORT).show()
+      }
+    }
+  }
+
   PixelEditorScreen(
     modifier = modifier,
     gridState = gridState,
     notice = notice,
+    output = outputSettings,
+    onOutputChange = { outputSettings = it },
     // The clock starts at the gesture; generation is requested by the same tap that edits the grid.
     onTap = {
       latency.tap()
       requestGeneration()
     },
+    onResize = {
+      requestGeneration()
+    },
+    onSave = { savePicture() },
+    onShare = { sharePicture() },
     preview = {
       WfcPreview(
         output = output,

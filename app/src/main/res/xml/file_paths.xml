@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The one directory a share sheet may read from: the cache folder ImageSaver writes a picture to
+    before handing it out. Nothing else in the app is exposed.
+-->
+<paths>
+    <cache-path
+        name="shared_pictures"
+        path="shared/" />
+</paths>

@@ -10,6 +10,8 @@ import kotlinx.coroutines.withContext
 import net.akachaki.processing.engine.array.IntArray2D
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.BitmapWaveFunctionCell
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.StrictSolverPortfolio
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * Bridges the pixel editor to the wave-function-collapse engine: turns the drawing into a *bitmap*.
@@ -64,6 +66,38 @@ object WfcGenerator {
   /** The grid the solver fills: one cell per [PIXELS_PER_CELL] square of the bitmap. */
   const val DEFAULT_COLUMNS = BITMAP_WIDTH / PIXELS_PER_CELL
   const val DEFAULT_ROWS = BITMAP_HEIGHT / PIXELS_PER_CELL
+
+  /** Cells the default output has; keeping this fixed is what keeps a reshape as cheap as the default. */
+  const val DEFAULT_CELL_COUNT = DEFAULT_COLUMNS * DEFAULT_ROWS
+
+  /** Narrowest and widest output shape the editor offers, as width / height. */
+  private const val MIN_OUTPUT_ASPECT = 0.4f
+  private const val MAX_OUTPUT_ASPECT = 2.5f
+
+  /** Guards against a grid too small for the solver to say anything, or too large to keep in memory. */
+  private const val MIN_OUTPUT_SIDE = 32
+  private const val MAX_OUTPUT_SIDE = 1024
+
+  /**
+   * The solver grid to fill for an output of [aspect] (width / height) with about [cells] cells.
+   *
+   * Time and memory follow the *number* of cells, not the shape, so reshaping an output keeps the cost of
+   * the default 9:16 one: a square is 202x202, a 16:9 one is 270x152, all within a cell or two of 41,040.
+   * The result is in cells, so the bitmap is this multiplied by [PIXELS_PER_CELL].
+   */
+  fun gridForAspect(aspect: Float, cells: Int = DEFAULT_CELL_COUNT): Pair<Int, Int> {
+    // coerceIn passes a NaN straight through, and rounding one throws, so a nonsense aspect falls back
+    // to a square rather than to an exception.
+    val safeAspect = if (aspect.isFinite()) aspect.coerceIn(MIN_OUTPUT_ASPECT, MAX_OUTPUT_ASPECT) else 1f
+    val safeCells = cells.coerceAtLeast(MIN_OUTPUT_SIDE * MIN_OUTPUT_SIDE)
+    val columns = sqrt(safeCells.toDouble() * safeAspect)
+      .roundToInt()
+      .coerceIn(MIN_OUTPUT_SIDE, MAX_OUTPUT_SIDE)
+    val rows = (safeCells.toDouble() / columns)
+      .roundToInt()
+      .coerceIn(MIN_OUTPUT_SIDE, MAX_OUTPUT_SIDE)
+    return columns to rows
+  }
 
   /**
    * Give up rather than block a device for minutes. A drawing that tiles solves in a second or two

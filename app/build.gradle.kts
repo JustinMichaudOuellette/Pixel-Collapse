@@ -80,6 +80,9 @@ dependencies {
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.compose.material3)
+  // Toolbar glyphs (Save, Clear, ...). The extended set is large, but R8 removes the icons nothing
+  // references, so only the handful used here reach the release APK.
+  implementation(libs.androidx.compose.material.icons.extended)
   testImplementation(libs.junit)
   // Compose *testing* support: it was on the app's main classpath, which dragged the whole AR/XR
   // runtime (about 7 MB of native libraries) into the APK and made R8 fail on the XR extension
