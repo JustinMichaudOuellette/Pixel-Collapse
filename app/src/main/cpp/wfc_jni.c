@@ -19,7 +19,8 @@ static void *from_handle(jlong handle) { return (void *)(intptr_t)handle; }
 
 JNIEXPORT jlong JNICALL
 Java_ca_justinmo_wfcbitmap_WfcNative_modelCreate(JNIEnv *env, jobject thiz, jintArray tiles,
-                                                 jint tile_count, jint columns, jint rows) {
+                                                 jint tile_count, jint columns, jint rows,
+                                                 jboolean relaxed_edges) {
   (void)thiz;
   if (tiles == NULL || tile_count <= 0) return 0;
   jsize length = (*env)->GetArrayLength(env, tiles);
@@ -29,7 +30,8 @@ Java_ca_justinmo_wfcbitmap_WfcNative_modelCreate(JNIEnv *env, jobject thiz, jint
   int32_t *packed = malloc(ints * sizeof(int32_t));
   if (packed == NULL) return 0;
   (*env)->GetIntArrayRegion(env, tiles, 0, (jsize)ints, (jint *)packed);
-  wfc_model *model = wfc_model_create(packed, tile_count, columns, rows);
+  wfc_model *model =
+    wfc_model_create(packed, tile_count, columns, rows, relaxed_edges ? 1 : 0);
   free(packed);
   return to_handle(model);
 }

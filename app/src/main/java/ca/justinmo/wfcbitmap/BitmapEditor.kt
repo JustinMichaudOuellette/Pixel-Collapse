@@ -13,11 +13,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -38,6 +40,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import ca.justinmo.wfcbitmap.BitmapEditor.BUTTON_SIZE_DP_INT
 import ca.justinmo.wfcbitmap.BitmapEditor.ColorSwatch
 import ca.justinmo.wfcbitmap.BitmapEditor.PixelEditorScreen
@@ -76,9 +79,6 @@ object BitmapEditor {
     /** The colour each cell had before its last paint, so a second tap can put it back. */
     private val previousColors = arrayOfNulls<Color>(columns * rows)
 
-    /** The cell the last paint touched; only that cell can be reverted by another tap. */
-    private var lastPainted = -1
-
     fun setPixel(col: Int, row: Int, color: Color) {
       val index = row * columns + col
       if (pixels[index] == color) {
@@ -91,20 +91,21 @@ object BitmapEditor {
 
     /**
      * Handles a tap on a cell: paints it with [color], or puts back the colour it had before, when the
-     * tap lands on the cell the previous tap just painted.
+     * tap lands on a cell that already shows [color].
      *
-     * Tapping the same cell twice is therefore "undo that paint": first tap paints, second tap restores
-     * whatever was there before, third tap paints again. Tapping another cell in between starts a new
-     * paint, so the revert only ever applies to the cell the previous tap set.
+     * A cell therefore toggles: one tap paints, the next restores what was there, the next paints again.
+     * The revert is keyed on the cell's own state, not on which cell was tapped last, so tapping B in
+     * between does not cost A a second tap -- tapping A once puts A back, which is what a tap on a cell
+     * that already has the selected colour has to mean. (It did require A to be the previous tap, so
+     * editing B in between swallowed the first tap on A and it took two.)
      */
     fun paint(col: Int, row: Int, color: Color) {
       val index = row * columns + col
       val current = pixels[index]
       val previous = previousColors[index]
-      if (index == lastPainted && previous != null && current == color) {
+      if (previous != null && current == color) {
         pixels[index] = previous
         previousColors[index] = null
-        lastPainted = -1
         revision++
         return
       }
@@ -113,11 +114,9 @@ object BitmapEditor {
         pixels[index] = color
         revision++
       }
-      lastPainted = index
     }
 
     fun clear() {
-      lastPainted = -1
       previousColors.fill(null)
       if (pixels.all { it == defaultColor }) {
         return
@@ -146,6 +145,13 @@ object BitmapEditor {
      * drawing, so an end-to-end latency can be timed from here to the frame that shows the result.
      */
     onTap: () -> Unit = {},
+    /**
+     * One line under the drawing when the generated bitmap is not a plain edge-respecting tiling of it,
+     * and what to do about it. Null (the usual case) draws nothing, so the column is the drawing alone.
+     *
+     * It lives here and not in the preview because the preview is the picture and nothing else.
+     */
+    notice: String? = null,
     preview: @Composable () -> Unit = {},
   ) {
     var selectedColor by remember { mutableStateOf(Color.Black) }
@@ -171,12 +177,23 @@ object BitmapEditor {
         ) {
           val baseCellSizePx = LocalDensity.current.run { BUTTON_SIZE.toPx().roundToInt() }
 
-          ZoomablePixelCanvas(
-            gridState = gridState,
-            selectedColor = selectedColor,
-            baseCellSizePx = baseCellSizePx,
-            onTap = onTap,
-          )
+          Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            ZoomablePixelCanvas(
+              gridState = gridState,
+              selectedColor = selectedColor,
+              baseCellSizePx = baseCellSizePx,
+              onTap = onTap,
+            )
+          }
+          if (notice != null) {
+            Text(
+              text = notice,
+              color = NOTICE_COLOR,
+              fontSize = 10.sp,
+              lineHeight = 13.sp,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            )
+          }
         }
 
       VerticalDividerLine()
@@ -191,6 +208,9 @@ object BitmapEditor {
 
   /** Slightly darker than the app background, so the preview reads as its own surface. */
   private val PREVIEW_BACKGROUND = Color(0xFF0B0910)
+
+  /** The notice line under the drawing: warm enough to be noticed, dim enough not to be an alarm. */
+  private val NOTICE_COLOR = Color(0xFFFEAE34)
 
   @Composable
   fun VerticalDividerLine() {

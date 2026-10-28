@@ -28,15 +28,23 @@ typedef struct wfc_model wfc_model;
 typedef struct wfc_solver wfc_solver;
 
 /*
- * @param tiles   tile_count * 10 ints: [present direction mask, weight, 9 kernel colours]. The mask
+ * @param tiles   tile_count * 11 ints: [present direction mask, weight, 9 kernel colours]. The mask
  *                says which of the nine kernel slots hold a colour; the others are ignored, so a
  *                blank ("the drawing ends here") needs no sentinel.
  * @param columns output width in cells.
  * @param rows    output height in cells.
+ * @param relaxed_edges 0 keeps the edge rule (a cell accepts only patterns whose mask is exactly the
+ *                directions it has a neighbour in, so patterns sampled on the drawing's edge only ever
+ *                sit on the bitmap's edge). Non-zero drops the "exactly": a cell accepts any pattern that
+ *                has a colour towards every neighbour it has, so a border cell may use a complete
+ *                pattern and its outward pixels are simply not drawn. The strict rule can be impossible
+ *                for a drawing whose border cannot repeat around the bitmap's, which is the only reason
+ *                the relaxed one exists: it makes the instance the ordinary overlapping model.
  * @return a model, or NULL when the arguments are unusable (tile_count outside 1..1024, a grid that
  *         is not positive).
  */
-wfc_model *wfc_model_create(const int32_t *tiles, int tile_count, int columns, int rows);
+wfc_model *wfc_model_create(const int32_t *tiles, int tile_count, int columns, int rows,
+                            int relaxed_edges);
 void wfc_model_destroy(wfc_model *model);
 
 /* A solver owns only scratch space; it is bound to a model by each wfc_solver_solve call, so one\n * solver can serve collapse after collapse (see wfc_solver_finish). */

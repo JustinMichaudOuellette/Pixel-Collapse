@@ -271,7 +271,8 @@ static inline int ctz(uint64_t value) { return __builtin_ctzll(value); }
 
 /* --- model --------------------------------------------------------------------------------- */
 
-wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int rows) {
+wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int rows,
+                            int relaxed_edges) {
   if (raw == NULL || tile_count <= 0 || tile_count > 1024) return NULL;
   if (columns <= 0 || rows <= 0) return NULL;
   /* Keeping the variable count in an int keeps every index computation exact. */
@@ -435,15 +436,34 @@ wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int
    * cells x domain size x cascades.
    */
   /*
-   * The edge rule: a border cell's domain is the tiles whose mask is *exactly* the in-grid directions,
-   * i.e. the ones sampled on that edge of the drawing. Interior cells therefore accept only complete
-   * patterns, and an edge pattern can only ever sit on its own edge.
+   * Domains by cell class. Two rules, and which one is used is the difference between "the drawing's
+   * edge is the bitmap's edge" and "the drawing is a texture":
+   *
+   *  - strict (relaxed_edges == 0): a cell accepts the tiles whose mask is *exactly* the in-grid
+   *    directions. Border cells therefore accept only patterns sampled on that edge of the drawing, and
+   *    an edge pattern can only sit on its own edge. This is the rule the app wants, and it is also the
+   *    rule that can be impossible: a border cell can only follow another border cell whose right
+   *    colours match, which makes the bitmap's border a walk over the drawing's border patterns. A
+   *    drawing whose border does not repeat cannot walk 152/270 cells, and then there is no tiling at
+   *    all -- measured: a 16x11 drawing with a per-row border fails in 5 ms with 0 decisions, i.e. the
+   *    root arc-consistency pass proves it immediately.
+   *
+   *  - relaxed (relaxed_edges != 0): a cell accepts every tile that has a colour towards all the
+   *    neighbours it actually has -- `mask` is allowed to contain directions that are off-grid, which
+   *    simply means the pattern's outward pixels are not drawn. Border cells can then use complete
+   *    patterns, so the drawing's border no longer has to repeat and the instance becomes the ordinary
+   *    overlapping model, which tiles for any drawing with a self-consistent pattern in it.
+   *
+   * The caller uses strict first and relaxed only when strict has no tiling, so the edge rule is kept
+   * wherever it can be.
    */
   for (int p = 0; p < 256; p++) {
     uint64_t *row = m->domain_by_present + (size_t)p * m->word_count;
     int count = 0;
     for (int t = 0; t < tile_count; t++) {
-      if (m->tiles[t].mask != p) continue;
+      int mask = m->tiles[t].mask;
+      int keep = relaxed_edges ? ((mask & p) == p) : (mask == p);
+      if (!keep) continue;
       row[t >> 6] |= 1ull << (t & 63);
       count++;
     }

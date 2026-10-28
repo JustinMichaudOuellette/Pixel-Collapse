@@ -96,6 +96,11 @@ fun PixelEditor(modifier: Modifier = Modifier) {
    */
   var seed by remember { mutableIntStateOf(PREVIEW_SEED) }
   var output by remember { mutableStateOf<WfcGenerator.Output?>(null) }
+  /*
+   * What the preview cannot say about itself: that it is not a plain edge-respecting tiling of the
+   * drawing, and what to do about it. Null when there is nothing to report, which is the normal case.
+   */
+  var notice by remember { mutableStateOf<String?>(null) }
 
   /*
    * Generation is started straight from the gesture, not from observing the drawing.
@@ -141,10 +146,14 @@ fun PixelEditor(modifier: Modifier = Modifier) {
       val generationEnd = System.nanoTime()
       if (generated != null) {
         if (generated.usedFallback) {
-          // The drawing's edge could not close around the grid, so there is no tiling that keeps it
-          // and the preview shows the drawing stretched instead. Nothing on screen can say that, so
-          // leave a trace for whoever wonders why the preview stopped rearranging patterns.
-          Log.i(TAG, "No tiling under the edge rule; preview shows the drawing stretched")
+          // The drawing's edge could not close around the grid even with the edge rule dropped, so the
+          // preview shows the drawing stretched. The notice line says so.
+          Log.i(TAG, "No tiling for this drawing; preview shows the drawing stretched")
+        } else if (generated.relaxedEdges) {
+          // The edge rule had no tiling (the drawing's border cannot repeat around the bitmap's), so the
+          // picture was generated with it dropped: still a tiling of the drawing's patterns, but the
+          // bitmap's border is not the drawing's border.
+          Log.i(TAG, "Edge rule relaxed: the drawing's border cannot repeat around the grid")
         }
         Log.i(
           TAG,
@@ -155,6 +164,12 @@ fun PixelEditor(modifier: Modifier = Modifier) {
             "solve ${generated.solveMillis} ms, render ${generated.renderMillis} ms)",
         )
         output = generated
+        notice = edgeRuleNotice(
+          relaxedEdges = generated.relaxedEdges,
+          usedFallback = generated.usedFallback,
+          columns = generated.columns,
+          rows = generated.rows,
+        )
         latency.registerCommit(view, generationStart, generationEnd, generated)
       }
     }
@@ -166,6 +181,7 @@ fun PixelEditor(modifier: Modifier = Modifier) {
   PixelEditorScreen(
     modifier = modifier,
     gridState = gridState,
+    notice = notice,
     // The clock starts at the gesture; generation is requested by the same tap that edits the grid.
     onTap = {
       latency.tap()

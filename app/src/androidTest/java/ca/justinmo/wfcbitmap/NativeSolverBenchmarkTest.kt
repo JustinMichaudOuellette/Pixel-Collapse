@@ -96,7 +96,7 @@ class NativeSolverBenchmarkTest {
     WfcNative.solverSetFineProfiling(solver, true)
     repeat(repeats) {
       val createStartedAt = System.nanoTime()
-      val model = WfcNative.modelCreate(packed, cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS)
+      val model = WfcNative.modelCreate(packed, cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS, relaxedEdges = false)
       check(model != 0L)
       totals.create += System.nanoTime() - createStartedAt
       if (modelTileCount == 0) modelTileCount = WfcNative.modelTileCount(model)
@@ -206,6 +206,85 @@ class NativeSolverBenchmarkTest {
     }
   }
 
+  /**
+   * Why a busy border kills the edge rule, and whether padding the drawing rescues it.
+   *
+   * The edge rule makes the bitmap's border out of the drawing's border. `frame` has a one-colour frame
+   * around noise, so its border pixels are identical everywhere except the corners -- that tiles. `frame`
+   * with the frame coloured per row instead is a border that cannot repeat, and then no tiling exists at
+   * all. The question this answers is whether padding the drawing with a uniform ring -- which the app
+   * could do automatically when the strict rule fails -- brings the picture back.
+   */
+  @Test
+  fun paddingRescuesAnUnrepeatableBorder() {
+    println("PAD device=${android.os.Build.MODEL}")
+    // A border that cannot repeat: every border pixel a different colour, noise inside.
+    val stripes = IntArray(SOURCE_WIDTH * SOURCE_HEIGHT)
+    for (y in 0 until SOURCE_HEIGHT) {
+      for (x in 0 until SOURCE_WIDTH) {
+        val onBorder = x == 0 || y == 0 || x == SOURCE_WIDTH - 1 || y == SOURCE_HEIGHT - 1
+        stripes[y * SOURCE_WIDTH + x] = if (onBorder) {
+          (0xFF000000.toInt() or (x * 16 + y * 37) * 0x010101)
+        } else {
+          when ((x + y) % 3) {
+            0 -> gold
+            1 -> rust
+            else -> ink
+          }
+        }
+      }
+    }
+    attempt("stripes", stripes, SOURCE_WIDTH, SOURCE_HEIGHT)
+    attempt(
+      "stripes+1ring",
+      pad(stripes, SOURCE_WIDTH, SOURCE_HEIGHT, 1, ink),
+      SOURCE_WIDTH + 2,
+      SOURCE_HEIGHT + 2,
+    )
+    // Control: a drawing that already tiles must keep tiling when padded.
+    attempt("bordered", bordered(), SOURCE_WIDTH, SOURCE_HEIGHT)
+    attempt(
+      "bordered+1ring",
+      pad(bordered(), SOURCE_WIDTH, SOURCE_HEIGHT, 1, ink),
+      SOURCE_WIDTH + 2,
+      SOURCE_HEIGHT + 2,
+    )
+  }
+
+  private fun pad(pixels: IntArray, width: Int, height: Int, ring: Int, colour: Int): IntArray {
+    val paddedWidth = width + 2 * ring
+    val paddedHeight = height + 2 * ring
+    val padded = IntArray(paddedWidth * paddedHeight) { colour }
+    for (y in 0 until height) {
+      for (x in 0 until width) {
+        padded[(y + ring) * paddedWidth + (x + ring)] = pixels[y * width + x]
+      }
+    }
+    return padded
+  }
+
+  private fun attempt(label: String, pixels: IntArray, width: Int, height: Int) {
+    val cells = BitmapWaveFunctionCell.createCells(IntArray2D(width, height, pixels.copyOf()))
+    val packed = WfcNative.packTiles(cells)
+    val model = WfcNative.modelCreate(packed, cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS, relaxedEdges = false)
+    if (model == 0L) {
+      println("PAD $label sampled=${cells.size} model=0 (nothing can be placed)")
+      return
+    }
+    val solver = WfcNative.solverCreate()
+    check(solver != 0L)
+    val out = IntArray(OUTPUT_COLUMNS * OUTPUT_ROWS)
+    val startedAt = System.nanoTime()
+    val solved = WfcNative.solverSolve(solver, model, 1, System.nanoTime() + 8_000_000_000L, 1_000_000, out)
+    val millis = (System.nanoTime() - startedAt) / 1_000_000
+    println(
+      "PAD $label sampled=${cells.size} model=${WfcNative.modelTileCount(model)} solved=$solved " +
+        "wall=${millis}ms decisions=${WfcNative.solverDecisions(solver)}",
+    )
+    WfcNative.solverDestroy(solver)
+    WfcNative.modelDestroy(model)
+  }
+
   private fun runWith(label: String, pixels: IntArray, orderMode: Int, worklist: Int) {
     val repeats = 3
     val cells = tiles(pixels)
@@ -221,7 +300,7 @@ class NativeSolverBenchmarkTest {
     var revises = 0L
     var shrinks = 0L
     repeat(repeats) {
-      val model = WfcNative.modelCreate(packed, cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS)
+      val model = WfcNative.modelCreate(packed, cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS, relaxedEdges = false)
       check(model != 0L)
       val out = IntArray(OUTPUT_COLUMNS * OUTPUT_ROWS)
       val deadline = System.nanoTime() + 5_000_000_000L
@@ -244,7 +323,7 @@ class NativeSolverBenchmarkTest {
   }
 
   private fun solveOnce(packed: IntArray, tileCount: Int): IntArray? {
-    val model = WfcNative.modelCreate(packed, tileCount, OUTPUT_COLUMNS, OUTPUT_ROWS)
+    val model = WfcNative.modelCreate(packed, tileCount, OUTPUT_COLUMNS, OUTPUT_ROWS, relaxedEdges = false)
     if (model == 0L) return null
     val solver = WfcNative.solverCreate()
     if (solver == 0L) {

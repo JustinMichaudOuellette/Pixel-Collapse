@@ -131,7 +131,7 @@ class NativeSolverTest {
 
   /** Runs one native solve on a single seed, the way one portfolio worker does. */
   private fun solve(cells: List<BitmapWaveFunctionCell>, seed: Int = 1): Solved {
-    val model = WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS)
+    val model = WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS, relaxedEdges = false)
     if (model == 0L) return Solved(null, null, 0)
     val tiles = modelTiles(cells, model)
     val solver = NativeTileSolver(model, OUTPUT_COLUMNS, OUTPUT_ROWS, seed = seed)
@@ -236,6 +236,46 @@ class NativeSolverTest {
     println("frame: no tiling in ${solved.millis}ms")
   }
 
+  /**
+   * The escape hatch, pinned: the same instance that has no tiling under the edge rule does tile when the
+   * rule is dropped, which is what stops the app from showing the drawing stretched.
+   *
+   * What is dropped is only *which* cells may use an edge pattern. Compatibility is untouched, so the
+   * tiling still has no neighbour mismatches, and interior cells still use complete patterns only
+   * (a complete pattern is the only kind that can satisfy "has a colour towards all eight neighbours").
+   */
+  @Test
+  fun relaxingTheEdgeRuleTilesABorderThatCannotRepeat() {
+    val cells = tiles(frameDrawing())
+    val packed = WfcNative.packTiles(cells)
+    val model =
+      WfcNative.modelCreate(packed, cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS, relaxedEdges = true)
+    assertTrue("the relaxed model must build", model != 0L)
+    val modelTiles = modelTiles(cells, model)
+    val solver = NativeTileSolver(model, OUTPUT_COLUMNS, OUTPUT_ROWS, seed = 1)
+    val startedAt = System.nanoTime()
+    try {
+      val assignment = solver.solve(System.nanoTime() + 60_000_000_000L, 1_000_000)
+      val millis = (System.nanoTime() - startedAt) / 1_000_000
+      assertNotNull("the relaxed rule must tile the frame drawing", assignment)
+      println("frame relaxed: tiled in ${millis}ms, ${WfcNative.modelTileCount(model)} patterns")
+      val solved = Solved(assignment, modelTiles, millis)
+      assertEquals("relaxed tiling has neighbour mismatches", 0, violations(solved))
+      for (y in 1 until OUTPUT_ROWS - 1) {
+        for (x in 1 until OUTPUT_COLUMNS - 1) {
+          val tile = assignment!![y * OUTPUT_COLUMNS + x]
+          assertFalse(
+            "interior cell ($x,$y) used an edge pattern under the relaxed rule",
+            modelTiles.kernel(tile).any { it == null },
+          )
+        }
+      }
+    } finally {
+      solver.close()
+      WfcNative.modelDestroy(model)
+    }
+  }
+
   @Test
   fun repetitiveDrawingsTileCleanly() {
     for ((name, drawing) in listOf("rings" to ringsDrawing(), "sprite" to spriteDrawing())) {
@@ -283,7 +323,7 @@ class NativeSolverTest {
   @Test
   fun portfolioRunsTheNativeSolver() {
     val cells = tiles(ringsDrawing())
-    val model = WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS)
+    val model = WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS, relaxedEdges = false)
     assertTrue(model != 0L)
     try {
       val result = StrictSolverPortfolio(
@@ -312,7 +352,7 @@ class NativeSolverTest {
   @Test
   fun cancelledSolveGivesUpInsteadOfWaitingForItsDeadline() {
     val cells = tiles(ringsDrawing())
-    val model = WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS)
+    val model = WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS, relaxedEdges = false)
     assertTrue(model != 0L)
     try {
       // One worker, aborted from the outside: the native solver polls its abort flag.
@@ -361,7 +401,7 @@ class NativeSolverTest {
     val flatCells = tiles(flatDrawing())
     val frameCells = tiles(frameDrawing())
     val models = listOf(ringsCells, flatCells, frameCells).map { cells ->
-      WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS)
+      WfcNative.modelCreate(WfcNative.packTiles(cells), cells.size, OUTPUT_COLUMNS, OUTPUT_ROWS, relaxedEdges = false)
     }
     assertTrue("models could not be created", models.all { it != 0L })
     val deadline = System.nanoTime() + 60_000_000_000L
@@ -474,7 +514,7 @@ class NativeSolverTest {
     assertTrue("solver could not be created", handle != 0L)
     try {
       for ((columns, rows) in sizes) {
-        val model = WfcNative.modelCreate(packed, cells.size, columns, rows)
+        val model = WfcNative.modelCreate(packed, cells.size, columns, rows, relaxedEdges = false)
         assertTrue("model ${columns}x$rows could not be created", model != 0L)
         try {
           val out = IntArray(columns * rows)

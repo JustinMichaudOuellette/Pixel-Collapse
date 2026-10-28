@@ -157,6 +157,12 @@ object WfcGenerator {
     val workers: Int,
     /** True when no tiling exists (or none was found in time) and the stretched drawing was used. */
     val usedFallback: Boolean,
+    /**
+     * True when the edge rule had to be dropped to get a tiling at all, i.e. the picture is an ordinary
+     * tiling of the drawing's patterns and its border does not show the drawing's border. See
+     * [edgeRuleNotice] for the line that says so.
+     */
+    val relaxedEdges: Boolean = false,
     /** Time spent turning the solved cells into pixels, in milliseconds. */
     val renderMillis: Long = 0,
     /** Time the solver portfolio reported for itself, in milliseconds. */
@@ -222,54 +228,40 @@ object WfcGenerator {
       throw GenerationException("The native WFC solver is not available on this device.")
     }
     /*
-     * The model prunes the tile set itself (patterns that can never be placed next to anything), so the
-     * indices a solve returns are model tiles, and `sources` maps each one back to its sampled pattern.
+     * Two tiers, in order of what the picture should be:
+     *
+     *  1. the edge rule, so the drawing's edge really is the bitmap's edge;
+     *  2. the same tile set with the edge rule dropped, which is the ordinary overlapping model.
+     *
+     * Tier 2 exists because tier 1 can be *impossible*, not merely slow: the bitmap's border may only
+     * use patterns sampled on the drawing's matching edge, so it is a walk over the drawing's border
+     * patterns, and a border that does not repeat cannot walk 152 or 270 cells. Measured on a 16x11
+     * drawing with a per-row border: no tiling, proven in 5 ms with 0 decisions. Before this existed the
+     * app answered that with the drawing stretched across the whole preview, which is not a tiling at
+     * all; a relaxed tiling is still a picture of the drawing's patterns.
      */
-    val nativeModel = WfcNative.modelCreate(packed, packed.size / WfcNative.PACKED_TILE_INTS, columns, rows)
-    if (nativeModel == 0L) {
+    val scope = this
+    val shouldAbort = { !scope.isActive }
+    var tier = solveTier(packed, columns, rows, seed, relaxedEdges = false, shouldAbort = shouldAbort)
+    ensureActive()
+    if (tier?.result?.assignment == null) {
+      tier = solveTier(packed, columns, rows, seed, relaxedEdges = true, shouldAbort = shouldAbort)
+      ensureActive()
+    }
+    if (tier == null) {
       throw GenerationException("No pattern in this drawing can touch another, so it cannot be tiled.")
     }
-    val tileCount = WfcNative.modelTileCount(nativeModel)
-    val sources = IntArray(tileCount) { tile -> WfcNative.modelTileSource(nativeModel, tile) }
-    // Read the colours while the model is alive: it is destroyed as soon as the solve returns.
-    val centers = IntArray(tileCount) { tile -> WfcNative.modelTileCenter(nativeModel, tile) }
-    val result = try {
-      val portfolio = StrictSolverPortfolio(
-        columns = columns,
-        rows = rows,
-        solverFactory = { workerSeed, workerColumns, workerRows ->
-          NativeTileSolver(nativeModel, workerColumns, workerRows, workerSeed)
-        },
-      )
-      // Hand the caller's cancellation down to the search. Without this the solve would run to its
-      // deadline even though the editor had already replaced the drawing it was working on: the
-      // collapse is blocking, so cancelling the coroutine alone cannot stop it.
-      val scope = this
-      portfolio.solve(
-        seed = seed,
-        workers = WORKERS,
-        deadlineNanos = System.nanoTime() + TIMEOUT_NANOS,
-        maxDecisions = MAX_DECISIONS,
-        shouldAbort = { !scope.isActive },
-      )
-    } finally {
-      if (nativeModel != 0L) {
-        WfcNative.modelDestroy(nativeModel)
-      }
-    }
-    // Null now means either "no tiling found" or "we were cancelled"; only the first one should fall
-    // back to the stretched drawing. Letting the cancellation through is what makes it the second.
-    ensureActive()
     val millis = System.currentTimeMillis() - startedAt
-    val assignment = result.assignment
+    val assignment = tier.result.assignment
     val usedFallback = assignment == null
+    val relaxedEdges = tier.relaxedEdges && assignment != null
     // A model tile's centre colour is exactly the pixel the cell represents (the model kept the packed
-    // kernels), and the strict rule guarantees every neighbour relation in the result holds in the
-    // drawing.
+    // kernels), and the compatibility table guarantees every neighbour relation in the result holds in
+    // the drawing -- whichever of the two rules produced the domains.
     val renderStartedAt = System.nanoTime()
     val target = synchronized(cacheLock) { renderTarget(columns, rows) }
     val bitmap = if (assignment != null) {
-      target.renderSolved(assignment, sources, centers, columns, rows)
+      target.renderSolved(assignment, tier.sources, tier.centers, columns, rows)
     } else {
       target.renderColours(
         stretchedDrawing(pixels, sourceWidth, sourceHeight, columns, rows),
@@ -282,14 +274,15 @@ object WfcGenerator {
       bitmap = bitmap,
       columns = columns,
       rows = rows,
-      tileCount = tileCount,
+      tileCount = tier.tileCount,
       millis = millis,
       seed = seed,
-      wonBySeed = result.seed,
-      workers = result.entries.size,
+      wonBySeed = tier.result.seed,
+      workers = tier.result.entries.size,
       usedFallback = usedFallback,
+      relaxedEdges = relaxedEdges,
       renderMillis = renderMillis,
-      solveMillis = result.millis,
+      solveMillis = tier.result.millis,
       extractMillis = extractNanos / 1_000_000,
     )
     synchronized(cacheLock) {
@@ -298,6 +291,64 @@ object WfcGenerator {
       cachedSeed = seed
     }
     output
+  }
+
+  /** One tier's model plus the solve on it, kept together because the mapping is needed to render. */
+  private class Tier(
+    val result: net.akachaki.processing.engine.wavefunctioncollapse.bitmap.PortfolioResult,
+    val sources: IntArray,
+    val centers: IntArray,
+    val tileCount: Int,
+    val relaxedEdges: Boolean,
+  )
+
+  /**
+   * Builds a model for one tier and solves it, or returns null when the tile set has nothing placeable.
+   *
+   * The model is destroyed before returning; `sources` and `centers` are read out first because the
+   * solved cells index the model's tiles and the colours live in the model.
+   */
+  private suspend fun solveTier(
+    packed: IntArray,
+    columns: Int,
+    rows: Int,
+    seed: Int,
+    relaxedEdges: Boolean,
+    shouldAbort: () -> Boolean,
+  ): Tier? {
+    val nativeModel = WfcNative.modelCreate(
+      packed,
+      packed.size / WfcNative.PACKED_TILE_INTS,
+      columns,
+      rows,
+      relaxedEdges,
+    )
+    if (nativeModel == 0L) return null
+    return try {
+      val tileCount = WfcNative.modelTileCount(nativeModel)
+      val sources = IntArray(tileCount) { tile -> WfcNative.modelTileSource(nativeModel, tile) }
+      val centers = IntArray(tileCount) { tile -> WfcNative.modelTileCenter(nativeModel, tile) }
+      val portfolio = StrictSolverPortfolio(
+        columns = columns,
+        rows = rows,
+        solverFactory = { workerSeed, workerColumns, workerRows ->
+          NativeTileSolver(nativeModel, workerColumns, workerRows, workerSeed)
+        },
+      )
+      // Hand the caller's cancellation down to the search. Without this the solve would run to its
+      // deadline even though the editor had already replaced the drawing it was working on: the
+      // collapse is blocking, so cancelling the coroutine alone cannot stop it.
+      val result = portfolio.solve(
+        seed = seed,
+        workers = WORKERS,
+        deadlineNanos = System.nanoTime() + TIMEOUT_NANOS,
+        maxDecisions = MAX_DECISIONS,
+        shouldAbort = shouldAbort,
+      )
+      Tier(result, sources, centers, tileCount, relaxedEdges)
+    } finally {
+      WfcNative.modelDestroy(nativeModel)
+    }
   }
 
   /**
@@ -396,4 +447,29 @@ object WfcGenerator {
       return bitmap
     }
   }
+}
+
+/**
+ * What the editor should say about a generated picture that is not a plain edge-respecting tiling of the
+ * drawing, or null when there is nothing to say (the normal case).
+ *
+ * This exists because the failure is not a bug the user can report but a fact about their drawing that
+ * they can change, and because the preview is image-only by design: there is nowhere in it to put an
+ * explanation. Both branches name the action, not the algorithm.
+ *
+ * @param relaxedEdges the edge rule was dropped to get a tiling at all (see [WfcGenerator.Output]).
+ * @param usedFallback neither rule found a tiling, so the drawing is shown stretched.
+ */
+fun edgeRuleNotice(
+  relaxedEdges: Boolean,
+  usedFallback: Boolean,
+  columns: Int,
+  rows: Int,
+): String? = when {
+  usedFallback ->
+    "No tiling fits this drawing, so it is shown stretched. Simplify the shapes, or clear a few pixels."
+  relaxedEdges ->
+    "Edges relaxed: the drawing's border can't repeat around ${columns}x${rows}, so this is a plain " +
+      "tiling of your patterns. Keep the drawing's outer row and column one colour to keep real edges."
+  else -> null
 }

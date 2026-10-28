@@ -67,7 +67,21 @@ internal object WfcNative {
 
   // --- native surface ---------------------------------------------------------------------------
 
-  external fun modelCreate(tiles: IntArray, tileCount: Int, columns: Int, rows: Int): Long
+  /**
+   * @param relaxedEdges false keeps the edge rule: a cell accepts only patterns whose mask is exactly
+   *   the directions it has a neighbour in, so a pattern sampled on the drawing's edge can only sit on
+   *   the bitmap's edge. That rule can be *impossible* -- a drawing whose border does not repeat cannot
+   *   run around a much longer bitmap border -- and then the whole instance has no tiling. True drops
+   *   the "exactly": a cell accepts any pattern that has a colour towards every neighbour it has, so a
+   *   border cell may use a complete pattern and the pattern's outward pixels are simply not drawn.
+   */
+  external fun modelCreate(
+    tiles: IntArray,
+    tileCount: Int,
+    columns: Int,
+    rows: Int,
+    relaxedEdges: Boolean,
+  ): Long
 
   external fun modelDestroy(model: Long)
 

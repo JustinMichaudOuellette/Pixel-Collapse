@@ -4,6 +4,7 @@ import net.akachaki.processing.engine.array.IntArray2D
 import net.akachaki.processing.engine.enum.Direction2d8
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.BitmapWaveFunctionCell
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -155,6 +156,88 @@ class WfcEngineTest {
     // A direction is blank only where the drawing ends: the four corners are blank in two directions.
     val corners = cells.filter { it.kernel.any { pixel -> pixel == null } && it.kernel.count { p -> p == null } >= 3 }
     assertTrue("expected corner patterns to be blank in more than one direction", corners.isNotEmpty())
+  }
+
+  // --- no symmetry: the tile set is the drawing as it lies ------------------------------------
+
+  /**
+   * Every direction in a window reads the editor pixel that is one step in that direction.
+   *
+   * This is the invariant that keeps what you draw where you drew it, and the reason enumerating the
+   * nine-cell groups needs no symmetry handling at all: a window is not canonicalised, rotated or
+   * reflected, it is just the nine cells around one point. It is worth pinning because the packing
+   * order (`kernel[slot]`, slot = x + 3y), `Direction2d8`'s (dx, dy) and the solver's
+   * `WFC_DIR_SLOT` are three separate tables that have to agree; a reflection in any of them would make
+   * every generated picture a mirror of the drawing, and nothing else in the suite would notice.
+   */
+  @Test
+  fun everyDirectionReadsThePixelOnThatSideOfTheDrawing() {
+    // Every pixel gets its own colour, so a wrong offset cannot match by coincidence.
+    val pixels = IntArray(SOURCE_WIDTH * SOURCE_HEIGHT) { index ->
+      val x = index % SOURCE_WIDTH
+      val y = index / SOURCE_WIDTH
+      (0xFF shl 24) or (y shl 8) or (x shl 16) or (y * 31 + x)
+    }
+    val drawing = IntArray2D(SOURCE_WIDTH, SOURCE_HEIGHT, pixels.copyOf())
+    val centreX = 7
+    val centreY = 5
+    val window = BitmapWaveFunctionCell.windowAt(drawing, centreX, centreY)
+    val tile = BitmapWaveFunctionCell(window.toTypedArray(), 1f)
+
+    assertEquals("the centre is the cell itself", drawing[centreX, centreY], tile.color)
+    for (direction in Direction2d8.entries) {
+      assertEquals(
+        "the window's $direction slot",
+        drawing[centreX + direction.dx, centreY + direction.dy],
+        tile.kernelColor(direction),
+      )
+    }
+
+    // And a window on the drawing's edge is blank only where the drawing ends: at (0,0) that is up,
+    // left and the three directions between them, and nowhere else.
+    val corner = BitmapWaveFunctionCell(BitmapWaveFunctionCell.windowAt(drawing, 0, 0).toTypedArray(), 1f)
+    for (direction in Direction2d8.entries) {
+      val outside = direction.dx < 0 || direction.dy < 0
+      if (outside) {
+        assertNull("corner window must be blank towards $direction", corner.kernelColor(direction))
+      } else {
+        assertEquals(
+          "corner window must read the pixel towards $direction",
+          drawing[direction.dx, direction.dy],
+          corner.kernelColor(direction),
+        )
+      }
+    }
+  }
+
+  /**
+   * A window and its mirror image are two tiles, not one folded tile.
+   *
+   * A left-right fold is the tempting "optimisation" here -- the tile set would halve -- and it would
+   * silently make every generated picture mirror-symmetric, which is exactly what must not happen.
+   */
+  @Test
+  fun aWindowAndItsMirrorImageStaySeparateTiles() {
+    val pixels = IntArray(SOURCE_WIDTH * SOURCE_HEIGHT) { ink }
+    // Gold either side of the empty centre column: the windows centred left and right of it are mirror
+    // images of each other, and the drawing contains both.
+    pixels[5 * SOURCE_WIDTH + 5] = gold
+    pixels[5 * SOURCE_WIDTH + 9] = gold
+    val cells =
+      BitmapWaveFunctionCell.createCells(IntArray2D(SOURCE_WIDTH, SOURCE_HEIGHT, pixels.copyOf()))
+
+    val goldOnTheLeft = cells.filter { it.kernelColor(Direction2d8.LEFT) == gold }
+    val goldOnTheRight = cells.filter { it.kernelColor(Direction2d8.RIGHT) == gold }
+    assertTrue("expected a window with the motif on its left", goldOnTheLeft.isNotEmpty())
+    assertTrue("expected a window with the motif on its right", goldOnTheRight.isNotEmpty())
+    assertTrue(
+      "a window must not carry the motif on both sides, which is what folding a mirror in would do",
+      goldOnTheLeft.none { left -> goldOnTheRight.any { it === left } },
+    )
+    assertTrue(
+      "the two mirror-image windows must both be tiles",
+      cells.size >= 2,
+    )
   }
 
   // --- the fallback -------------------------------------------------------------------------
