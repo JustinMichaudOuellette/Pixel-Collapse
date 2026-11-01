@@ -2,6 +2,7 @@ package ca.justinmo.wfcbitmap
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -50,10 +51,7 @@ class RelaxedEdgesFallbackTest {
       "the edge rule cannot keep this drawing's border, so the relaxed attempt must have produced it",
       output.relaxedEdges,
     )
-    assertNotNull(
-      "and the notice line must say so: ${edgeRuleNotice(output.relaxedEdges, output.columns, output.rows)}",
-      edgeRuleNotice(output.relaxedEdges, output.columns, output.rows),
-    )
+    assertEquals("and the snackbar must say so", "Edges relaxed", edgeRuleNotice(output.relaxedEdges))
     println(
       "relaxed fallback: ${output.tileCount} tiles, ${output.millis} ms " +
         "(solve ${output.solveMillis} ms), relaxed=${output.relaxedEdges}",

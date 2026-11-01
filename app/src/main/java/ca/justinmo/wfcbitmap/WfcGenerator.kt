@@ -542,24 +542,18 @@ object WfcGenerator {
 }
 
 /**
- * The line under the drawing when the picture is a tiling of the drawing's patterns but not of its border.
+ * What to say when the picture is a tiling of the drawing's patterns but not of its border, or null for the
+ * normal case.
  *
- * A relaxed tiling is still a picture of the drawing -- the alternative was no picture at all -- so it is
- * shown rather than refused, and the line says what happened and what to change. It is null for the normal
- * case, so nothing is drawn under the drawing unless there is something to say.
+ * Two words and nothing else. A relaxed tiling is still a picture of the drawing -- the alternative is no
+ * picture at all -- so the news is worth a moment's mention and not worth two sentences over the drawing it
+ * describes: this is shown as a snackbar, which sits on top of the picture, and the picture is the thing
+ * being looked at. The advice about keeping the outer row and column one colour belongs in the log with the
+ * rest of the generation's detail.
  *
  * @param relaxedEdges the edge rule was dropped to get a tiling at all (see [WfcGenerator.Output]).
  */
-fun edgeRuleNotice(
-  relaxedEdges: Boolean,
-  columns: Int,
-  rows: Int,
-): String? = if (relaxedEdges) {
-  "Edges relaxed: the drawing's border can't repeat around ${columns}x$rows, so this is a plain " +
-    "tiling of your patterns. Keep the drawing's outer row and column one colour to keep real edges."
-} else {
-  null
-}
+fun edgeRuleNotice(relaxedEdges: Boolean): String? = if (relaxedEdges) "Edges relaxed" else null
 
 /**
  * What to say instead of a picture when the solver found no tiling for the drawing, with the edge rule or

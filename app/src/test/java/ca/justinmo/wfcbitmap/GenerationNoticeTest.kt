@@ -1,5 +1,6 @@
 package ca.justinmo.wfcbitmap
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -21,20 +22,14 @@ class GenerationNoticeTest {
 
   @Test
   fun aNormalTilingHasNothingToSay() {
-    assertNull(edgeRuleNotice(relaxedEdges = false, columns = 152, rows = 270))
+    assertNull(edgeRuleNotice(relaxedEdges = false))
   }
 
   @Test
-  fun relaxedEdgesSaysWhyAndWhatToChange() {
-    // The fallback is automatic, so this line is the only thing that tells the user their border was not
-    // kept -- it has to say that, name the grid, and say how to get the border back.
-    val notice = edgeRuleNotice(relaxedEdges = true, columns = 152, rows = 270)!!
-    assertTrue("says the edge rule was dropped: $notice", notice.contains("Edges relaxed", ignoreCase = true))
-    assertTrue("names the grid it could not repeat around: $notice", notice.contains("152x270"))
-    assertTrue(
-      "tells the user what to change: $notice",
-      notice.contains("outer row and column", ignoreCase = true),
-    )
+  fun relaxedEdgesSaysTwoWordsAndNoMore() {
+    // It is a snackbar over the picture now, and the picture is what is being looked at: the news is that
+    // the edges were relaxed, not an essay about why.
+    assertEquals("Edges relaxed", edgeRuleNotice(relaxedEdges = true))
   }
 
   // ---------------------------------------------------------------------------

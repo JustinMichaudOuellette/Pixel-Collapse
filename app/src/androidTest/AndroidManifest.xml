@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- The gesture tests hold the screen awake; see SelectionToolTest. -->
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+</manifest>

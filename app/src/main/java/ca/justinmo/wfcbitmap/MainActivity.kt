@@ -367,11 +367,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           )
           output = generated
           error = null
-          notice = edgeRuleNotice(
-            relaxedEdges = generated.relaxedEdges,
-            columns = generated.columns,
-            rows = generated.rows,
-          )
+          notice = edgeRuleNotice(generated.relaxedEdges)
           latency.registerCommit(view, generationStart, generationEnd, generated)
         } else {
           /*
@@ -517,6 +513,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     // Symmetry is the same kind of setting: the caller builds the picture, so it owns the answer.
     mirrorSymmetry = mirrorSymmetry,
     onMirrorSymmetryChange = { mirrorSymmetry = it },
+    // The drawing marks its edge cells while the picture on screen really does keep the drawing's border.
+    edgeRuleKept = output?.relaxedEdges != true,
     // The clock starts at the gesture; generation is requested by the same tap that edits the grid.
     onTap = {
       latency.tap()

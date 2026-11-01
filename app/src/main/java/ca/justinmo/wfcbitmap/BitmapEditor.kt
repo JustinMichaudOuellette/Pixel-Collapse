@@ -31,7 +31,6 @@ import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Colorize
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Delete
@@ -91,6 +90,7 @@ import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -148,20 +148,6 @@ object BitmapEditor {
     }
   }
 
-  /**
-   * A rectangle of cells lifted out of the drawing, ready to be stamped back anywhere it fits.
-   *
-   * Kept in cells rather than in pixels for the same reason a selection is: the clipboard of a drawing
-   * editor should paste what was drawn, not what the screen happened to show, and a block copied at one
-   * zoom level must paste identically at another.
-   *
-   * It is a plain value with no link to the grid it came from, so undoing the copy's source, resizing or
-   * turning the drawing leaves it intact: it is a clipboard, not a live reference.
-   */
-  data class CopiedBlock(val width: Int, val height: Int, val colors: List<Color>) {
-    /** True for a block with nothing in it, which there is no point pasting. */
-    val isEmpty: Boolean get() = width <= 0 || height <= 0 || colors.size < width * height
-  }
 
   /**
    * Holds the mutable pixel grid state, and the undo history every edit goes through.
@@ -264,6 +250,44 @@ object BitmapEditor {
         refreshDepths()
       }
       editChanged = false
+    }
+
+    /**
+     * Ends the open edit and takes back everything it wrote, for a gesture that was cancelled.
+     *
+     * A drag that never landed must leave the drawing exactly as it found it *and* leave no step in the
+     * history: an undo that undoes nothing is a trap for the next press of the undo button.
+     */
+    fun cancelEdit() {
+      if (!editOpen) return
+      val step = undoStack.removeLastOrNull()
+      editOpen = false
+      editChanged = false
+      if (step != null) {
+        restore(step)
+      }
+      // restore() puts the grid back but not the counters, and the undo button reads the counters.
+      refreshDepths()
+    }
+
+    /**
+     * Puts [indices] back to the colours they had in [source], the grid as it was before the edit began.
+     *
+     * This is what makes a drag idempotent: each step of a move puts back the cells the previous step
+     * touched and then re-applies the move from scratch, so dragging a block over other cells and back
+     * leaves those cells exactly as they were. Part of an open edit, so it records no history of its own.
+     */
+    fun revertCells(indices: IntArray, source: List<Color>) {
+      if (source.size != pixels.size) return
+      var changed = false
+      for (index in indices) {
+        if (index !in pixels.indices) continue
+        if (pixels[index] != source[index]) {
+          pixels[index] = source[index]
+          changed = true
+        }
+      }
+      if (changed) revision++
     }
 
     fun undo() {
@@ -830,42 +854,26 @@ object BitmapEditor {
       return true
     }
 
-    /**
-     * Lifts the colours inside [rect] out of the drawing as a [CopiedBlock], for [paste].
-     *
-     * Cells of [rect] that fall outside the grid come back as [defaultColor], so a rectangle clipped by a
-     * resize copies cleanly instead of throwing: a clipboard is a snapshot, and taking one must never be
-     * the thing that fails.
-     */
-    fun copyBlock(rect: CellRect): CopiedBlock {
-      val width = rect.width.coerceAtLeast(0)
-      val height = rect.height.coerceAtLeast(0)
-      val colors = ArrayList<Color>(width * height)
-      for (row in rect.top until rect.top + height) {
-        for (col in rect.left until rect.left + width) {
-          colors.add(
-            if (col in 0 until columns && row in 0 until rows) pixels[row * columns + col]
-            else defaultColor,
-          )
-        }
-      }
-      return CopiedBlock(width, height, colors)
-    }
 
-    /**
-     * Stamps [block] with its top-left corner at [column], [row], as one undo step.
-     *
-     * The corner is clamped rather than clipped, the same way [moveCells] clamps: a paste near the edge
-     * drops the whole block inside the grid instead of cutting a strip off it. Reports whether anything
-     * changed, so a paste that lands on identical colours leaves the history alone.
-     */
-    fun paste(column: Int, row: Int, block: CopiedBlock): Boolean {
-      if (block.isEmpty) return false
-      val left = column.coerceIn(0, (columns - block.width).coerceAtLeast(0))
-      val top = row.coerceIn(0, (rows - block.height).coerceAtLeast(0))
-      return stamp(CellRect(left, top, left + block.width - 1, top + block.height - 1), block.colors)
-    }
   }
+
+  /**
+   * How many cells deep the edge band is: the separator indicator marks two cells in from every side.
+   *
+   * Two and not one: the outer ring is what the edge rule literally constrains, but a band one cell deep
+   * leaves nothing to see between one grid line and the next, so the indication starts two cells in and the
+   * ring itself sits inside it.
+   */
+  internal const val EDGE_BAND_CELLS = 2
+
+  /**
+   * True for a grid line inside the edge band, counted from either end.
+   *
+   * Lines are numbered `0..count`, so the band's lines are the first and last `EDGE_BAND_CELLS + 1` of them:
+   * the lines that bound every cell in a band that deep, including the one where the band ends.
+   */
+  internal fun isEdgeBandLine(index: Int, count: Int): Boolean =
+    index <= EDGE_BAND_CELLS || index >= count - EDGE_BAND_CELLS
 
   /**
    * How many cells of history are kept before the oldest steps are dropped: a few of the largest possible
@@ -890,7 +898,7 @@ object BitmapEditor {
     Fill,
     ReplaceColor,
     Eyedropper,
-    Paste,
+    Duplicate,
     Line,
     Rectangle,
     Ellipse,
@@ -966,11 +974,11 @@ object BitmapEditor {
     output: OutputSettings = OutputSettings(),
     onOutputChange: (OutputSettings) -> Unit = {},
     /**
-     * One line under the drawing when the picture is not a plain edge-respecting tiling of it, and what to
-     * do about it. Null (the usual case) draws nothing, so the column is the drawing alone.
+     * Shown in a snackbar when the picture is not a plain edge-respecting tiling of the drawing, and what to
+     * do about it. Null (the usual case) shows nothing.
      *
-     * It lives here and not in the preview because the preview is the picture: the only thing drawn over
-     * it is the bar saying it is being rebuilt, which is about the picture and not about the drawing.
+     * A snackbar and not a line under the drawing: the sentence is about one picture, and a strip reserved
+     * under the drawing for as long as the message applies costs the drawing height it needs.
      */
     notice: String? = null,
     /**
@@ -999,6 +1007,11 @@ object BitmapEditor {
     mirrorSymmetry: Boolean = false,
     /** Called when the symmetry toggle is tapped, with the state it should have afterwards. */
     onMirrorSymmetryChange: (Boolean) -> Unit = {},
+    /**
+     * Whether the picture on screen keeps the drawing's border, so the drawing can show which cells that is.
+     * True when the edge rule held; false once the generator had to drop it.
+     */
+    edgeRuleKept: Boolean = true,
     preview: @Composable () -> Unit = {},
   ) {
     // The first palette colour is selected on open, so the swatch strip starts with a highlighted
@@ -1014,12 +1027,6 @@ object BitmapEditor {
     var selection by remember { mutableStateOf<CellRect?>(null) }
     var outputMenuOpen by remember { mutableStateOf(false) }
 
-    /*
-     * What the copy tool lifted, or null until anything has been copied. Kept here rather than in the
-     * grid because it is not part of the drawing: undo, clearing and turning the drawing must leave a
-     * clipboard alone, the same way they leave anything else that has been put on it alone.
-     */
-    var clipboard by remember { mutableStateOf<CopiedBlock?>(null) }
 
     // Tapping the armed mode puts the drawing back to painting; tapping another one arms that. A
     // selection belongs to the select tool, so arming any other tool forgets it rather than leaving a
@@ -1037,16 +1044,35 @@ object BitmapEditor {
      * where the eye already is, and takes itself away again.
      */
     val snackbar = remember { SnackbarHostState() }
-    val explainScope = rememberCoroutineScope()
-    var explanationJob by remember { mutableStateOf<Job?>(null) }
+    val snackbarScope = rememberCoroutineScope()
+    var snackbarJob by remember { mutableStateOf<Job?>(null) }
 
-    fun explain(tool: EditorTool) {
-      // Held again before the first line has gone: the second press wants the second explanation, so the
-      // old one is replaced rather than queued behind it.
-      explanationJob?.cancel()
-      explanationJob = explainScope.launch {
-        snackbar.showSnackbar(message = tool.explanation, duration = SnackbarDuration.Short)
+    /**
+     * Shows [message] over the drawing, replacing whatever line was there.
+     *
+     * One line at a time, on purpose: a second message means the first is out of date -- the next tool's
+     * explanation, or a new generation's notice -- so it is replaced rather than queued behind it.
+     */
+    fun showSnackbar(message: String, duration: SnackbarDuration) {
+      snackbarJob?.cancel()
+      snackbarJob = snackbarScope.launch {
+        snackbar.showSnackbar(message = message, duration = duration)
       }
+    }
+
+    fun explain(tool: EditorTool) = showSnackbar(tool.explanation, SnackbarDuration.Short)
+
+    /*
+     * The generation notice gets the snackbar rather than a line of its own under the drawing.
+     *
+     * It is a sentence about one picture, not a permanent part of the editor: while it sat under the
+     * drawing it took a strip of the drawing's height for as long as the drawing kept binding its edges,
+     * which is most of the time. It appears when the message changes, and the same message appearing twice
+     * in a row is not news.
+     */
+    LaunchedEffect(notice) {
+      // Short: it is a word about the picture, and it sits over the picture while it is up.
+      notice?.let { showSnackbar(it, SnackbarDuration.Short) }
     }
 
     // A selection cannot outlive the grid it was measured on: undo, rotate and the +/- buttons all change
@@ -1099,28 +1125,15 @@ object BitmapEditor {
         explanation = "Drag out a rectangle to select it, then drag inside it to move what it holds.",
         selected = mode == EditorMode.Select,
       ) { arm(EditorMode.Select) },
-      // Copy and paste sit beside the select tool because a copy is a copy *of something*: with a
-      // selection that is the selection, and with none it is the whole drawing, so the tools read as one
-      // group whether or not a rectangle has been drawn first.
+      // One tool, used in two steps: drag out an area to copy, then drag the copy. It sits with the select
+      // tool because it is that gesture plus a duplicate -- the original stays where it is.
       EditorTool(
         icon = Icons.Default.ContentCopy,
-        contentDescription = "Copy the selection, or the whole drawing when nothing is selected",
-        explanation = "Copies the selected cells, or the whole drawing if nothing is selected."
-        // The copy is what the paste tool will stamp, and it stays put through undo and clearing.
-      ) {
-        val rect = selection ?: CellRect(0, 0, gridState.columns - 1, gridState.rows - 1)
-        clipboard = gridState.copyBlock(rect)
-      },
-      EditorTool(
-        icon = Icons.Default.ContentPaste,
-        contentDescription = "Place the copied block where you drag it",
-        explanation = "Drag the copied cells where they should go and let go to stamp them. They become " +
-          "the selection, so you can nudge them afterwards. Copy something first with the tool beside it.",
-        selected = mode == EditorMode.Paste,
-        // Nothing to paste until something has been copied: a paste tool that could paste an empty
-        // clipboard would arm, take a tap, and do nothing to the drawing.
-        enabled = clipboard != null,
-      ) { arm(EditorMode.Paste) },
+        contentDescription = "Copy an area: drag out the area, then drag the copy",
+        explanation = "Drag out an area to copy it, then drag the copy where it belongs. The original " +
+          "stays where it is.",
+        selected = mode == EditorMode.Duplicate,
+      ) { arm(EditorMode.Duplicate) },
 
       EditorTool(
         icon = Icons.Default.Undo,
@@ -1279,7 +1292,7 @@ object BitmapEditor {
               mode = mode,
               selection = selection,
               baseCellSizePx = baseCellSizePx,
-              clipboard = clipboard,
+              edgeRuleKept = edgeRuleKept,
               onSelectionChange = { selection = it },
               onColorPicked = { selectedColor = it },
               onModeConsumed = { mode = EditorMode.Paint },
@@ -1288,15 +1301,6 @@ object BitmapEditor {
             )
           }
 
-          if (notice != null) {
-            Text(
-              text = notice,
-              color = NOTICE_COLOR,
-              fontSize = 10.sp,
-              lineHeight = 13.sp,
-              modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-            )
-          }
         }
 
       VerticalDividerLine()
@@ -1373,11 +1377,11 @@ object BitmapEditor {
     )
   }
 
+  /** The tag UI tests use to find the drawing: it has no other handle, being one pointer-driven Canvas. */
+  const val CANVAS_TEST_TAG = "pixel-canvas"
+
   /** Slightly darker than the app background, so the preview reads as its own surface. */
   private val PREVIEW_BACKGROUND = Color(0xFF0B0910)
-
-  /** The notice line under the drawing: warm enough to be noticed, dim enough not to be an alarm. */
-  private val NOTICE_COLOR = Color(0xFFFEAE34)
 
   /** Behind a tool's explanation: the toolbar's own near-black, so it reads as part of the editor. */
   private val SNACKBAR_BACKGROUND = Color(0xFF1A1720)
@@ -1399,8 +1403,8 @@ object BitmapEditor {
    *   crosses. Moving before the hold is recognised still pans and zooms.
    * - [EditorMode.Fill], [EditorMode.ReplaceColor], [EditorMode.Eyedropper]: a tap acts once, and
    *   [onModeConsumed] lets the caller disarm the mode.
-   * - [EditorMode.Paste]: press, drag the copied block until it is where it should land, release to stamp it.
-   *   What was stamped becomes the selection, so it can be nudged like any other.
+   * - [EditorMode.Duplicate]: drag out the area to copy, exactly as the select tool does, then drag the
+   *   selection: a copy of it follows the finger while the original stays where it is.
    * - [EditorMode.Line], [EditorMode.Rectangle], [EditorMode.Ellipse]: press, drag to size, release to
    *   commit, with the cells the shape would cover shown while dragging. The committed shape spends the
    *   tool, so a second shape means arming it again.
@@ -1408,8 +1412,6 @@ object BitmapEditor {
    *   inside it moves the selected cells. Drawing the marquee does not spend the tool -- the move is the
    *   use -- and after a move the selection stays where it was put.
    *
-   * @param clipboard what a [EditorMode.Paste] drag stamps, or null when nothing has been copied yet. The
-   *   caller owns it: copying is a selection-level idea and the canvas only needs the colours to place.
    * @param onSelectionChange the selection after the tool changed it, or null when it was cleared.
    * @param onColorPicked the colour the eyedropper found.
    * @param onModeConsumed the armed mode has been used and should be disarmed. It is only called for a
@@ -1428,7 +1430,16 @@ object BitmapEditor {
     baseCellSizePx: Int,
     minZoom: Float = 0.5f,
     maxZoom: Float = 10f,
-    clipboard: CopiedBlock? = null,
+    /** The tag a UI test finds the drawing by; each test passes its own so two canvases never collide. */
+    canvasTestTag: String = CANVAS_TEST_TAG,
+    /**
+     * Whether the generated picture keeps the drawing's border, i.e. the edge rule was *not* relaxed.
+     *
+     * Only then is the outer ring of cells special: those are the cells whose pixels land on the generated
+     * bitmap's border, so keeping them one colour is what keeps the picture's edges real. The canvas marks
+     * them so the ring is visible while drawing instead of having to be remembered.
+     */
+    edgeRuleKept: Boolean = true,
     onSelectionChange: (CellRect?) -> Unit = {},
     onColorPicked: (Color) -> Unit = {},
     onModeConsumed: () -> Unit = {},
@@ -1446,18 +1457,13 @@ object BitmapEditor {
      */
     val currentSelection by rememberUpdatedState(selection)
 
-    /*
-     * The clipboard is read the same way, and for the same reason: it changes when a copy happens, and the
-     * handler must see the newest block without being torn down mid-gesture for it.
-     */
-    val currentClipboard by rememberUpdatedState(clipboard)
-
-    // The cells a shape would cover if it were released now, the rectangle the selection tool is dragging
-    // out, and where the clipboard would land if the finger lifted now. All three are drawn over the grid;
-    // none of them is part of it.
+    // The cells a shape would cover if it were released now, and the rectangle the selection tool is
+    // dragging out. Both are drawn over the grid; neither is part of it.
+    //
+    // A floating paste spans two gestures, so the drawing it was dropped onto is kept here: moving the
+    // copy puts this back between steps, which is what leaves the pixels underneath untouched.
     var shapePreview by remember { mutableStateOf<List<Int>>(emptyList()) }
     var marquee by remember { mutableStateOf<CellRect?>(null) }
-    var pasteGhost by remember { mutableStateOf<Pair<CellRect, CopiedBlock>?>(null) }
 
     fun tapToPixel(screenPos: Offset): Pair<Int, Int>? {
       val localX = (screenPos.x - offset.x) / scale
@@ -1472,6 +1478,9 @@ object BitmapEditor {
       modifier = Modifier
         .clipToBounds()
         .fillMaxSize()
+        // A handle for UI tests: the drawing is one Canvas and gestures are the only way to drive it, so a
+        // test needs a stable way to say "this is the thing to swipe on".
+        .testTag(canvasTestTag)
         .pointerInput(gridState, selectedColor) {
           detectDragGestures { change, dragAmount ->
             change.consume()
@@ -1529,6 +1538,77 @@ object BitmapEditor {
           }
 
           /**
+           * Drags the block of cells in [from] with the finger, grabbed at [grabCol], [grabRow].
+           *
+           * Every step is re-derived from the grid as it was when the drag began, so passing over other
+           * cells and moving on leaves them exactly as they were: only the cells the previous step wrote
+           * are put back in between. Erasing the previous *rectangle* instead destroys whatever the block
+           * merely passed over, because nothing else remembers those cells.
+           *
+           * The caller owns the edit session: this opens one at its first write and leaves it open, so a
+           * paste and the drag that places it are one undo step.
+           *
+           * @param onMoved called with each new rectangle while the block is being dragged.
+           * @return where the block ended when the gesture landed and moved it; null when it never moved or
+           *   the gesture was taken over, in which case every cell it wrote has already been put back.
+           */
+          suspend fun AwaitPointerEventScope.dragBlock(
+            down: PointerInputChange,
+            from: CellRect,
+            grabCol: Int,
+            grabRow: Int,
+            /**
+             * Whether the cells the block is lifted out of become a hole. True for moving pixels that are
+             * part of the drawing; false for a copy floating over it, which leaves the drawing underneath
+             * exactly as it was when the copy was dropped.
+             */
+            leaveHole: Boolean = true,
+            /**
+             * The grid to return to between steps, when it is older than this drag: a floating copy is
+             * dropped on one gesture and moved on the next, and what has to come back is what was under it
+             * before it was ever dropped.
+             */
+            base: List<Color>? = null,
+            onMoved: (CellRect) -> Unit,
+          ): CellRect? {
+            val lifted = gridState.indicesOf(from).map { gridState.pixels[it] }
+            val before = base ?: gridState.pixels.toList()
+            val hole = if (leaveHole) gridState.indicesOf(from) else emptyList()
+            var placed = from
+            // A floating copy is already written where it was dropped, and [before] predates that write, so
+            // its cells are the first thing the next step has to put back.
+            var touched = if (leaveHole) IntArray(0) else gridState.indicesOf(from).toIntArray()
+            var editing = false
+
+            fun placeAt(target: CellRect) {
+              if (!editing) {
+                gridState.beginEdit()
+                editing = true
+              }
+              gridState.revertCells(touched, before)
+              if (hole.isNotEmpty()) gridState.paintCells(hole, gridState.defaultColor)
+              gridState.stamp(target, lifted)
+              touched = (hole + gridState.indicesOf(target)).toIntArray()
+              placed = target
+            }
+
+            val released = drag(down.id) { change ->
+              change.consume()
+              val cell = tapToPixel(change.position) ?: return@drag
+              val target = gridState.movedRect(from, cell.first - grabCol, cell.second - grabRow)
+              if (target == placed) return@drag
+              placeAt(target)
+              onMoved(target)
+            }
+            if (!released) {
+              // The gesture was taken over (a pinch, say): put back every cell this drag wrote.
+              gridState.revertCells(touched, before)
+              return null
+            }
+            return if (placed != from) placed else null
+          }
+
+          /**
            * Select by dragging out a rectangle, or move an existing selection by dragging it.
            *
            * Drawing the marquee does *not* spend the tool: it is how you say what to move, and the obvious
@@ -1547,29 +1627,30 @@ object BitmapEditor {
             val grabbed = downCell
 
             // A press inside the selection moves it. The block is lifted once and stamped at each new
-            // rectangle, so dragging back and forth never smears the pixels, and the whole drag is one
-            // undo step.
+            // rectangle, so the whole drag is one undo step and the pixels inside it are never smeared.
             if (moving != null && grabbed != null && grabbed in moving) {
-              val grabCol = grabbed.first
-              val grabRow = grabbed.second
-              val lifted = gridState.indicesOf(moving).map { gridState.pixels[it] }
-              var placed: CellRect = moving
-              gridState.beginEdit()
-              val released = drag(down.id) { change ->
-                change.consume()
-                val cell = tapToPixel(change.position) ?: return@drag
-                val target = gridState.movedRect(moving, cell.first - grabCol, cell.second - grabRow)
-                if (target == placed) return@drag
-                gridState.paintCells(gridState.indicesOf(placed), gridState.defaultColor)
-                gridState.stamp(target, lifted)
-                placed = target
+              // Whether the block ever left its place, which is what separates a move from a tap: a drag
+              // that wanders and comes back is still a move, and the selection is let go of at the end.
+              var dragged = false
+              val landed = dragBlock(down, moving, grabbed.first, grabbed.second) { target ->
+                dragged = true
                 onSelectionChange(target)
               }
-              gridState.endEdit()
-              if (released) onResize()
-              // Only a move that went somewhere counts as using the tool: a press and release on the
-              // selection without dragging is a tap, not a move.
-              return released && placed != moving
+              if (landed != null) {
+                gridState.endEdit()
+                onResize()
+              } else {
+                // Nothing net moved (or the gesture was taken over), so there is no step to keep.
+                gridState.cancelEdit()
+              }
+              if (dragged) {
+                // The gesture finished anywhere -- including back where it started. Either way it was a
+                // move, so the selection is let go of and the tool is spent.
+                onSelectionChange(null)
+                return true
+              }
+              // Pressed and released without dragging: a tap, not a move. The selection stays.
+              return false
             }
 
             // Anywhere else, drag out a new rectangle; a tap with no drag clears the selection.
@@ -1594,63 +1675,82 @@ object BitmapEditor {
                 null
               }
             )
-            return true
+            // Drawing the marquee does not spend the tool: it says *what* to move, and the drag that
+            // moves it is the next gesture. Returning true here disarms the tool, so the next drag paints
+            // instead of moving -- the bug this line exists to keep from coming back.
+            return false
           }
 
           /**
-           * Place the clipboard: press, drag the block to where it should land, release to stamp it.
+           * Copy an area, then drag the copy: the select tool's two gestures, with a duplicate in the middle.
            *
-           * It is the selection tool's gesture applied to the clipboard -- press, drag, release -- because
-           * that is how the two halves of a copy work together: you copy where the block is, and you place
-           * it the same way you would move it. The ghost is drawn while dragging so the answer to "where
-           * will this land" is visible before committing, instead of a tap landing somewhere and being
-           * undone to try again.
+           * The first gesture is the select tool's marquee -- nothing is written, the area is only chosen --
+           * and the copy is not taken until it is dragged, so the original is always in place to be seen
+           * against. The second gesture drags a *copy* of that area: it follows the finger and the cells
+           * underneath it come back when it moves on, which is what makes it a duplicate rather than a move
+           * (a move lifts the pixels away and leaves a hole behind).
            *
-           * The stamped block becomes the selection, so it can be nudged with the select tool afterwards
-           * exactly like a selection that was dragged out by hand.
-           *
-           * @return true when the block was placed, i.e. when the tool has been used.
+           * @return true when the copy has been put down, i.e. when the tool has been used.
            */
-          suspend fun AwaitPointerEventScope.dragPaste(
+          suspend fun AwaitPointerEventScope.dragDuplicate(
             down: PointerInputChange,
             downCell: Pair<Int, Int>?,
           ): Boolean {
-            val block = currentClipboard ?: return false
-            if (block.isEmpty || downCell == null) return false
+            val selected = currentSelection
+            val grabbed = downCell
 
-            /** Where the block lands for a finger at [cell]: the corner clamped so the block stays in. */
-            fun target(cell: Pair<Int, Int>): CellRect {
-              val left = cell.first.coerceIn(0, (gridState.columns - block.width).coerceAtLeast(0))
-              val top = cell.second.coerceIn(0, (gridState.rows - block.height).coerceAtLeast(0))
-              return CellRect(
-                left = left,
-                top = top,
-                right = minOf(left + block.width - 1, gridState.columns - 1),
-                bottom = minOf(top + block.height - 1, gridState.rows - 1),
+            // Second gesture: drag the copy. Nothing is lifted away, so the original stays where it is.
+            if (selected != null && grabbed != null && grabbed in selected) {
+              var dragged = false
+              val landed = dragBlock(
+                down = down,
+                from = selected,
+                grabCol = grabbed.first,
+                grabRow = grabbed.second,
+                leaveHole = false,
+                onMoved = { target ->
+                  dragged = true
+                  onSelectionChange(target)
+                },
               )
+              if (landed != null) {
+                gridState.endEdit()
+                onResize()
+              } else {
+                // Nothing net moved (or the gesture was taken over): no step to keep.
+                gridState.cancelEdit()
+              }
+              if (dragged) {
+                onSelectionChange(null)
+                return true
+              }
+              return false
             }
 
-            var landing = target(downCell)
-            pasteGhost = landing to block
+            // First gesture: the area to copy, drawn out exactly as the select tool draws one.
+            var end = grabbed
+            marquee = grabbed?.let { CellRect.between(it, it, gridState.columns, gridState.rows) }
             val released = drag(down.id) { change ->
               change.consume()
               val cell = tapToPixel(change.position) ?: return@drag
-              val next = target(cell)
-              if (next != landing) {
-                landing = next
-                pasteGhost = next to block
+              if (cell != end) {
+                end = cell
+                marquee = grabbed?.let { CellRect.between(it, cell, gridState.columns, gridState.rows) }
               }
             }
-            pasteGhost = null
-            // A cancelled drag (a pinch that took the gesture) places nothing: the clipboard is untouched,
-            // so the tool stays armed and the same block can be placed after all.
+            marquee = null
+            // A cancelled drag is not a selection: leave the one that was there alone.
             if (!released) return false
-            gridState.paste(landing.left, landing.top, block)
-            onSelectionChange(landing)
-            onResize()
-            return true
+            onSelectionChange(
+              if (grabbed != null && end != null) {
+                CellRect.between(grabbed, end, gridState.columns, gridState.rows)
+              } else {
+                null
+              }
+            )
+            // Not spent: the area is chosen, and the next drag moves a copy of it.
+            return false
           }
-
           awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = true)
             val downCell = tapToPixel(down.position)
@@ -1664,8 +1764,8 @@ object BitmapEditor {
                 if (dragSelection(down, downCell)) onModeConsumed()
               }
 
-              mode == EditorMode.Paste -> {
-                if (dragPaste(down, downCell)) onModeConsumed()
+              mode == EditorMode.Duplicate -> {
+                if (dragDuplicate(down, downCell)) onModeConsumed()
               }
 
               mode.isShape -> {
@@ -1778,24 +1878,7 @@ object BitmapEditor {
           }
         }
 
-        /*
-         * Where the clipboard would land: the block's own colours, half-transparent, over the cells it
-         * would take. Drawn as colours rather than as an outline because the question a placed block raises
-         * is what it will look like there, and because the selection outline underneath it has to stay
-         * readable -- the paste is about to become that selection.
-         */
-        pasteGhost?.let { (rect, block) ->
-          for (row in 0 until rect.height) {
-            for (col in 0 until rect.width) {
-              val colour = block.colors.getOrNull(row * rect.width + col) ?: continue
-              drawRect(
-                color = colour.copy(alpha = 0.6f),
-                topLeft = Offset((rect.left + col) * cs, (rect.top + row) * cs),
-                size = cellSize,
-              )
-            }
-          }
-        }
+
 
         // The selection, or the rectangle being dragged out. One hairline whatever the zoom.
         (marquee ?: selection)?.let { rect ->
@@ -1807,18 +1890,53 @@ object BitmapEditor {
           )
         }
 
-        // Grid lines
+
+        /*
+         * The grid lines, which is the whole of the edge indicator.
+         *
+         * The separators inside the edge band are dotted and the rest are finely dashed, so the band reads
+         * as a region of the drawing without a single pixel of the drawing itself being changed: no tint,
+         * no frame, nothing drawn over the cells. The band is EDGE_BAND_CELLS cells deep on every side.
+         *
+         * It is only drawn while the picture keeps the drawing's border. When the edges were relaxed the
+         * band is not special at all, and the grid is uniformly dashed -- which is the honest picture of a
+         * drawing whose border the generator was allowed to drop.
+         */
         val gridLineColor = Color.White
         val lineWidth = 1f / sx
         val pathEffect = PathEffect.dashPathEffect(floatArrayOf(lineWidth, lineWidth))
+        /*
+         * Dot, gap, dot -- three pixels in either direction, against the hairline and 1px gap of the rest.
+         *
+         * A dotted line drawn with the same 1px stroke as the others is not a dotted line: a single pixel of
+         * dash followed by a single pixel of gap closes back up into a solid-looking line over pixel art, so
+         * the band was invisible. The stroke is what makes the dots real; the dash lengths only space them.
+         */
+        val dotSize = 3f / sx
+        val dottedWidth = 3f / sx
+        val dotted = PathEffect.dashPathEffect(floatArrayOf(dotSize, dotSize * 1.6f))
 
         val w = gridState.columns * cs
         val h = gridState.rows * cs
         for (col in 0..gridState.columns) {
-          drawLine(gridLineColor, Offset(col * cs, 0f), Offset(col * cs, h), lineWidth, pathEffect = pathEffect)
+          val inBand = edgeRuleKept && isEdgeBandLine(col, gridState.columns)
+          drawLine(
+            gridLineColor,
+            Offset(col * cs, 0f),
+            Offset(col * cs, h),
+            if (inBand) dottedWidth else lineWidth,
+            pathEffect = if (inBand) dotted else pathEffect,
+          )
         }
         for (row in 0..gridState.rows) {
-          drawLine(gridLineColor, Offset(0f, row * cs), Offset(w, row * cs), lineWidth, pathEffect = pathEffect)
+          val inBand = edgeRuleKept && isEdgeBandLine(row, gridState.rows)
+          drawLine(
+            gridLineColor,
+            Offset(0f, row * cs),
+            Offset(w, row * cs),
+            if (inBand) dottedWidth else lineWidth,
+            pathEffect = if (inBand) dotted else pathEffect,
+          )
         }
 
         drawContext.canvas.restore()
