@@ -8,7 +8,6 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,11 +30,13 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -49,10 +50,9 @@ import kotlinx.coroutines.delay
  * a sentence about this drawing is still about the drawing, and the column is the only place the editor
  * has to say it at the size the picture would be.
  *
- * What is drawn here is the cell-resolution bitmap (76x135). The generated image is 304x540, an exact
- * 4x nearest-neighbour upscale of it, so the preview shows the same pixels for a sixteenth of the
- * texture upload. `FilterQuality.None` is what keeps the pattern's pixels crisp instead of smeared, and
- * the column is the same 9:16 shape as the image, so `FillBounds` covers it exactly.
+ * What is drawn here is the generated bitmap, fitted to the column and resampled with nearest neighbour:
+ * `FilterQuality.None` keeps the pattern's pixels as blocks instead of smearing them, so a smaller preview is
+ * visibly blockier rather than smaller. The size is worked out by [previewDrawSize].
  *
  * @param output the last generated bitmap, or null before the first one is ready, or after a generation
  *   that failed. Holding on to the previous output is what keeps the preview steady while a newer edit is
@@ -94,13 +94,31 @@ fun WfcPreview(
           .wrapContentHeight(Alignment.CenterVertically),
       )
     } else if (output != null) {
-      Image(
-        bitmap = output.image,
-        contentDescription = "Live bitmap generated from the drawing",
-        modifier = Modifier.fillMaxSize(),
-        contentScale = ContentScale.FillBounds,
-        filterQuality = FilterQuality.None,
-      )
+      val picture = output.image
+      Canvas(
+        modifier = Modifier
+          .fillMaxSize()
+          // Says to a screen reader what the picture is; the drawing itself has no text to give it.
+          .semantics { contentDescription = PREVIEW_DESCRIPTION },
+      ) {
+        val (width, height) = previewDrawSize(
+          bitmapWidth = picture.width,
+          bitmapHeight = picture.height,
+          columnWidth = size.width.toInt(),
+          columnHeight = size.height.toInt(),
+        )
+        if (width <= 0 || height <= 0) return@Canvas
+        // Centred, so a picture smaller than the column sits in the middle of it rather than against a corner.
+        drawImage(
+          image = picture,
+          dstOffset = IntOffset(
+            x = ((size.width - width) / 2f).toInt(),
+            y = ((size.height - height) / 2f).toInt(),
+          ),
+          dstSize = IntSize(width, height),
+          filterQuality = FilterQuality.None,
+        )
+      }
     }
     // Drawn after the picture, so it is drawn *over* it: the bar is about the picture it covers, and it
     // may neither be hidden behind it nor push it down. It takes no room it would have to take back.
@@ -183,6 +201,35 @@ private fun GeneratingBar(visible: Boolean, modifier: Modifier = Modifier) {
       size = Size(highlightWidth, size.height),
     )
   }
+}
+
+/** The preview's accessibility name: it is the picture, and saying so is the only thing it can be called. */
+private const val PREVIEW_DESCRIPTION = "Live bitmap generated from the drawing"
+
+/**
+ * The size the generated picture is drawn at inside a preview column of [columnWidth] x [columnHeight].
+ *
+ * The column is filled, whichever preview size was generated: the picture is fitted to it, up or down, keeping
+ * its shape. A smaller preview is therefore scaled *up* -- one source pixel becomes a block of them -- which is
+ * what makes the setting mean something: a 0.5x picture is a quarter of the pixels of a 2x one, so filling the
+ * same column draws each of its pixels four times as large, and the picture reads blockier. Shrinking the
+ * picture instead would leave a small picture in the middle of the column, which is not what a preview is for.
+ *
+ * The result is in whole pixels so the blocks stay even, and it is centred: fitting a 9:16 picture to a column
+ * of very slightly different shape leaves a pixel or two over, and they belong on both sides, not on one.
+ */
+internal fun previewDrawSize(
+  bitmapWidth: Int,
+  bitmapHeight: Int,
+  columnWidth: Int,
+  columnHeight: Int,
+): Pair<Int, Int> {
+  if (bitmapWidth <= 0 || bitmapHeight <= 0 || columnWidth <= 0 || columnHeight <= 0) return 0 to 0
+  val scale = minOf(
+    columnWidth.toDouble() / bitmapWidth,
+    columnHeight.toDouble() / bitmapHeight,
+  )
+  return (bitmapWidth * scale).toInt().coerceAtLeast(1) to (bitmapHeight * scale).toInt().coerceAtLeast(1)
 }
 
 /** A hairline over the picture rather than a band across it: the preview is the point, not the bar. */

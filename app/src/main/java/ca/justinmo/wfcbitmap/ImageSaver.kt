@@ -75,24 +75,17 @@ object ImageSaver {
   }
 
   /**
-   * The pixel size [bitmap] is written at when the output is set to [scale].
+   * [bitmap], or a copy of it resampled to exactly [width] x [height].
    *
-   * Scaling happens on the way out, not in the solver: the structure of the picture is decided by the
-   * grid, and asking for more pixels only asks for a bigger copy of it.
-   */
-  fun scaledSize(width: Int, height: Int, scale: Int): Pair<Int, Int> {
-    val safeScale = scale.coerceAtLeast(1)
-    return width * safeScale to height * safeScale
-  }
-
-  /**
-   * [bitmap], or an enlarged copy of it when [scale] is above 1.
+   * A size rather than a multiplier, because the save size is not a multiple of anything on screen: it is
+   * its own size, worked out from the grid by [BitmapEditor.savedPixelSize]. The factors between any preview
+   * size and any save size are whole numbers (one, two, four, eight times a cell), so resampling with nearest
+   * neighbour is exact: the file is the same picture, with more or fewer pixels each.
    *
    * Nearest neighbour on purpose: the picture is pixel art, and a smooth filter would blur exactly the
    * edges the drawing put there. The caller owns the result and must recycle it when it is not [bitmap].
    */
-  fun atScale(bitmap: Bitmap, scale: Int): Bitmap {
-    val (width, height) = scaledSize(bitmap.width, bitmap.height, scale)
+  fun atSize(bitmap: Bitmap, width: Int, height: Int): Bitmap {
     if (width == bitmap.width && height == bitmap.height) return bitmap
     return Bitmap.createScaledBitmap(bitmap, width, height, false)
   }
@@ -101,19 +94,21 @@ object ImageSaver {
    * Writes [bitmap] into the gallery as a PNG and returns the URI it was written to.
    *
    * @param name file name including the extension; see [fileName].
-   * @param scale output scale; see [scaledSize].
+   * @param width the width of the file, in pixels; see [atSize].
+   * @param height the height of the file, in pixels.
    * @throws IOException when the gallery refuses the row or the encode fails, after cleaning up.
    */
   suspend fun saveToGallery(
     context: Context,
     bitmap: Bitmap,
     name: String = fileName(System.currentTimeMillis()),
-    scale: Int = 1,
+    width: Int = bitmap.width,
+    height: Int = bitmap.height,
   ): Uri = withContext(Dispatchers.IO) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      writeThroughMediaStore(context, bitmap, name, scale)
+      writeThroughMediaStore(context, bitmap, name, width, height)
     } else {
-      writeToSharedStorage(context, bitmap, name, scale)
+      writeToSharedStorage(context, bitmap, name, width, height)
     }
   }
 
@@ -123,12 +118,14 @@ object ImageSaver {
    * The cache is the right home for a shared picture: it is temporary by definition, the app does not
    * need permission to write it, and the [FileProvider] declared in the manifest is the only way out.
    *
-   * @param scale output scale; see [scaledSize].
+   * @param width the width of the file, in pixels; see [atSize].
+   * @param height the height of the file, in pixels.
    */
   suspend fun prepareShare(
     context: Context,
     bitmap: Bitmap,
-    scale: Int = 1,
+    width: Int = bitmap.width,
+    height: Int = bitmap.height,
   ): Uri = withContext(Dispatchers.IO) {
     val name = fileName(System.currentTimeMillis())
     val dir = File(context.cacheDir, SHARE_FOLDER)
@@ -141,7 +138,7 @@ object ImageSaver {
     dir.listFiles()?.forEach { old -> if (old.lastModified() < cutoff) old.delete() }
     val file = File(dir, name)
 
-    val scaled = atScale(bitmap, scale)
+    val scaled = atSize(bitmap, width, height)
     try {
       file.outputStream().use { out ->
         if (!scaled.compress(Bitmap.CompressFormat.PNG, PNG_QUALITY, out)) {
@@ -163,13 +160,24 @@ object ImageSaver {
       .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
 
   /**
+   * The intent that opens a picture written by [saveToGallery], for the "View" action of a save's snackbar.
+   *
+   * It points at the very row that was just inserted, so whatever the device opens pictures with -- the
+   * gallery, or Photos -- shows it, and the grant lets it read a row it did not insert itself.
+   */
+  fun viewIntent(picture: Uri): Intent =
+    Intent(Intent.ACTION_VIEW)
+      .setDataAndType(picture, MIME_TYPE)
+      .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+  /**
    * API 29+: insert the row first, stream the PNG into it, then publish it.
    *
    * The row is inserted with `IS_PENDING` set so no other app can see a half-written picture, and
    * deleted again if the encode fails, so a failure leaves no empty entry in the gallery.
    */
   @RequiresApi(Build.VERSION_CODES.Q)
-  private fun writeThroughMediaStore(context: Context, bitmap: Bitmap, name: String, scale: Int): Uri {
+  private fun writeThroughMediaStore(context: Context, bitmap: Bitmap, name: String, width: Int, height: Int): Uri {
     val resolver = context.contentResolver
     val pending = ContentValues().apply {
       put(MediaStore.Images.Media.DISPLAY_NAME, name)
@@ -180,7 +188,7 @@ object ImageSaver {
     val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, pending)
       ?: throw IOException("The gallery would not create an entry for $name")
 
-    val scaled = atScale(bitmap, scale)
+    val scaled = atSize(bitmap, width, height)
     try {
       encodeInto(resolver, uri, scaled)
       resolver.update(
@@ -204,14 +212,14 @@ object ImageSaver {
    * @throws IOException when the album cannot be created or the write fails.
    */
   @Suppress("DEPRECATION")
-  private fun writeToSharedStorage(context: Context, bitmap: Bitmap, name: String, scale: Int): Uri {
+  private fun writeToSharedStorage(context: Context, bitmap: Bitmap, name: String, width: Int, height: Int): Uri {
     val pictures = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
     val album = File(pictures, ALBUM)
     if (!album.isDirectory && !album.mkdirs()) {
       throw IOException("Could not create $album")
     }
     val file = File(album, name)
-    val scaled = atScale(bitmap, scale)
+    val scaled = atSize(bitmap, width, height)
     try {
       file.outputStream().use { out ->
         if (!scaled.compress(Bitmap.CompressFormat.PNG, PNG_QUALITY, out)) {

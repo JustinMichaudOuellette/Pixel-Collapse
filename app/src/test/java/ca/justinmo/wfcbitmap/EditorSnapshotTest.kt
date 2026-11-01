@@ -37,7 +37,8 @@ class EditorSnapshotTest {
     seed = 42,
     colorArgb = 0xFFBE4A2F.toInt(),
     aspectName = "Square",
-    scaleFactor = 2,
+    previewName = "Two",
+    scaleName = "Sixteen",
     wrapEdges = true,
     mirrorSymmetry = true,
   )

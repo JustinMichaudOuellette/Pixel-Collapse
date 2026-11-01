@@ -51,6 +51,18 @@ class EdgeCellTest {
   }
 
   @Test
+  fun theGridIsUniformUnlessThePictureKeepsTheDrawingBorder() {
+    // Kept, and not wrapped: the band is marked, so the separators are dotted where it lies.
+    assertTrue(BitmapEditor.showsEdgeBand(edgeRuleKept = true, wrapEdges = false))
+    // Relaxed: the edge rule was dropped, so the drawing's border is not the picture's border.
+    assertTrue(!BitmapEditor.showsEdgeBand(edgeRuleKept = false, wrapEdges = false))
+    // Wrapped: the border was never one to keep, because every pattern was sampled across it. This is the
+    // case that used to keep a dotted band on screen next to a wrap button that was lit for the same reason.
+    assertTrue(!BitmapEditor.showsEdgeBand(edgeRuleKept = true, wrapEdges = true))
+    assertTrue(!BitmapEditor.showsEdgeBand(edgeRuleKept = false, wrapEdges = true))
+  }
+
+  @Test
   fun everyCellInTheBandIsBoundedByDottedSegments() {
     val columns = 16
     val rows = 11

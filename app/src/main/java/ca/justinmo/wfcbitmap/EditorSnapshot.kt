@@ -28,8 +28,10 @@ data class EditorSnapshot(
   val colorArgb: Int,
   /** [BitmapEditor.OutputAspect] by name, so a reordered enum cannot silently change a saved session. */
   val aspectName: String,
-  /** [BitmapEditor.OutputScale]'s factor. */
-  val scaleFactor: Int,
+  /** [BitmapEditor.PreviewScale] by name, for the same reason as [aspectName]. */
+  val previewName: String,
+  /** [BitmapEditor.OutputScale] by name, for the same reason as [aspectName]. */
+  val scaleName: String,
   val wrapEdges: Boolean,
   val mirrorSymmetry: Boolean,
 ) {
@@ -52,7 +54,8 @@ data class EditorSnapshot(
       out.writeInt(seed)
       out.writeInt(colorArgb)
       out.writeUTF(aspectName)
-      out.writeInt(scaleFactor)
+      out.writeUTF(previewName)
+      out.writeUTF(scaleName)
       out.writeBoolean(wrapEdges)
       out.writeBoolean(mirrorSymmetry)
     }
@@ -63,8 +66,14 @@ data class EditorSnapshot(
     /** "WFC1": four bytes that say what the file is, so a stray file is refused rather than misread. */
     private const val MAGIC = 0x57464331
 
-    /** Bumped only when the fields change; a file from another version is refused, not guessed at. */
-    private const val VERSION = 1
+    /**
+     * Bumped only when the fields change; a file from another version is refused, not guessed at.
+     *
+     * 2 changed the save size from its multiplier to its name: the list now has a scale below 1, and a
+     * whole number cannot describe it. 3 added the preview size, which is what the picture is generated at
+     * and so a setting the picture cannot be reproduced without.
+     */
+    private const val VERSION = 3
 
     private const val HEADER_BYTES = 96
 
@@ -100,7 +109,8 @@ data class EditorSnapshot(
           val seed = input.readInt()
           val colorArgb = input.readInt()
           val aspectName = input.readUTF()
-          val scaleFactor = input.readInt()
+          val previewName = input.readUTF()
+          val scaleName = input.readUTF()
           val wrapEdges = input.readBoolean()
           val mirrorSymmetry = input.readBoolean()
 
@@ -111,7 +121,8 @@ data class EditorSnapshot(
             seed = seed,
             colorArgb = colorArgb,
             aspectName = aspectName,
-            scaleFactor = scaleFactor,
+            previewName = previewName,
+            scaleName = scaleName,
             wrapEdges = wrapEdges,
             mirrorSymmetry = mirrorSymmetry,
           )
@@ -130,7 +141,7 @@ data class EditorSnapshot(
     if (other !is EditorSnapshot) return false
     return columns == other.columns && rows == other.rows && pixels.contentEquals(other.pixels) &&
       seed == other.seed && colorArgb == other.colorArgb && aspectName == other.aspectName &&
-      scaleFactor == other.scaleFactor && wrapEdges == other.wrapEdges &&
+      previewName == other.previewName && scaleName == other.scaleName && wrapEdges == other.wrapEdges &&
       mirrorSymmetry == other.mirrorSymmetry
   }
 
@@ -141,7 +152,8 @@ data class EditorSnapshot(
     result = 31 * result + seed
     result = 31 * result + colorArgb
     result = 31 * result + aspectName.hashCode()
-    result = 31 * result + scaleFactor
+    result = 31 * result + previewName.hashCode()
+    result = 31 * result + scaleName.hashCode()
     result = 31 * result + wrapEdges.hashCode()
     result = 31 * result + mirrorSymmetry.hashCode()
     return result

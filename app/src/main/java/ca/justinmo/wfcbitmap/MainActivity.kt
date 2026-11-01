@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
@@ -211,8 +212,12 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   var notice by remember { mutableStateOf<String?>(null) }
 
   /*
-   * What the picture is: its shape and the size it is written at. Changing the shape regenerates, because
-   * the solver grid follows it; changing the size does not, because scaling happens on the way out.
+   * What the picture is: its shape, the size it is generated at, and the size it is written at.
+   *
+   * Two of those regenerate, because they change the picture itself: the shape, which decides the solver
+   * grid, and the preview size, which decides how many pixels each cell of that grid is drawn as. The save
+   * size does not regenerate anything -- scaling happens on the way out of the app, to a file -- which is
+   * what keeps the picture on screen and the picture in the file independent of each other.
    */
   var outputSettings by remember {
     mutableStateOf(
@@ -220,8 +225,11 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         aspect = restored?.aspectName?.let { name ->
           BitmapEditor.OutputAspect.entries.firstOrNull { it.name == name }
         } ?: BitmapEditor.OutputAspect.Portrait9x16,
-        scale = restored?.scaleFactor?.let { factor ->
-          BitmapEditor.OutputScale.entries.firstOrNull { it.factor == factor }
+        preview = restored?.previewName?.let { name ->
+          BitmapEditor.PreviewScale.entries.firstOrNull { it.name == name }
+        } ?: BitmapEditor.PreviewScale.Two,
+        scale = restored?.scaleName?.let { name ->
+          BitmapEditor.OutputScale.entries.firstOrNull { it.name == name }
         } ?: BitmapEditor.OutputScale.One,
       ),
     )
@@ -284,7 +292,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       seed = seed,
       colorArgb = (drawingColor ?: BitmapEditor.defaultDrawingColor).toArgb(),
       aspectName = outputSettings.aspect.name,
-      scaleFactor = outputSettings.scale.factor,
+      previewName = outputSettings.preview.name,
+      scaleName = outputSettings.scale.name,
       wrapEdges = wrapEdges,
       mirrorSymmetry = mirrorSymmetry,
     )
@@ -333,6 +342,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
             rows = outputRows,
             wrapEdges = wrapEdges,
             mirrorSymmetry = mirrorSymmetry,
+            pixelsPerCell = outputSettings.preview.pixelsPerCell,
           )
         } catch (e: CancellationException) {
           // A newer edit replaced this one; let the cancellation through instead of reporting it.
@@ -359,8 +369,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           }
           Log.i(
             TAG,
-            "Generated ${generated.columns * WfcGenerator.PIXELS_PER_CELL}x" +
-              "${generated.rows * WfcGenerator.PIXELS_PER_CELL} bitmap from " +
+            "Generated ${generated.bitmap.width}x${generated.bitmap.height} bitmap from " +
               "${generated.columns}x${generated.rows} cells, ${generated.tileCount} patterns, " +
               "${generated.millis} ms (extract ${generated.extractMillis} ms, " +
               "solve ${generated.solveMillis} ms, render ${generated.renderMillis} ms)",
@@ -395,6 +404,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(outputSettings.aspect) { requestGeneration() }
 
   // Wrapping the drawing's edges or not changes what the picture may be made of, so it is rebuilt too.
+  LaunchedEffect(outputSettings.preview) { requestGeneration() }
+
   LaunchedEffect(wrapEdges) { requestGeneration() }
 
   // Turning symmetry on or off changes the tile set, and so the picture, so it is rebuilt as well.
@@ -421,6 +432,16 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   fun nothingToUse(): String = error ?: "Still drawing - nothing to save yet"
 
   /**
+   * What to say when the size asked for could not be allocated, or null when that is not what happened.
+   *
+   * The top of the size list is a 42-megapixel picture -- 168 MB of ARGB before it is even encoded -- and a
+   * device that cannot find that much memory fails inside the scaler with an OutOfMemoryError. Saying so is
+   * more use than "could not save": the size is the reason, and a smaller option fixes it.
+   */
+  fun tooBigMessage(cause: Throwable): String? =
+    if (cause is OutOfMemoryError) "Not enough memory for that size" else null
+
+  /**
    * Closes the app.
    *
    * Finishing the activity is the whole of it: there is nothing to flush, because the drawing lives only in
@@ -431,19 +452,58 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     context.hostingActivity()?.finish()
   }
 
+  /*
+   * The save's outcome, as a line over the drawing rather than a toast.
+   *
+   * A toast is gone in two seconds and can be neither acted on nor read again. A save is worth more than
+   * that: the picture has just been written somewhere the person cannot see, so the line carries a "View"
+   * button that opens the very row that was written. It is cleared as soon as the snackbar has it, so the
+   * same outcome showing twice is two saves, not one message refused the second time.
+   */
+  var message by remember { mutableStateOf<BitmapEditor.EditorMessage?>(null) }
+
+  /** Opens a picture that was just saved, in whatever the device shows pictures with. */
+  fun viewPicture(picture: Uri) {
+    val opened = runCatching { context.startActivity(ImageSaver.viewIntent(picture)) }
+    if (opened.isFailure) {
+      Log.w(TAG, "No app would show $picture", opened.exceptionOrNull())
+      Toast.makeText(context, "No app to show the picture", Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  /**
+   * The size the file is written at: the grid at the save size, which is the picture's own size and not a
+   * multiple of whatever the preview happens to be showing.
+   */
+  fun savedSize(): Pair<Int, Int> =
+    BitmapEditor.savedPixelSize(outputSettings.aspect, outputSettings.scale)
+
   fun writePicture(picture: Bitmap) {
     scope.launch {
+      val (width, height) = savedSize()
+      Log.i(
+        TAG,
+        "Saving ${picture.width}x${picture.height} as ${width}x${height} " +
+          "(${outputSettings.aspect.label}, preview ${outputSettings.preview.label}, " +
+          "size ${outputSettings.scale.label})",
+      )
       val outcome = runCatching {
-        ImageSaver.saveToGallery(context, picture, scale = outputSettings.scale.factor)
+        ImageSaver.saveToGallery(context, picture, width = width, height = height)
       }
-      val message = outcome.fold(
-        onSuccess = { "Saved to the gallery" },
+      outcome.fold(
+        onSuccess = { saved ->
+          message = BitmapEditor.EditorMessage(
+            text = "Saved to the gallery",
+            actionLabel = "View",
+            onAction = { viewPicture(saved) },
+          )
+        },
         onFailure = { error ->
           Log.w(TAG, "Could not save the picture", error)
-          "Could not save the picture"
+          // No button: the reason is the whole of the news, and there is nothing to open.
+          message = BitmapEditor.EditorMessage(tooBigMessage(error) ?: "Could not save the picture")
         },
       )
-      Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
     }
   }
 
@@ -489,13 +549,16 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       return
     }
     scope.launch {
+      val (width, height) = savedSize()
       val outcome = runCatching {
-        val uri = ImageSaver.prepareShare(context, picture, scale = outputSettings.scale.factor)
+        val uri = ImageSaver.prepareShare(context, picture, width = width, height = height)
         context.startActivity(Intent.createChooser(ImageSaver.shareIntent(uri), "Share the picture"))
       }
       if (outcome.isFailure) {
-        Log.w(TAG, "Could not share the picture", outcome.exceptionOrNull())
-        Toast.makeText(context, "Could not share the picture", Toast.LENGTH_SHORT).show()
+        val cause = outcome.exceptionOrNull()
+        Log.w(TAG, "Could not share the picture", cause)
+        val reason = cause?.let { tooBigMessage(it) } ?: "Could not share the picture"
+        Toast.makeText(context, reason, Toast.LENGTH_SHORT).show()
       }
     }
   }
@@ -504,6 +567,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     modifier = modifier,
     gridState = gridState,
     notice = notice,
+    // The save's own line, with its way to go and look at what was written.
+    message = message,
+    onMessageShown = { message = null },
     output = outputSettings,
     onOutputChange = { outputSettings = it },
     // The wrap setting belongs to whoever builds the picture, so the screen reports the tap and this side

@@ -191,13 +191,20 @@ object WfcGenerator {
   /** Whether the cached tile set carried mirrored patterns; part of the cache key like the seed. */
   private var cachedMirrorSymmetry: Boolean = false
 
+  /** How many pixels per cell the cached picture was drawn with; part of the cache key as well. */
+  private var cachedPixelsPerCell: Int = PIXELS_PER_CELL
+
   /** The reusable bitmaps the collapse is drawn into. Guarded by [cacheLock]. */
   private var targets: RenderTarget? = null
 
-  private fun renderTarget(columns: Int, rows: Int): RenderTarget {
+  private fun renderTarget(columns: Int, rows: Int, pixelsPerCell: Int): RenderTarget {
     val existing = targets
-    if (existing != null && existing.columns == columns && existing.rows == rows) return existing
-    return RenderTarget(columns, rows).also { targets = it }
+    if (existing != null && existing.columns == columns && existing.rows == rows &&
+      existing.pixelsPerCell == pixelsPerCell
+    ) {
+      return existing
+    }
+    return RenderTarget(columns, rows, pixelsPerCell).also { targets = it }
   }
   private fun hedgeMillis(): Long =
     if (lastSolveMillis <= 0) FAST_SOLVER_HEDGE_MS
@@ -273,6 +280,9 @@ object WfcGenerator {
    * @param mirrorSymmetry also offer every window's mirror image, which means more patterns to arrange and
    *   therefore more possible pictures from the same drawing (see [BitmapWaveFunctionCell.createCells]).
    *   Off by default: a mirrored pattern is one the drawing does not contain.
+   * @param pixelsPerCell how many pixels of the picture each solved cell becomes. It changes only the size
+   *   of the picture, not what it is -- the solver fills the same grid either way -- so it is a rendering
+   *   choice rather than a solving one, and the save size is applied on top of it.
    */
   suspend fun generate(
     pixels: IntArray,
@@ -283,6 +293,7 @@ object WfcGenerator {
     rows: Int = DEFAULT_ROWS,
     wrapEdges: Boolean = false,
     mirrorSymmetry: Boolean = false,
+    pixelsPerCell: Int = PIXELS_PER_CELL,
   ): Output = withContext(Dispatchers.Default) {
     if (sourceWidth <= 0 || sourceHeight <= 0 || pixels.size < sourceWidth * sourceHeight) {
       throw GenerationException("The drawing is empty - draw a pattern first.")
@@ -315,7 +326,8 @@ object WfcGenerator {
       val reusable = cachedOutput
       if (reusable != null && cachedSeed == seed && columns == reusable.columns &&
         rows == reusable.rows && cachedPacked.contentEquals(packed) &&
-        cachedWrapEdges == wrapEdges && cachedMirrorSymmetry == mirrorSymmetry
+        cachedWrapEdges == wrapEdges && cachedMirrorSymmetry == mirrorSymmetry &&
+        cachedPixelsPerCell == pixelsPerCell
       ) {
         return@withContext reusable
       }
@@ -387,7 +399,7 @@ object WfcGenerator {
     // kernels), and the compatibility table guarantees every neighbour relation in the result holds in
     // the drawing, under whichever sampling produced the domains.
     val renderStartedAt = System.nanoTime()
-    val target = synchronized(cacheLock) { renderTarget(columns, rows) }
+    val target = synchronized(cacheLock) { renderTarget(columns, rows, pixelsPerCell) }
     val bitmap = target.renderSolved(assignment, tier.sources, tier.centers, columns, rows)
     val renderMillis = (System.nanoTime() - renderStartedAt) / 1_000_000
     // What the next solve's budget is measured against: see [lastSolveMillis].
@@ -412,6 +424,7 @@ object WfcGenerator {
       cachedSeed = seed
       cachedWrapEdges = wrapEdges
       cachedMirrorSymmetry = mirrorSymmetry
+      cachedPixelsPerCell = pixelsPerCell
       lastSolveMillis = solveMillis
     }
     output
@@ -487,11 +500,11 @@ object WfcGenerator {
    * both now live here. The two bitmaps alternate because the preview may still be drawing the previous
    * frame while the next one is being written: the one on screen is never the one being filled in.
    *
-   * Each cell is drawn as a [PIXELS_PER_CELL] square, so the bitmaps are exactly
-   * [BITMAP_WIDTH] x [BITMAP_HEIGHT] and are the generated image the app hands out.
+   * Each cell is drawn as a `pixelsPerCell` square, so the bitmaps are exactly the size of the picture the
+   * editor is set to show, and are the generated image the app hands out.
    */
-  private class RenderTarget(val columns: Int, val rows: Int) {
-    private val scale = PIXELS_PER_CELL
+  private class RenderTarget(val columns: Int, val rows: Int, val pixelsPerCell: Int) {
+    private val scale = pixelsPerCell
     private val width = columns * scale
     private val height = rows * scale
     private val bitmaps = Array(2) { Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888) }

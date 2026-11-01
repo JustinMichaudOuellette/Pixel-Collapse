@@ -53,10 +53,12 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
@@ -901,6 +903,19 @@ object BitmapEditor {
     }
 
   /**
+   * Whether the drawing marks its edge band at all: only while the picture really keeps the drawing's border.
+   *
+   * Two things can take that border away, and the band has to go with either of them. One is the edge rule
+   * being dropped for a picture that could not hold it; the other is wrapping, where the drawing's edge is
+   * not an edge in the first place and every pattern was sampled across it. The separators are dotted only
+   * where the band is marked, so this is what decides between a grid with a band in it and a grid whose lines
+   * all look the same -- and a grid whose lines *almost* all look the same, with a dotted band left over from
+   * a rule the picture is not keeping, is the one thing it must never be.
+   */
+  internal fun showsEdgeBand(edgeRuleKept: Boolean, wrapEdges: Boolean): Boolean =
+    edgeRuleKept && !wrapEdges
+
+  /**
    * How many cells of history are kept before the oldest steps are dropped: a few of the largest possible
    * drawings, and thousands of ordinary ones.
    */
@@ -949,27 +964,119 @@ object BitmapEditor {
    * This is a saving decision, not a solving one: the structure of the picture is decided by the grid, so
    * scaling on the way out only changes how big the file is.
    */
-  enum class OutputScale(val factor: Int) {
-    One(1),
-    Two(2),
-    Three(3),
-    Four(4),
+  enum class OutputScale(val label: String, val numerator: Int, val denominator: Int = 1) {
+    /*
+     * The biggest end of the list is deliberately further out than the middle steps: the file is a copy of
+     * the picture, so it is the one worth paying for once. The bottom of the list is 1x and no lower --
+     * a file smaller than the picture on screen is a file the person cannot see the drawing in, and the
+     * preview size is the setting that decides how many pixels the picture itself has.
+     */
+    One("1×", 1),
+    Two("2×", 2),
+    Three("3×", 3),
+    Four("4×", 4),
+    Sixteen("16×", 16),
     ;
 
-    val label: String get() = "${factor}×"
+    /** How many pixels of the written picture there are per pixel of the generated bitmap. */
+    val factor: Double get() = numerator.toDouble() / denominator
+
+    /**
+     * [value] pixels of the generated bitmap, as pixels of the picture written at this scale.
+     *
+     * Rounded down rather than to nearest: the size has to stay a whole number of pixels, and rounding down
+     * is the only choice that cannot claim a pixel the grid does not have.
+     */
+    fun pixels(value: Int): Int = (value.toLong() * numerator / denominator).toInt()
   }
 
-  /** What the generated picture is: its shape and the size it is written at. */
+  /**
+   * How many pixels the picture on screen is generated at, per cell of the solver grid.
+   *
+   * The drawing is cells and the picture is pixels, and this is the one place the two are tied together. It
+   * is a rendering choice and nothing more: the solver fills the same grid whatever it is set to, so the
+   * picture has the same patterns in the same places and only its pixels get bigger or smaller.
+   *
+   * The preview column is always filled, whichever of these is chosen -- a smaller picture is scaled up to fit
+   * it, one pixel to one block, which is why a smaller size looks blockier rather than smaller. [Two] is the
+   * top of the list because it is as many pixels as a phone's column can show: a bigger preview would be
+   * generated, scaled back down to fit, and look exactly like this one.
+   */
+  enum class PreviewScale(val label: String, val pixelsPerCell: Int) {
+    /**
+     * One pixel per cell, the smallest a picture can be made of: the blockiest the preview gets and the
+     * cheapest to generate.
+     */
+    Half("0.5×", 1),
+    One("1×", 2),
+    /**
+     * The default: four pixels per cell, which on a phone is a picture that fills the column at 1:1, so the
+     * preview shows exactly the pixels that were generated and none of them twice.
+     */
+    Two("2×", 4),
+    ;
+
+    /** How many times the default [WfcGenerator.PIXELS_PER_CELL] square this draws a cell with. */
+    val factor: Double get() = pixelsPerCell.toDouble() / WfcGenerator.PIXELS_PER_CELL
+  }
+
+  /**
+   * The pixel size the picture on screen is generated at: the solver grid for [aspect], one cell being
+   * [PreviewScale.pixelsPerCell] pixels of it.
+   *
+   * The shape decides it as much as the scale does -- the grid keeps a fixed number of cells whatever the
+   * aspect, so a square picture is wider than a 9:16 one at the same scale -- which is why the menu shows the
+   * size beside each option rather than a bare multiplier.
+   */
+  internal fun previewPixelSize(aspect: OutputAspect, preview: PreviewScale): Pair<Int, Int> {
+    val (columns, rows) = WfcGenerator.gridForAspect(aspect.ratio)
+    return columns * preview.pixelsPerCell to rows * preview.pixelsPerCell
+  }
+
+  /**
+   * The pixel size the picture is written at, in pixels of the solver grid.
+   *
+   * The save size is its own scale of the picture, not a multiple of whatever the preview happens to be: a
+   * 1× save is the picture as the app has always drawn it, 16× is sixteen times that, and choosing a
+   * preview size never moves a number in this list. That is what makes the two settings independent -- the
+   * preview decides how the picture is drawn, the save size decides what is written out of it.
+   */
+  internal fun savedPixelSize(aspect: OutputAspect, scale: OutputScale): Pair<Int, Int> {
+    val (width, height) = previewPixelSize(aspect, PreviewScale.One)
+    return scale.pixels(width) to scale.pixels(height)
+  }
+
+  /**
+   * A line the editor shows over the drawing, with an optional button.
+   *
+   * Two kinds of thing are said over the drawing: what a tool does, and what just happened to the picture.
+   * The second can be worth acting on -- after a save, the first thing anyone wants is to see the file that
+   * was written -- so a message carries a label and what to run when it is tapped, and is shown for longer
+   * than a plain one. A message with no action is just a sentence with nothing to do about it.
+   */
+  data class EditorMessage(
+    val text: String,
+    /** The button's label, or null for a line that only has to be read. */
+    val actionLabel: String? = null,
+    /** What the button does; null when there is no button. */
+    val onAction: (() -> Unit)? = null,
+  )
+
+  /**
+   * What the generated picture is: its shape, the size it is generated at, and the size it is written at.
+   */
   data class OutputSettings(
     val aspect: OutputAspect = OutputAspect.Portrait9x16,
+    val preview: PreviewScale = PreviewScale.Two,
     val scale: OutputScale = OutputScale.One,
   )
 
   /**
    * @param preview fills the column left of the drawing grid. It is kept as a slot so the editor does
    *   not need to know anything about the wave-function collapse that produces the bitmap shown there.
-   * @param output the shape and save size of the generated picture; the preview column takes its shape.
-   * @param onOutputChange called when the output menu picks a different shape or size.
+   * @param output the shape, the size the picture is generated at and the size it is written at; the
+   *   preview column takes its shape.
+   * @param onOutputChange called when the output menu picks a different shape, preview size or save size.
    */
   @Composable
   fun PixelEditorScreen(
@@ -1007,6 +1114,16 @@ object BitmapEditor {
      */
     notice: String? = null,
     /**
+     * A line to show over the drawing on the caller's behalf, with an optional action button.
+     *
+     * This is for outcomes the caller owns -- a save that worked is worth a way to go and look at the
+     * picture, and that is a button rather than a sentence -- so it is a different thing from [notice]: the
+     * notice is about the picture and has nothing to do, and this one can be acted on.
+     */
+    message: EditorMessage? = null,
+    /** Called once [message] has been handed to the snackbar, so the caller can forget it. */
+    onMessageShown: () -> Unit = {},
+    /**
      * Whether the drawing's edges are read as wrapping into each other; see [EditorTool].
      *
      * The editor only reports it: the picture is the caller's to build, so acting on the setting is the
@@ -1033,8 +1150,12 @@ object BitmapEditor {
     /** Called when the symmetry toggle is tapped, with the state it should have afterwards. */
     onMirrorSymmetryChange: (Boolean) -> Unit = {},
     /**
-     * Whether the picture on screen keeps the drawing's border, so the drawing can show which cells that is.
-     * True when the edge rule held; false once the generator had to drop it.
+     * Whether the edge rule held for the picture on screen. False once the generator had to drop it, which
+     * means the drawing's border is not the picture's border any more.
+     *
+     * Between this and [wrapEdges] the screen knows whether the picture keeps the drawing's border at all, and
+     * that is what decides both the marked edge band on the grid and whether the wrap button reads as on: a
+     * borderless picture makes the band a lie and the button a truth.
      */
     edgeRuleKept: Boolean = true,
     preview: @Composable () -> Unit = {},
@@ -1077,11 +1198,25 @@ object BitmapEditor {
      *
      * One line at a time, on purpose: a second message means the first is out of date -- the next tool's
      * explanation, or a new generation's notice -- so it is replaced rather than queued behind it.
+     *
+     * An [actionLabel] makes it a message with a way to act on it, and [onAction] runs if that is tapped
+     * before the line goes away on its own.
      */
-    fun showSnackbar(message: String, duration: SnackbarDuration) {
+    fun showSnackbar(
+      message: String,
+      duration: SnackbarDuration,
+      actionLabel: String? = null,
+      onAction: (() -> Unit)? = null,
+    ) {
       snackbarJob?.cancel()
       snackbarJob = snackbarScope.launch {
-        snackbar.showSnackbar(message = message, duration = duration)
+        val outcome = snackbar.showSnackbar(
+          message = message,
+          actionLabel = actionLabel,
+          duration = duration,
+        )
+        // Dismissed means the line timed out or was swept away by a newer one: only a tap runs the action.
+        if (outcome == SnackbarResult.ActionPerformed) onAction?.invoke()
       }
     }
 
@@ -1098,6 +1233,21 @@ object BitmapEditor {
     LaunchedEffect(notice) {
       // Short: it is a word about the picture, and it sits over the picture while it is up.
       notice?.let { showSnackbar(it, SnackbarDuration.Short) }
+    }
+
+    /*
+     * The caller's own line, which can carry an action: after a save, "Saved to the gallery" with a way to
+     * see the file. Long rather than Short, because a line that can be acted on has to stay long enough to
+     * be acted on, and the button is the reason it is there at all.
+     *
+     * The caller is told as soon as the line is up, not when it goes away: the message is a one-shot event,
+     * and the same event happening twice in a row has to show twice.
+     */
+    LaunchedEffect(message) {
+      val line = message ?: return@LaunchedEffect
+      val duration = if (line.actionLabel == null) SnackbarDuration.Short else SnackbarDuration.Long
+      showSnackbar(line.text, duration, line.actionLabel, line.onAction)
+      onMessageShown()
     }
 
     // A selection cannot outlive the grid it was measured on: undo, rotate and the +/- buttons all change
@@ -1219,9 +1369,16 @@ object BitmapEditor {
         icon = Icons.Default.Repeat,
         contentDescription = "Wrap the pattern around the drawing's edges",
         explanation = "On: the drawing's edges are not edges, so the pattern wraps around them. " +
-          "Off: the drawing's border is the picture's border.",
-        // Armed means wrapped; the drawing's outer row and column stop being a border at all.
-        selected = wrapEdges,
+          "Off: the drawing's border is the picture's border. It lights up on its own when the picture " +
+          "could not keep that border.",
+        /*
+         * Armed means the picture has no border to keep, which is true in two cases: wrapping was asked for,
+         * or the edge rule could not be held and the solver dropped it (see WfcGenerator.Output.relaxedEdges).
+         * Both leave the drawing's outer row and column out of the picture's border, so the button says the
+         * same thing either way -- a button that stayed dark while the picture was busy relaxing its edges
+         * would be telling the person drawing that their border was kept, which is exactly what is not true.
+         */
+        selected = wrapEdges || !edgeRuleKept,
         onClick = { onWrapEdgesChange(!wrapEdges) },
       ),
       EditorTool(
@@ -1329,7 +1486,7 @@ object BitmapEditor {
               mode = mode,
               selection = selection,
               baseCellSizePx = baseCellSizePx,
-              edgeRuleKept = edgeRuleKept,
+              marksEdgeBand = showsEdgeBand(edgeRuleKept, wrapEdges),
               onSelectionChange = { selection = it },
               onColorPicked = { selectedColor = it },
               onModeConsumed = { mode = EditorMode.Paint },
@@ -1358,7 +1515,7 @@ object BitmapEditor {
       ) { data ->
         Snackbar(
           snackbarData = data,
-          containerColor = SNACKBAR_BACKGROUND,
+          containerColor = PANEL_BACKGROUND,
           contentColor = Color.White,
           dismissActionContentColor = Color.White,
         )
@@ -1379,36 +1536,108 @@ object BitmapEditor {
     onDismiss: () -> Unit,
     onOutputChange: (OutputSettings) -> Unit,
   ) {
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+    /*
+     * Dark panel, light labels -- set explicitly rather than left to the theme.
+     *
+     * A dropdown from Material takes its container and its text colours from the colour scheme, and this
+     * app's scheme is the stock one with only the background painted black: the menu came out as a light
+     * panel with dark labels floating over a black editor. The panel is the same near-black as the toolbar
+     * and the snackbar, and every label on it -- the two headings, the options, and the tick -- is light.
+     */
+    // The labels, the tick and its ink: one set of colours for every row in the menu.
+    val itemColors = MenuDefaults.itemColors(
+      textColor = MENU_TEXT_COLOR,
+      leadingIconColor = MENU_TEXT_COLOR,
+      trailingIconColor = MENU_TEXT_COLOR,
+    )
+
+    DropdownMenu(
+      expanded = expanded,
+      onDismissRequest = onDismiss,
+      containerColor = PANEL_BACKGROUND,
+    ) {
       MenuHeading("Shape")
       OutputAspect.entries.forEach { aspect ->
         DropdownMenuItem(
           text = { Text(aspect.label) },
           onClick = { onOutputChange(output.copy(aspect = aspect)) },
+          colors = itemColors,
           trailingIcon = {
-            if (output.aspect == aspect) Icon(Icons.Default.Check, contentDescription = null)
+            if (output.aspect == aspect) {
+              Icon(Icons.Default.Check, contentDescription = "Selected", tint = MENU_TEXT_COLOR)
+            }
           },
         )
       }
-      HorizontalDivider()
+      HorizontalDivider(color = MENU_DIVIDER_COLOR)
+      /*
+       * Two sizes, and they are separate: the one the picture is generated and shown at, and the one it is
+       * written to a file at. They used to be one list, which read as though picking a bigger file size
+       * would give a bigger picture on screen -- it cannot, because what is on screen is the bitmap the
+       * solver's grid was drawn into.
+       */
+      MenuHeading("Preview size")
+      PreviewScale.entries.forEach { preview ->
+        val (width, height) = previewPixelSize(output.aspect, preview)
+        DropdownMenuItem(
+          text = { SizeRow(preview.label, width, height) },
+          onClick = { onOutputChange(output.copy(preview = preview)) },
+          colors = itemColors,
+          trailingIcon = {
+            if (output.preview == preview) {
+              Icon(Icons.Default.Check, contentDescription = "Selected", tint = MENU_TEXT_COLOR)
+            }
+          },
+        )
+      }
+      HorizontalDivider(color = MENU_DIVIDER_COLOR)
       MenuHeading("Save size")
       OutputScale.entries.forEach { scale ->
+        val (width, height) = savedPixelSize(output.aspect, scale)
         DropdownMenuItem(
-          text = { Text(scale.label) },
+          text = { SizeRow(scale.label, width, height) },
           onClick = { onOutputChange(output.copy(scale = scale)) },
+          colors = itemColors,
           trailingIcon = {
-            if (output.scale == scale) Icon(Icons.Default.Check, contentDescription = null)
+            if (output.scale == scale) {
+              Icon(Icons.Default.Check, contentDescription = "Selected", tint = MENU_TEXT_COLOR)
+            }
           },
         )
       }
     }
   }
 
+  /**
+   * One size row: the multiplier, then the pixels it means, dimmer than the multiplier.
+   *
+   * The multiplier alone is not the answer to "how big" -- the shape decides it as much as the multiplier
+   * does -- so the size it actually means is written beside it.
+   */
+  @Composable
+  private fun SizeRow(label: String, width: Int, height: Int) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Text(label)
+      Text(
+        text = "→ ${width} x ${height}",
+        color = Color.White.copy(alpha = 0.55f),
+        fontSize = 12.sp,
+        modifier = Modifier.padding(start = 10.dp),
+      )
+    }
+  }
+
+  /** The menu's labels: light enough to read on the panel, dim enough not to compete with the drawing. */
+  private val MENU_TEXT_COLOR = Color.White.copy(alpha = 0.92f)
+
+  /** A hairline between the shape half of the menu and the size half. */
+  private val MENU_DIVIDER_COLOR = Color.White.copy(alpha = 0.15f)
+
   @Composable
   private fun MenuHeading(text: String) {
     Text(
       text = text,
-      color = Color.White.copy(alpha = 0.6f),
+      color = Color.White.copy(alpha = 0.7f),
       fontSize = 11.sp,
       modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 2.dp),
     )
@@ -1429,8 +1658,8 @@ object BitmapEditor {
   /** Slightly darker than the app background, so the preview reads as its own surface. */
   private val PREVIEW_BACKGROUND = Color(0xFF0B0910)
 
-  /** Behind a tool's explanation: the toolbar's own near-black, so it reads as part of the editor. */
-  private val SNACKBAR_BACKGROUND = Color(0xFF1A1720)
+  /** Behind a menu or a tool's explanation: the toolbar's own near-black, so they read as part of the editor. */
+  private val PANEL_BACKGROUND = Color(0xFF1A1720)
 
   @Composable
   fun VerticalDividerLine() {
@@ -1479,13 +1708,14 @@ object BitmapEditor {
     /** The tag a UI test finds the drawing by; each test passes its own so two canvases never collide. */
     canvasTestTag: String = CANVAS_TEST_TAG,
     /**
-     * Whether the generated picture keeps the drawing's border, i.e. the edge rule was *not* relaxed.
+     * Whether the drawing's edge band is marked on the grid; see [showsEdgeBand].
      *
-     * Only then is the outer ring of cells special: those are the cells whose pixels land on the generated
-     * bitmap's border, so keeping them one colour is what keeps the picture's edges real. The canvas marks
-     * them so the ring is visible while drawing instead of having to be remembered.
+     * Only while the generated picture keeps the drawing's border is the outer ring special: those are the
+     * cells whose pixels land on the generated bitmap's border, so keeping them one colour is what keeps the
+     * picture's edges real. The canvas marks them so the ring is visible while drawing instead of having to
+     * be remembered -- and leaves every separator the same when that border is not being kept at all.
      */
-    edgeRuleKept: Boolean = true,
+    marksEdgeBand: Boolean = true,
     onSelectionChange: (CellRect?) -> Unit = {},
     onColorPicked: (Color) -> Unit = {},
     onModeConsumed: () -> Unit = {},
@@ -1950,9 +2180,10 @@ object BitmapEditor {
          * leaves the top and bottom strips with plain vertical separators and the side strips with plain
          * horizontal ones.
          *
-         * It is only drawn while the picture keeps the drawing's border. When the edges were relaxed the band
-         * is not special at all, and the grid is uniformly dashed -- the honest picture of a drawing whose
-         * border the generator was allowed to drop.
+         * It is only drawn while the picture keeps the drawing's border, which is not the same as the edge
+         * rule holding: wrapping takes the border away too, because every pattern was then sampled across the
+         * drawing's edge. Either way the band would be pointing at cells that are not special, so the grid is
+         * left uniformly dashed instead -- see [showsEdgeBand].
          */
         val gridLineColor = Color.White
         val lineWidth = 1f / sx
@@ -1988,7 +2219,7 @@ object BitmapEditor {
         /** Draws [lineIndex] with its band stretches dotted and the rest plain. */
         fun drawSeparator(vertical: Boolean, lineIndex: Int) {
           val fixed = lineIndex * cs
-          val spans = if (edgeRuleKept) {
+          val spans = if (marksEdgeBand) {
             edgeBandSpans(
               lineIndex = lineIndex,
               lineCount = if (vertical) gridState.columns else gridState.rows,
