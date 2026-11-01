@@ -1,55 +1,80 @@
 package ca.justinmo.wfcbitmap
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Which separators the edge indicator makes dotted.
+ * Which stretches of the grid separators the edge indicator dots.
  *
- * The indicator is the grid lines and nothing else: no tint, no frame, nothing over the cells. The lines
- * inside the edge band are dotted and the rest are dashed, and the band is two cells deep on every side --
- * the outer ring the edge rule constrains, plus the ring around it, so there is something to see between
- * one line and the next.
+ * The band is two cells deep on every side and the dotting is per *segment*: a separator that runs out of
+ * the top strip is dotted for the strip's depth and plain along the rest of its length. Dotting whole lines
+ * instead -- which is what this started as -- leaves the middle of the top and bottom strips with plain
+ * vertical separators, and the middle of the left and right strips with plain horizontal ones, which is a
+ * band that is missing on all four sides in the places you look at most.
  */
 class EdgeCellTest {
+
+  @Test
+  fun aSeparatorInsideTheBandIsDottedEndToEnd() {
+    // Column 1 lies inside the left band, so all of it is dotted.
+    assertEquals(listOf(0..11), BitmapEditor.edgeBandSpans(lineIndex = 1, lineCount = 16, spanCount = 11))
+    // Row 1 lies inside the top band, likewise.
+    assertEquals(listOf(0..16), BitmapEditor.edgeBandSpans(lineIndex = 1, lineCount = 11, spanCount = 16))
+  }
+
+  @Test
+  fun aSeparatorThroughTheBandIsDottedOnlyWhereItCrossesIt() {
+    // A vertical separator in the middle of the grid: dotted through the top strip and the bottom one.
+    assertEquals(
+      listOf(0..2, 9..11),
+      BitmapEditor.edgeBandSpans(lineIndex = 8, lineCount = 16, spanCount = 11),
+    )
+    // A horizontal separator in the middle: dotted through the left strip and the right one.
+    assertEquals(
+      listOf(0..2, 14..16),
+      BitmapEditor.edgeBandSpans(lineIndex = 5, lineCount = 11, spanCount = 16),
+    )
+  }
 
   @Test
   fun theBandIsTwoCellsDeepFromEverySide() {
     val columns = 16
     val rows = 11
-    val dottedColumns = (0..columns).filter { BitmapEditor.isEdgeBandLine(it, columns) }
-    val dottedRows = (0..rows).filter { BitmapEditor.isEdgeBandLine(it, rows) }
-
-    // Three lines each side: the frame, one cell in, and two cells in where the band ends.
-    assertEquals(listOf(0, 1, 2, 14, 15, 16), dottedColumns)
-    assertEquals(listOf(0, 1, 2, 9, 10, 11), dottedRows)
+    assertEquals(listOf(0, 1, 2, 14, 15, 16), (0..columns).filter { BitmapEditor.isEdgeBandLine(it, columns) })
+    assertEquals(listOf(0, 1, 2, 9, 10, 11), (0..rows).filter { BitmapEditor.isEdgeBandLine(it, rows) })
   }
 
   @Test
-  fun theMiddleOfTheGridKeepsItsPlainLines() {
-    val columns = 16
-    val rows = 11
-    for (index in 3..(columns - 3)) {
-      assertFalse("column line $index is not in the band", BitmapEditor.isEdgeBandLine(index, columns))
-    }
-    for (index in 3..(rows - 3)) {
-      assertFalse("row line $index is not in the band", BitmapEditor.isEdgeBandLine(index, rows))
-    }
+  fun aBandDeeperThanHalfTheGridLeavesNoMiddleToLeavePlain() {
+    assertEquals(listOf(0..3), BitmapEditor.edgeBandSpans(lineIndex = 1, lineCount = 3, spanCount = 3))
   }
 
   @Test
-  fun theBandCoversTwoCellsOfEachSide() {
+  fun everyCellInTheBandIsBoundedByDottedSegments() {
     val columns = 16
     val rows = 11
-    val bandCells = (0 until rows).flatMap { row -> (0 until columns).map { col -> col to row } }
-      .filter { (col, row) ->
-        col < BitmapEditor.EDGE_BAND_CELLS || row < BitmapEditor.EDGE_BAND_CELLS ||
-          col >= columns - BitmapEditor.EDGE_BAND_CELLS || row >= rows - BitmapEditor.EDGE_BAND_CELLS
-      }
-    val expected = columns * rows - (columns - 2 * BitmapEditor.EDGE_BAND_CELLS) * (rows - 2 * BitmapEditor.EDGE_BAND_CELLS)
-    assertEquals("the band is the grid less its inner rectangle", expected, bandCells.size)
-    assertTrue("and it is not the whole grid", bandCells.size < columns * rows)
+    val band = BitmapEditor.EDGE_BAND_CELLS
+
+    fun dottedOnColumn(col: Int, row: Int): Boolean {
+      val spans = BitmapEditor.edgeBandSpans(lineIndex = col, lineCount = columns, spanCount = rows)
+      return spans.any { row in it.first until it.last }
+    }
+    fun dottedOnRow(row: Int, col: Int): Boolean {
+      val spans = BitmapEditor.edgeBandSpans(lineIndex = row, lineCount = rows, spanCount = columns)
+      return spans.any { col in it.first until it.last }
+    }
+
+    // Every cell of the band has dotted separators on the side that faces the band's outer edge, and on the
+    // side between the two rings -- including the cells in the middle of each side.
+    for (col in 0 until columns) {
+      assertTrue("top cell ($col,0) has a dotted vertical separator below it", dottedOnRow(1, col))
+      assertTrue("bottom cell ($col,${rows - 1}) likewise", dottedOnRow(rows - 1, col))
+    }
+    for (row in 0 until rows) {
+      assertTrue("left cell (0,$row) has a dotted horizontal separator beside it", dottedOnColumn(1, row))
+      assertTrue("right cell (${columns - 1},$row) likewise", dottedOnColumn(columns - 1, row))
+    }
+    assertTrue("the band is ${band * 2} cells across, so it is not the whole grid", band * 2 < columns)
   }
 }

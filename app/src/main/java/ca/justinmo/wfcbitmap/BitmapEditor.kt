@@ -13,6 +13,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -96,6 +98,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ca.justinmo.wfcbitmap.ui.theme.WFCBitmapTheme
@@ -876,6 +879,28 @@ object BitmapEditor {
     index <= EDGE_BAND_CELLS || index >= count - EDGE_BAND_CELLS
 
   /**
+   * The parts of one grid line that lie inside the edge band, in cells along that line.
+   *
+   * This is the whole of the indicator, and it is *segments* rather than whole lines. A line already inside
+   * the band -- one of the first or last `EDGE_BAND_CELLS + 1` of them -- is dotted end to end. A line that
+   * only crosses the band, which is every separator running out of the top or bottom strip, is dotted along
+   * the part inside that strip and plain everywhere else: dotting whole lines instead leaves the inside of
+   * the top and bottom strips with plain vertical separators, and of the left and right strips with plain
+   * horizontal ones.
+   *
+   * @param lineIndex which line, `0..lineCount`.
+   * @param lineCount lines across the grid, so `lineCount + 1` of them.
+   * @param spanCount cells along the line: how far the band reaches is measured in this direction.
+   */
+  internal fun edgeBandSpans(lineIndex: Int, lineCount: Int, spanCount: Int): List<IntRange> =
+    when {
+      // A band that is deeper than half the grid has no middle left to leave plain.
+      spanCount <= 2 * EDGE_BAND_CELLS -> listOf(0..spanCount)
+      isEdgeBandLine(lineIndex, lineCount) -> listOf(0..spanCount)
+      else -> listOf(0..EDGE_BAND_CELLS, (spanCount - EDGE_BAND_CELLS)..spanCount)
+    }
+
+  /**
    * How many cells of history are kept before the oldest steps are dropped: a few of the largest possible
    * drawings, and thousands of ordinary ones.
    */
@@ -1247,13 +1272,25 @@ object BitmapEditor {
       Row(modifier = Modifier.fillMaxSize()) {
         // The live bitmap preview: the same shape as the generated output, so what is shown here is the
         // picture at the aspect ratio it will be saved in.
-        Box(
-          modifier = Modifier
-            .aspectRatio(output.aspect.ratio)
-            .fillMaxHeight()
-            .background(PREVIEW_BACKGROUND),
-        ) {
-          preview()
+        //
+        // Capped at what is left after the columns beside it, and clipped. Without the cap a tall phone's
+        // preview takes the width its own aspect ratio asks for -- the whole screen in portrait -- and the
+        // toolbars are pushed off the row behind it; everything drawn inside the preview, the loading bar
+        // included, then spans the full width and reads as if it were over the toolbar. The cap keeps the
+        // preview inside its own column at every aspect ratio, and the clip means nothing it draws can
+        // reach a neighbour even if a size ever disagrees.
+        BoxWithConstraints {
+          val previewWidth = (maxWidth - PREVIEW_CHROME_WIDTH).coerceAtLeast(minPreviewWidth())
+          Box(
+            modifier = Modifier
+              .widthIn(max = previewWidth)
+              .aspectRatio(output.aspect.ratio)
+              .fillMaxHeight()
+              .clipToBounds()
+              .background(PREVIEW_BACKGROUND),
+          ) {
+            preview()
+          }
         }
 
       VerticalDividerLine()
@@ -1379,6 +1416,15 @@ object BitmapEditor {
 
   /** The tag UI tests use to find the drawing: it has no other handle, being one pointer-driven Canvas. */
   const val CANVAS_TEST_TAG = "pixel-canvas"
+
+  /**
+   * What the preview may not take from the editor beside it: the two toolbars and the two dividers between
+   * the columns. Everything left over is the preview's, up to the width its aspect ratio asks for.
+   */
+  private val PREVIEW_CHROME_WIDTH = (BUTTON_SIZE_DP_INT * 2).dp + 2.dp
+
+  /** Below this the preview would be a sliver rather than a picture, so the cap stops giving way here. */
+  private fun minPreviewWidth(): Dp = (BUTTON_SIZE_DP_INT * 4).dp
 
   /** Slightly darker than the app background, so the preview reads as its own surface. */
   private val PREVIEW_BACKGROUND = Color(0xFF0B0910)
@@ -1894,19 +1940,25 @@ object BitmapEditor {
         /*
          * The grid lines, which is the whole of the edge indicator.
          *
-         * The separators inside the edge band are dotted and the rest are finely dashed, so the band reads
-         * as a region of the drawing without a single pixel of the drawing itself being changed: no tint,
-         * no frame, nothing drawn over the cells. The band is EDGE_BAND_CELLS cells deep on every side.
+         * Inside the edge band the separators are dotted and everywhere else they are finely dashed, so the
+         * band reads as a region of the drawing without a single pixel of the drawing itself being changed:
+         * no tint, no frame, nothing drawn over the cells.
          *
-         * It is only drawn while the picture keeps the drawing's border. When the edges were relaxed the
-         * band is not special at all, and the grid is uniformly dashed -- which is the honest picture of a
-         * drawing whose border the generator was allowed to drop.
+         * The dotting is *per segment*. A separator running out of the top strip is dotted for the strip's
+         * depth and plain for the rest of its length, which is what the middle of the top strip needs in
+         * order to look like the rest of the band -- dotting only the lines that lie wholly inside the band
+         * leaves the top and bottom strips with plain vertical separators and the side strips with plain
+         * horizontal ones.
+         *
+         * It is only drawn while the picture keeps the drawing's border. When the edges were relaxed the band
+         * is not special at all, and the grid is uniformly dashed -- the honest picture of a drawing whose
+         * border the generator was allowed to drop.
          */
         val gridLineColor = Color.White
         val lineWidth = 1f / sx
         val pathEffect = PathEffect.dashPathEffect(floatArrayOf(lineWidth, lineWidth))
         /*
-         * Dot, gap, dot -- three pixels in either direction, against the hairline and 1px gap of the rest.
+         * Dot, gap, dot -- three pixels either way, against the hairline and 1px gap of the rest.
          *
          * A dotted line drawn with the same 1px stroke as the others is not a dotted line: a single pixel of
          * dash followed by a single pixel of gap closes back up into a solid-looking line over pixel art, so
@@ -1918,26 +1970,45 @@ object BitmapEditor {
 
         val w = gridState.columns * cs
         val h = gridState.rows * cs
-        for (col in 0..gridState.columns) {
-          val inBand = edgeRuleKept && isEdgeBandLine(col, gridState.columns)
-          drawLine(
-            gridLineColor,
-            Offset(col * cs, 0f),
-            Offset(col * cs, h),
-            if (inBand) dottedWidth else lineWidth,
-            pathEffect = if (inBand) dotted else pathEffect,
-          )
+
+        /** One stretch of a separator, dotted or plain. */
+        fun separator(vertical: Boolean, fixed: Float, fromCell: Int, toCell: Int, isDotted: Boolean) {
+          val from = fromCell * cs
+          val to = toCell * cs
+          if (to - from <= 0f) return
+          val width = if (isDotted) dottedWidth else lineWidth
+          val effect = if (isDotted) dotted else pathEffect
+          if (vertical) {
+            drawLine(gridLineColor, Offset(fixed, from), Offset(fixed, to), width, pathEffect = effect)
+          } else {
+            drawLine(gridLineColor, Offset(from, fixed), Offset(to, fixed), width, pathEffect = effect)
+          }
         }
-        for (row in 0..gridState.rows) {
-          val inBand = edgeRuleKept && isEdgeBandLine(row, gridState.rows)
-          drawLine(
-            gridLineColor,
-            Offset(0f, row * cs),
-            Offset(w, row * cs),
-            if (inBand) dottedWidth else lineWidth,
-            pathEffect = if (inBand) dotted else pathEffect,
-          )
+
+        /** Draws [lineIndex] with its band stretches dotted and the rest plain. */
+        fun drawSeparator(vertical: Boolean, lineIndex: Int) {
+          val fixed = lineIndex * cs
+          val spans = if (edgeRuleKept) {
+            edgeBandSpans(
+              lineIndex = lineIndex,
+              lineCount = if (vertical) gridState.columns else gridState.rows,
+              spanCount = if (vertical) gridState.rows else gridState.columns,
+            )
+          } else {
+            emptyList()
+          }
+          val total = if (vertical) gridState.rows else gridState.columns
+          var next = 0
+          for (span in spans) {
+            separator(vertical, fixed, next, span.first, isDotted = false)
+            separator(vertical, fixed, span.first, span.last, isDotted = true)
+            next = span.last
+          }
+          separator(vertical, fixed, next, total, isDotted = false)
         }
+
+        for (col in 0..gridState.columns) drawSeparator(vertical = true, lineIndex = col)
+        for (row in 0..gridState.rows) drawSeparator(vertical = false, lineIndex = row)
 
         drawContext.canvas.restore()
       }
