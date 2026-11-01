@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -28,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -44,9 +47,38 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+
+  /** The bridge the editor installs its state provider on; see [EditorStateHolder]. */
+  private val editorState = EditorStateHolder()
+
+  /**
+   * The session is written when the app leaves the foreground.
+   *
+   * `onStop` and not `onPause`: pausing happens for a dialog or a permission prompt, where the session is
+   * still the one about to come back, while stopping is the point at which the process may be killed
+   * without another word from us. The write is one small file on the main thread, and it is a drawing
+   * being kept -- a few hundred kilobytes at worst, in exchange for not losing the work.
+   */
+  override fun onStop() {
+    super.onStop()
+    val snapshot = editorState.snapshot?.invoke() ?: return
+    DrawingStore.forDirectory(filesDir).save(snapshot)
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+
+    /*
+     * Keep the screen on while the editor is in front.
+     *
+     * Drawing is done in bursts with pauses to look at the preview, and a screen that sleeps in the middle
+     * of a drawing is worse than the battery it costs to hold it awake -- more so here than in most apps,
+     * because the drawing is never persisted: a lock screen in the middle of a session is a real risk of
+     * losing the picture. The flag is per window, so it stops applying when the app leaves the foreground;
+     * no wakelock and no permission.
+     */
+    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
     val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
     windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
@@ -60,7 +92,8 @@ class MainActivity : ComponentActivity() {
           contentWindowInsets = WindowInsets.safeDrawing
         ) { innerPadding ->
           PixelEditor(
-            modifier = Modifier.padding(innerPadding)
+            modifier = Modifier.padding(innerPadding),
+            editorState = editorState,
           )
         }
       }
@@ -123,8 +156,30 @@ private class GenerationSlot {
  * and is rebuilt whenever the drawing changes.
  */
 @Composable
-fun PixelEditor(modifier: Modifier = Modifier) {
-  val gridState = remember { BitmapEditor.PixelGridState() }
+fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? = null) {
+  val context = LocalContext.current
+
+  /*
+   * The session from the last time the app was open, if there was one.
+   *
+   * Read once, before any state is created, so every piece of the editor can start from it: the drawing,
+   * the seed that decides which arrangement of it is on screen, and the settings that decide how the
+   * picture is made. A snapshot that cannot be read comes back as null and the app starts on an empty
+   * drawing, which is the only safe answer to a corrupt file.
+   */
+  val restored = remember {
+    DrawingStore.forDirectory(context.filesDir).load().also { snapshot ->
+      if (snapshot != null) {
+        Log.i(TAG, "Restored the last session: ${snapshot.columns}x${snapshot.rows} drawing")
+      }
+    }
+  }
+
+  val gridState = remember {
+    BitmapEditor.PixelGridState().apply {
+      restored?.let { restoreDrawing(it.columns, it.rows, it.pixels) }
+    }
+  }
   // End-to-end measurement: tap detected -> the frame that shows the new preview is committed.
   val view = LocalView.current
   val latency = remember { LatencyMeter() }
@@ -133,7 +188,7 @@ fun PixelEditor(modifier: Modifier = Modifier) {
    * rest of the picture alone; tapping the preview advances it, which is how you ask for another
    * arrangement of the same drawing.
    */
-  var seed by remember { mutableIntStateOf(PREVIEW_SEED) }
+  var seed by remember { mutableIntStateOf(restored?.seed ?: PREVIEW_SEED) }
   var output by remember { mutableStateOf<WfcGenerator.Output?>(null) }
   /*
    * Whether a solve is in flight, which is what the bar across the top of the preview reports.
@@ -149,12 +204,28 @@ fun PixelEditor(modifier: Modifier = Modifier) {
    * cleared by every generation that succeeds, so it can never outlive the failure that set it.
    */
   var error by remember { mutableStateOf<String?>(null) }
+  /*
+   * What the picture cannot say about itself: that it is a tiling of the drawing's patterns but not of its
+   * border, and what to change. Null when there is nothing to report, which is the normal case.
+   */
+  var notice by remember { mutableStateOf<String?>(null) }
 
   /*
    * What the picture is: its shape and the size it is written at. Changing the shape regenerates, because
    * the solver grid follows it; changing the size does not, because scaling happens on the way out.
    */
-  var outputSettings by remember { mutableStateOf(BitmapEditor.OutputSettings()) }
+  var outputSettings by remember {
+    mutableStateOf(
+      BitmapEditor.OutputSettings(
+        aspect = restored?.aspectName?.let { name ->
+          BitmapEditor.OutputAspect.entries.firstOrNull { it.name == name }
+        } ?: BitmapEditor.OutputAspect.Portrait9x16,
+        scale = restored?.scaleFactor?.let { factor ->
+          BitmapEditor.OutputScale.entries.firstOrNull { it.factor == factor }
+        } ?: BitmapEditor.OutputScale.One,
+      ),
+    )
+  }
 
   /*
    * Whether the drawing's edges are read as wrapping into each other.
@@ -165,7 +236,7 @@ fun PixelEditor(modifier: Modifier = Modifier) {
    * keep and the pattern simply runs around the picture. It is a choice about what the picture may be,
    * so changing it regenerates the way a change of shape does.
    */
-  var wrapEdges by remember { mutableStateOf(false) }
+  var wrapEdges by remember { mutableStateOf(restored?.wrapEdges ?: false) }
 
   /*
    * Whether every 3x3 pattern is also offered mirrored.
@@ -175,7 +246,7 @@ fun PixelEditor(modifier: Modifier = Modifier) {
    * to fit together, and therefore more arrangements of the same drawing -- at the cost of shapes facing a
    * way the drawing does not face. Off by default for that reason.
    */
-  var mirrorSymmetry by remember { mutableStateOf(false) }
+  var mirrorSymmetry by remember { mutableStateOf(restored?.mirrorSymmetry ?: false) }
 
   /*
    * Generation is started straight from the gesture, not from observing the drawing.
@@ -189,6 +260,38 @@ fun PixelEditor(modifier: Modifier = Modifier) {
    */
   val scope = rememberCoroutineScope()
   val generation = remember { GenerationSlot() }
+
+  /*
+   * The colour the paint tools are using. It lives in the screen, because the toolbar that picks it does;
+   * it is mirrored here so the session snapshot can save it.
+   */
+  var drawingColor by remember {
+    mutableStateOf(restored?.let { Color(it.colorArgb) })
+  }
+
+  /*
+   * What the activity saves when the app goes to the background.
+   *
+   * Read on demand rather than kept up to date on every edit: the state it describes is all snapshot state,
+   * so a reader that is handed the grid and the seed gets whatever is true at the moment it is called,
+   * which is exactly what "save the session" means. Nothing here allocates until it is asked.
+   */
+  val snapshotProvider: () -> EditorSnapshot = {
+    EditorSnapshot(
+      columns = gridState.columns,
+      rows = gridState.rows,
+      pixels = IntArray(gridState.columns * gridState.rows) { gridState.pixels[it].toArgb() },
+      seed = seed,
+      colorArgb = (drawingColor ?: BitmapEditor.defaultDrawingColor).toArgb(),
+      aspectName = outputSettings.aspect.name,
+      scaleFactor = outputSettings.scale.factor,
+      wrapEdges = wrapEdges,
+      mirrorSymmetry = mirrorSymmetry,
+    )
+  }
+
+  // Installed after every composition, so the holder always reads the state of the newest one.
+  SideEffect { editorState?.snapshot = snapshotProvider }
 
   fun requestGeneration() {
     // Snapshot the drawing here, on the main thread: the solver runs on a background dispatcher and
@@ -264,6 +367,11 @@ fun PixelEditor(modifier: Modifier = Modifier) {
           )
           output = generated
           error = null
+          notice = edgeRuleNotice(
+            relaxedEdges = generated.relaxedEdges,
+            columns = generated.columns,
+            rows = generated.rows,
+          )
           latency.registerCommit(view, generationStart, generationEnd, generated)
         } else {
           /*
@@ -274,6 +382,7 @@ fun PixelEditor(modifier: Modifier = Modifier) {
            */
           error = generationError
           output = null
+          notice = null
         }
       } finally {
         // Also reached when a newer request cancelled this one, which is exactly when it must not clear
@@ -302,7 +411,6 @@ fun PixelEditor(modifier: Modifier = Modifier) {
    * targets, so the live bitmap can be repainted by the next generation while the encoder is reading
    * it. A 304x540 copy is cheap enough to belong on the main thread.
    */
-  val context = LocalContext.current
   var pictureToSave by remember { mutableStateOf<Bitmap?>(null) }
 
   /** The picture at the output size that was chosen, copied off the generator's reusable bitmap. */
@@ -399,6 +507,7 @@ fun PixelEditor(modifier: Modifier = Modifier) {
   PixelEditorScreen(
     modifier = modifier,
     gridState = gridState,
+    notice = notice,
     output = outputSettings,
     onOutputChange = { outputSettings = it },
     // The wrap setting belongs to whoever builds the picture, so the screen reports the tap and this side
@@ -419,6 +528,9 @@ fun PixelEditor(modifier: Modifier = Modifier) {
     onSave = { savePicture() },
     onShare = { sharePicture() },
     onExit = { exitApp() },
+    // Only a restored session has a colour to start with; otherwise the palette's first swatch is it.
+    initialColor = restored?.let { Color(it.colorArgb) },
+    onColorChange = { drawingColor = it },
     preview = {
       WfcPreview(
         output = output,

@@ -224,23 +224,21 @@ class WfcEngineTest {
   // --- no tiling is reported, not drawn ------------------------------------------------------
 
   /**
-   * A drawing that cannot be tiled is a failure to report, and the message it reports is what the preview
-   * shows in place of a picture -- so it has to say what the person can do. Which fix it names depends on
-   * the setting: with real edges the border is the problem and wrapping is the first thing to try, and with
-   * wrapping on there is no border to fix, so the drawing itself has to change.
+   * A drawing that cannot be tiled even with the edge rule dropped is a failure to report, and the message
+   * it reports is what the preview shows in place of a picture -- so it has to say what the person can do.
+   * The wording itself is pinned in `GenerationNoticeTest`; here the point is only that the failure has a
+   * message at all, in both edge modes, rather than a picture that is not a tiling.
    */
   @Test
-  fun aDrawingWithNoTilingIsExplainedWithTheFixForTheCurrentSetting() {
-    val withRealEdges = noTilingMessage(columns = OUTPUT_COLUMNS, rows = OUTPUT_ROWS, wrapEdges = false)
-    assertTrue("names the grid: $withRealEdges", withRealEdges.contains("${OUTPUT_COLUMNS}x$OUTPUT_ROWS"))
-    assertTrue("offers the wrap setting: $withRealEdges", withRealEdges.contains("Wrap edges", ignoreCase = true))
-
-    val wrapped = noTilingMessage(columns = OUTPUT_COLUMNS, rows = OUTPUT_ROWS, wrapEdges = true)
-    assertTrue("blames the patterns: $wrapped", wrapped.contains("Simplify", ignoreCase = true))
-    assertFalse(
-      "must not offer a setting that is already on: $wrapped",
-      wrapped.contains("Wrap edges", ignoreCase = true),
-    )
+  fun aDrawingWithNoTilingExplainsItselfInBothEdgeModes() {
+    for (wrap in listOf(false, true)) {
+      val message = noTilingMessage(columns = OUTPUT_COLUMNS, rows = OUTPUT_ROWS, wrapEdges = wrap)
+      assertTrue("wrap=$wrap: expected a message", message.isNotBlank())
+      assertTrue(
+        "wrap=$wrap: says something to do: $message",
+        message.contains("Simplif", ignoreCase = true) || message.contains("Wrap edges", ignoreCase = true),
+      )
+    }
   }
 
   @Test

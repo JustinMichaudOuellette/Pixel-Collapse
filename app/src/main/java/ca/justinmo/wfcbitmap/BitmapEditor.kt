@@ -294,6 +294,25 @@ object BitmapEditor {
       refreshDepths()
     }
 
+    /**
+     * Replaces the drawing with a saved one, with no history behind it.
+     *
+     * The history is cleared rather than continued: the saved drawing was saved when the app was closed,
+     * and there is nothing behind it to undo *to*. A size that disagrees with the pixel count is ignored,
+     * because a half-restored grid is worse than a fresh one.
+     */
+    fun restoreDrawing(columns: Int, rows: Int, pixels: IntArray) {
+      if (columns < MIN_GRID_SIZE || rows < MIN_GRID_SIZE) return
+      if (pixels.size < columns * rows) return
+      clearHistory()
+      this.columns = columns
+      this.rows = rows
+      this.pixels.clear()
+      this.pixels.addAll(List(columns * rows) { Color(pixels[it]) })
+      previousColors = arrayOfNulls(columns * rows)
+      revision++
+    }
+
     /** Records the state before a change; a no-op inside an open edit, which already recorded it. */
     private fun pushUndo() {
       if (editOpen) return
@@ -947,6 +966,14 @@ object BitmapEditor {
     output: OutputSettings = OutputSettings(),
     onOutputChange: (OutputSettings) -> Unit = {},
     /**
+     * One line under the drawing when the picture is not a plain edge-respecting tiling of it, and what to
+     * do about it. Null (the usual case) draws nothing, so the column is the drawing alone.
+     *
+     * It lives here and not in the preview because the preview is the picture: the only thing drawn over
+     * it is the bar saying it is being rebuilt, which is about the picture and not about the drawing.
+     */
+    notice: String? = null,
+    /**
      * Whether the drawing's edges are read as wrapping into each other; see [EditorTool].
      *
      * The editor only reports it: the picture is the caller's to build, so acting on the setting is the
@@ -955,6 +982,14 @@ object BitmapEditor {
     wrapEdges: Boolean = false,
     /** Called when the wrap-edges toggle is tapped, with the state it should have afterwards. */
     onWrapEdgesChange: (Boolean) -> Unit = {},
+    /**
+     * The colour the paint tools start with, or null for the palette's first entry. Only a saved session
+     * passes one: on a fresh start the first swatch is selected, so a tap on the drawing has something to
+     * paint with.
+     */
+    initialColor: Color? = null,
+    /** Called with the drawing colour whenever it changes, so the caller can save a session. */
+    onColorChange: (Color) -> Unit = {},
     /**
      * Whether every pattern is also offered mirrored; see [EditorTool].
      *
@@ -968,7 +1003,10 @@ object BitmapEditor {
   ) {
     // The first palette colour is selected on open, so the swatch strip starts with a highlighted
     // colour and a tap on the drawing already has something to paint with.
-    var selectedColor by remember { mutableStateOf(PALETTE.first()) }
+    var selectedColor by remember { mutableStateOf(initialColor ?: PALETTE.first()) }
+
+    // Reported on every change, including the one at first composition, so the caller can save it.
+    LaunchedEffect(selectedColor) { onColorChange(selectedColor) }
 
     // The armed tool, and the area the selection tool has marked out. Both are the editor's own state:
     // they change what a gesture means, not what the generated picture is.
@@ -1075,8 +1113,9 @@ object BitmapEditor {
       },
       EditorTool(
         icon = Icons.Default.ContentPaste,
-        contentDescription = "Paste what was copied where the drawing is tapped",
-        explanation = "Puts the copied cells where you tap next. Copy something first with the tool beside it.",
+        contentDescription = "Place the copied block where you drag it",
+        explanation = "Drag the copied cells where they should go and let go to stamp them. They become " +
+          "the selection, so you can nudge them afterwards. Copy something first with the tool beside it.",
         selected = mode == EditorMode.Paste,
         // Nothing to paste until something has been copied: a paste tool that could paste an empty
         // clipboard would arm, take a tap, and do nothing to the drawing.
@@ -1185,7 +1224,8 @@ object BitmapEditor {
       EditorTool(
         icon = Icons.Default.PowerSettingsNew,
         contentDescription = "Close the app",
-        explanation = "Closes the app. A drawing that has not been saved as a picture is lost with it.",
+        explanation = "Closes the app. The drawing is kept and comes back next time; Save writes it out " +
+          "as a picture.",
         startsGroup = true,
       ) { onExit() },
     )
@@ -1245,6 +1285,16 @@ object BitmapEditor {
               onModeConsumed = { mode = EditorMode.Paint },
               onTap = onTap,
               onResize = onResize,
+            )
+          }
+
+          if (notice != null) {
+            Text(
+              text = notice,
+              color = NOTICE_COLOR,
+              fontSize = 10.sp,
+              lineHeight = 13.sp,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
             )
           }
         }
@@ -1326,6 +1376,9 @@ object BitmapEditor {
   /** Slightly darker than the app background, so the preview reads as its own surface. */
   private val PREVIEW_BACKGROUND = Color(0xFF0B0910)
 
+  /** The notice line under the drawing: warm enough to be noticed, dim enough not to be an alarm. */
+  private val NOTICE_COLOR = Color(0xFFFEAE34)
+
   /** Behind a tool's explanation: the toolbar's own near-black, so it reads as part of the editor. */
   private val SNACKBAR_BACKGROUND = Color(0xFF1A1720)
 
@@ -1344,15 +1397,18 @@ object BitmapEditor {
    * What a gesture means comes from the armed [mode]:
    * - [EditorMode.Paint]: a tap paints one cell; a hold buzzes once and then paints every cell the finger
    *   crosses. Moving before the hold is recognised still pans and zooms.
-   * - [EditorMode.Fill], [EditorMode.ReplaceColor], [EditorMode.Eyedropper], [EditorMode.Paste]: a tap acts
-   *   once, and [onModeConsumed] lets the caller disarm the mode.
+   * - [EditorMode.Fill], [EditorMode.ReplaceColor], [EditorMode.Eyedropper]: a tap acts once, and
+   *   [onModeConsumed] lets the caller disarm the mode.
+   * - [EditorMode.Paste]: press, drag the copied block until it is where it should land, release to stamp it.
+   *   What was stamped becomes the selection, so it can be nudged like any other.
    * - [EditorMode.Line], [EditorMode.Rectangle], [EditorMode.Ellipse]: press, drag to size, release to
    *   commit, with the cells the shape would cover shown while dragging. The committed shape spends the
    *   tool, so a second shape means arming it again.
    * - [EditorMode.Select]: dragging outside the selection draws a new one, a tap clears it, and dragging
-   *   inside it moves the selected cells. Either drag spends the tool; the selection itself stays.
+   *   inside it moves the selected cells. Drawing the marquee does not spend the tool -- the move is the
+   *   use -- and after a move the selection stays where it was put.
    *
-   * @param clipboard what a [EditorMode.Paste] tap stamps, or null when nothing has been copied yet. The
+   * @param clipboard what a [EditorMode.Paste] drag stamps, or null when nothing has been copied yet. The
    *   caller owns it: copying is a selection-level idea and the canvas only needs the colours to place.
    * @param onSelectionChange the selection after the tool changed it, or null when it was cleared.
    * @param onColorPicked the colour the eyedropper found.
@@ -1396,10 +1452,12 @@ object BitmapEditor {
      */
     val currentClipboard by rememberUpdatedState(clipboard)
 
-    // The cells a shape would cover if it were released now, and the rectangle the selection tool is
-    // dragging out. Both are drawn over the grid; neither is part of it.
+    // The cells a shape would cover if it were released now, the rectangle the selection tool is dragging
+    // out, and where the clipboard would land if the finger lifted now. All three are drawn over the grid;
+    // none of them is part of it.
     var shapePreview by remember { mutableStateOf<List<Int>>(emptyList()) }
     var marquee by remember { mutableStateOf<CellRect?>(null) }
+    var pasteGhost by remember { mutableStateOf<Pair<CellRect, CopiedBlock>?>(null) }
 
     fun tapToPixel(screenPos: Offset): Pair<Int, Int>? {
       val localX = (screenPos.x - offset.x) / scale
@@ -1473,8 +1531,13 @@ object BitmapEditor {
           /**
            * Select by dragging out a rectangle, or move an existing selection by dragging it.
            *
-           * @return true when the gesture was a real one -- a selection drawn, or one moved -- and false
-           *   when it was cancelled, in which case the tool stays armed and the selection stays as it was.
+           * Drawing the marquee does *not* spend the tool: it is how you say what to move, and the obvious
+           * next gesture is the move itself, with the tool still lit. A move that actually lands spends it,
+           * like every other tool -- the drawing is back to painting afterwards, and the selection stays
+           * where it was put.
+           *
+           * @return true when the selection was moved, i.e. when the tool has been used. A cancelled drag
+           *   or a marquee returns false and leaves it armed.
            */
           suspend fun AwaitPointerEventScope.dragSelection(
             down: PointerInputChange,
@@ -1504,7 +1567,9 @@ object BitmapEditor {
               }
               gridState.endEdit()
               if (released) onResize()
-              return released
+              // Only a move that went somewhere counts as using the tool: a press and release on the
+              // selection without dragging is a tap, not a move.
+              return released && placed != moving
             }
 
             // Anywhere else, drag out a new rectangle; a tap with no drag clears the selection.
@@ -1532,16 +1597,75 @@ object BitmapEditor {
             return true
           }
 
+          /**
+           * Place the clipboard: press, drag the block to where it should land, release to stamp it.
+           *
+           * It is the selection tool's gesture applied to the clipboard -- press, drag, release -- because
+           * that is how the two halves of a copy work together: you copy where the block is, and you place
+           * it the same way you would move it. The ghost is drawn while dragging so the answer to "where
+           * will this land" is visible before committing, instead of a tap landing somewhere and being
+           * undone to try again.
+           *
+           * The stamped block becomes the selection, so it can be nudged with the select tool afterwards
+           * exactly like a selection that was dragged out by hand.
+           *
+           * @return true when the block was placed, i.e. when the tool has been used.
+           */
+          suspend fun AwaitPointerEventScope.dragPaste(
+            down: PointerInputChange,
+            downCell: Pair<Int, Int>?,
+          ): Boolean {
+            val block = currentClipboard ?: return false
+            if (block.isEmpty || downCell == null) return false
+
+            /** Where the block lands for a finger at [cell]: the corner clamped so the block stays in. */
+            fun target(cell: Pair<Int, Int>): CellRect {
+              val left = cell.first.coerceIn(0, (gridState.columns - block.width).coerceAtLeast(0))
+              val top = cell.second.coerceIn(0, (gridState.rows - block.height).coerceAtLeast(0))
+              return CellRect(
+                left = left,
+                top = top,
+                right = minOf(left + block.width - 1, gridState.columns - 1),
+                bottom = minOf(top + block.height - 1, gridState.rows - 1),
+              )
+            }
+
+            var landing = target(downCell)
+            pasteGhost = landing to block
+            val released = drag(down.id) { change ->
+              change.consume()
+              val cell = tapToPixel(change.position) ?: return@drag
+              val next = target(cell)
+              if (next != landing) {
+                landing = next
+                pasteGhost = next to block
+              }
+            }
+            pasteGhost = null
+            // A cancelled drag (a pinch that took the gesture) places nothing: the clipboard is untouched,
+            // so the tool stays armed and the same block can be placed after all.
+            if (!released) return false
+            gridState.paste(landing.left, landing.top, block)
+            onSelectionChange(landing)
+            onResize()
+            return true
+          }
+
           awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = true)
             val downCell = tapToPixel(down.position)
 
             when {
-              // A tool is spent by the gesture that uses it, whatever the gesture was: one shape, one
-              // selection, one tap. The armed mode going dark is the signal that the drawing is back to
-              // painting, and re-arming a tool is the one tap it costs to draw a second shape.
+              // A tool is spent by the gesture that uses it -- one shape, one move, one paste -- so the
+              // armed mode goes dark and the drawing is back to painting. Re-arming is the one tap it costs
+              // to draw a second shape. The selection is the exception in one direction only: drawing the
+              // marquee is preparation for the move, so it leaves the tool armed and the move spends it.
               mode == EditorMode.Select -> {
                 if (dragSelection(down, downCell)) onModeConsumed()
+              }
+
+              mode == EditorMode.Paste -> {
+                if (dragPaste(down, downCell)) onModeConsumed()
               }
 
               mode.isShape -> {
@@ -1569,14 +1693,6 @@ object BitmapEditor {
                     onTap()
                   }
                   EditorMode.Eyedropper -> onColorPicked(gridState.getPixel(cell.first, cell.second))
-                  EditorMode.Paste -> {
-                    // The tapped cell is the block's top-left corner, clamped inside the grid, so a tap
-                    // places the whole block where it was aimed rather than a piece of it.
-                    val block = currentClipboard
-                    if (block != null && gridState.paste(cell.first, cell.second, block)) {
-                      onResize()
-                    }
-                  }
                   else -> return@awaitEachGesture
                 }
                 onModeConsumed()
@@ -1659,6 +1775,25 @@ object BitmapEditor {
             val col = index % gridState.columns
             val row = index / gridState.columns
             drawRect(overlay, Offset(col * cs, row * cs), cellSize)
+          }
+        }
+
+        /*
+         * Where the clipboard would land: the block's own colours, half-transparent, over the cells it
+         * would take. Drawn as colours rather than as an outline because the question a placed block raises
+         * is what it will look like there, and because the selection outline underneath it has to stay
+         * readable -- the paste is about to become that selection.
+         */
+        pasteGhost?.let { (rect, block) ->
+          for (row in 0 until rect.height) {
+            for (col in 0 until rect.width) {
+              val colour = block.colors.getOrNull(row * rect.width + col) ?: continue
+              drawRect(
+                color = colour.copy(alpha = 0.6f),
+                topLeft = Offset((rect.left + col) * cs, (rect.top + row) * cs),
+                size = cellSize,
+              )
+            }
           }
         }
 
@@ -2141,6 +2276,12 @@ object BitmapEditor {
       )
     }
   }
+
+  /**
+   * The colour a fresh session starts with: the palette's first entry, which the colour strip shows as
+   * selected on open. Exposed because the session snapshot needs it when nothing has been reported yet.
+   */
+  internal val defaultDrawingColor: Color get() = PALETTE.first()
 
   private val SWATCH_SELECTED_BORDER_COLOR = Color.White
   private val SWATCH_MARGIN = 5.dp

@@ -102,6 +102,15 @@ object WfcGenerator {
   private const val MAX_DECISIONS = 1_000_000
 
   /**
+   * The longest the relaxed attempt may spend searching, in nanoseconds.
+   *
+   * By the time the edge rule has been dropped this is the last chance at a picture, so it is not measured
+   * against anything: a slow collapse is still better than none. It is bounded all the same, so a
+   * pathological tile set cannot block a device for minutes.
+   */
+  private const val TIMEOUT_NANOS = 8_000_000_000L
+
+  /**
    * How many times the previous solve's cost a solve gets before the drawing is reported as untileable.
    *
    * A search that has already run four times as long as the previous picture took is not going to produce
@@ -129,8 +138,15 @@ object WfcGenerator {
   /** The hedge used until a solve has been measured: see [lastSolveMillis]. */
   private const val FAST_SOLVER_HEDGE_MS = 60L
 
-  /** Solvers to run in parallel; the portfolio only uses more than one when the first is slow. */
-  private const val WORKERS = 4
+  /**
+   * Solvers to run in parallel; the portfolio only uses more than one when the first is slow.
+   *
+   * Two, not four. Measured on a Pixel 7a with a 73-pattern drawing on the shipping 152x270 grid, fifteen
+   * seeds each: one worker 277 ms median, two workers 256 ms, four workers 313 ms. A collapse is memory
+   * bound -- concurrent solvers fight over the same bandwidth -- so past two the extra cores make each
+   * other slower instead of faster, and the phone pays for four threads of CPU on every edit.
+   */
+  private const val WORKERS = 2
 
   /**
    * How long the last solve that produced a picture took, in milliseconds; 0 until one has been measured.
@@ -232,6 +248,12 @@ object WfcGenerator {
     val seed: Int,
     val wonBySeed: Int?,
     val workers: Int,
+    /**
+     * True when the edge rule had to be dropped to get a tiling at all, i.e. the picture is an ordinary
+     * tiling of the drawing's patterns and its border does not show the drawing's border. See
+     * [edgeRuleNotice] for the line that says so.
+     */
+    val relaxedEdges: Boolean = false,
     /** Time spent turning the solved cells into pixels, in milliseconds. */
     val renderMillis: Long = 0,
     /** Time the solver portfolio reported for itself, in milliseconds. */
@@ -307,28 +329,30 @@ object WfcGenerator {
       throw GenerationException("The native WFC solver is not available on this device.")
     }
     /*
-     * One solve, one rule.
+     * The edge rule first, and the rule dropped only if it cannot be kept.
      *
-     * With the edges wrapped the drawing has no border for the edge rule to respect -- every tile is a
-     * complete window -- so the rule is dropped and the model is the ordinary overlapping one. Without
-     * wrapping the rule is the whole point: a border cell accepts only patterns sampled on the matching
-     * edge of the drawing, so the drawing's border is the picture's border.
+     * With the edges wrapped the drawing has no border for the rule to respect -- every tile is a complete
+     * window -- so there is nothing to try: the rule is dropped from the start and the model is the
+     * ordinary overlapping one.
      *
-     * That rule can be *impossible* rather than merely slow: the bitmap's border may only use patterns
-     * sampled on the drawing's matching edge, so it is a walk over the drawing's border patterns, and a
-     * border that does not repeat cannot walk 152 or 270 cells. Measured on a 16x11 drawing with a
-     * per-row border: no tiling, proven in 5 ms with 0 decisions. There is no second attempt with the
-     * rule dropped any more -- that is what the wrap setting is for, and it is a better answer than a
-     * relaxed tiling, because a wrapped tile set really does describe a pattern that runs around the
-     * picture's edge. A drawing that fails this way is reported, not drawn (see [noTilingMessage]).
+     * Without wrapping the rule is the whole point: a border cell accepts only patterns sampled on the
+     * matching edge of the drawing, so the drawing's border is the picture's border. But that rule can be
+     * *impossible* rather than merely slow: the bitmap's border may only use patterns sampled on the
+     * drawing's matching edge, so it is a walk over the drawing's border patterns, and a border that does
+     * not repeat cannot walk 152 or 270 cells. Measured on a 16x11 drawing with a per-row border: no
+     * tiling, proven in 5 ms with 0 decisions -- so this is the common case for a busy drawing, not a rare
+     * one. A relaxed tiling is still a picture of the drawing's patterns, only without the drawing's border
+     * around it, so it is shown and the notice line says what happened and what to change.
      *
-     * The budget is measured: four times what the last solve cost (see [solveBudgetMillis]), so an edit
-     * never waits for a search that this app has no recent evidence of finishing.
+     * The two attempts have different budgets on purpose. The edge rule gets four times what the last
+     * solve cost (see [solveBudgetMillis]) because it is worth waiting for a little; the relaxed attempt
+     * gets the full [TIMEOUT_NANOS], because by then the alternative is no picture at all.
      */
     val scope = this
     val shouldAbort = { !scope.isActive }
     val budgetMillis = solveBudgetMillis(previousSolveMillis())
-    val tier = solveTier(
+    var relaxedEdges = false
+    var tier = solveTier(
       packed = packed,
       columns = columns,
       rows = rows,
@@ -338,6 +362,21 @@ object WfcGenerator {
       shouldAbort = shouldAbort,
     )
     ensureActive()
+    if (tier?.result?.assignment == null && !wrapEdges) {
+      // The edge rule found no tiling (or none in time). Dropping it is the difference between a picture
+      // whose border is not the drawing's and no picture at all, and the notice line says which.
+      tier = solveTier(
+        packed = packed,
+        columns = columns,
+        rows = rows,
+        seed = seed,
+        dropEdgeRule = true,
+        deadlineNanos = System.nanoTime() + TIMEOUT_NANOS,
+        shouldAbort = shouldAbort,
+      )
+      ensureActive()
+      relaxedEdges = tier?.result?.assignment != null
+    }
     if (tier == null) {
       throw GenerationException("No pattern in this drawing can touch another, so it cannot be tiled.")
     }
@@ -362,6 +401,7 @@ object WfcGenerator {
       seed = seed,
       wonBySeed = tier.result.seed,
       workers = tier.result.entries.size,
+      relaxedEdges = relaxedEdges,
       renderMillis = renderMillis,
       solveMillis = solveMillis,
       extractMillis = extractNanos / 1_000_000,
@@ -502,20 +542,38 @@ object WfcGenerator {
 }
 
 /**
- * What to say instead of a picture when the solver found no tiling for the drawing.
+ * The line under the drawing when the picture is a tiling of the drawing's patterns but not of its border.
  *
- * It is the message of the [WfcGenerator.GenerationException] that [WfcGenerator.generate] throws, so it
- * is what the preview shows where the picture would have been. The two modes fail for two different
- * reasons, so they get two different things to do about it:
+ * A relaxed tiling is still a picture of the drawing -- the alternative was no picture at all -- so it is
+ * shown rather than refused, and the line says what happened and what to change. It is null for the normal
+ * case, so nothing is drawn under the drawing unless there is something to say.
+ *
+ * @param relaxedEdges the edge rule was dropped to get a tiling at all (see [WfcGenerator.Output]).
+ */
+fun edgeRuleNotice(
+  relaxedEdges: Boolean,
+  columns: Int,
+  rows: Int,
+): String? = if (relaxedEdges) {
+  "Edges relaxed: the drawing's border can't repeat around ${columns}x$rows, so this is a plain " +
+    "tiling of your patterns. Keep the drawing's outer row and column one colour to keep real edges."
+} else {
+  null
+}
+
+/**
+ * What to say instead of a picture when the solver found no tiling for the drawing, with the edge rule or
+ * without it.
+ *
+ * It is the message of the [WfcGenerator.GenerationException] that [WfcGenerator.generate] throws, so it is
+ * what the preview shows where the picture would have been. The two modes fail for two different reasons:
  *
  *  - with the edges wrapped there are no border tiles to get wrong, so the patterns themselves do not fit
  *    together and the drawing has to change;
- *  - with real edges the drawing's border is what could not repeat around the picture, so the wrap
- *    setting is the first thing to try and the border's colours the second.
+ *  - with real edges even the relaxed attempt found nothing, so the drawing is complex in a way the solver
+ *    cannot put together, and wrapping the edges is the one setting left to try.
  *
- * @param wrapEdges whether the edges were being wrapped. When they were not, the message names the
- *   setting, because "this drawing does not tile" would send someone to fix a drawing that is only
- *   missing the allowance to wrap.
+ * @param wrapEdges whether the edges were being wrapped, which is what decides which advice applies.
  */
 internal fun noTilingMessage(
   columns: Int,
@@ -524,6 +582,5 @@ internal fun noTilingMessage(
 ): String = if (wrapEdges) {
   "The patterns in this drawing do not fit together. Simplify the shapes, or clear a few pixels."
 } else {
-  "No tiling keeps this drawing's border around ${columns}x$rows. Turn on Wrap edges, or keep the " +
-    "drawing's outer row and column one colour."
+  "No tiling fits this drawing, with its border or without. Turn on Wrap edges, or simplify the shapes."
 }
