@@ -370,7 +370,7 @@ wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int
     }
     free(dead);
     if (kept == 0) {
-      /* Nothing survived, so no drawing can be tiled: the caller falls back to the stretch. */
+      /* Nothing survived, so this drawing cannot be tiled under this model: the caller reports it. */
       wfc_model_destroy(m);
       return NULL;
     }

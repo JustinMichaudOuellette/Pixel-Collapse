@@ -238,7 +238,7 @@ class NativeSolverTest {
 
   /**
    * The escape hatch, pinned: the same instance that has no tiling under the edge rule does tile when the
-   * rule is dropped, which is what stops the app from showing the drawing stretched.
+   * rule is dropped, which is what stops the app from having no picture at all for that drawing.
    *
    * What is dropped is only *which* cells may use an edge pattern. Compatibility is untouched, so the
    * tiling still has no neighbour mismatches, and interior cells still use complete patterns only

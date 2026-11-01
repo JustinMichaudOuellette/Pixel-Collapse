@@ -25,9 +25,9 @@ import kotlin.math.sqrt
  *
  * That edge rule is also the one limitation worth knowing: the drawing's border has to be repetitive
  * enough to run around the whole 76x135 grid. A border that cannot be closed yields no tiling, and
- * [generate] then falls back to the drawing stretched across the grid -- the one construction that
- * keeps the drawing's edges on the bitmap's edges without solving anything. [Output.usedFallback] says
- * which happened, which is what lets the editor log it instead of silently showing a different picture.
+ * [generate] then reports that as a [GenerationException] rather than drawing something that is not a
+ * tiling -- the editor shows the message in the preview instead of a picture. A picture that is not a
+ * tiling of the drawing and is not the drawing either has nothing to say for itself, so it is not drawn.
  *
  * The bitmap is [BITMAP_WIDTH] x [BITMAP_HEIGHT] (9:16, 270 tall). The grid the solver fills is
  * [DEFAULT_COLUMNS] x [DEFAULT_ROWS] cells, each drawn as a [PIXELS_PER_CELL] square of that bitmap:
@@ -99,14 +99,26 @@ object WfcGenerator {
     return columns to rows
   }
 
-  /**
-   * Give up rather than block a device for minutes. A drawing that tiles solves in a second or two
-   * on a phone (measured 0.75 s for a 48-tile drawing on an emulator), so this is only reached by a
-   * pathological tile set -- and even then the result is still a bitmap (the periodic fallback),
-   * just not a shuffled one.
-   */
-  private const val TIMEOUT_NANOS = 8_000_000_000L
   private const val MAX_DECISIONS = 1_000_000
+
+  /**
+   * How many times the previous solve's cost a solve gets before the drawing is reported as untileable.
+   *
+   * A search that has already run four times as long as the previous picture took is not going to produce
+   * one while the drawing is being looked at, and an answer that arrives after the person has moved on is
+   * worth nothing. Waiting for a fixed timeout instead is what used to leave a stale picture on screen for
+   * seconds after an edit.
+   */
+  private const val SOLVE_BUDGET_FACTOR = 4L
+
+  /** A solve's budget before any generation has been measured: a slow but possible solve is about a second. */
+  private const val FIRST_SOLVE_BUDGET_MS = 1_000L
+
+  /** Floor: below this, a GC pause or a cold cache could report a drawing as untileable that tiles fine. */
+  private const val MIN_SOLVE_BUDGET_MS = 150L
+
+  /** Ceiling: a solve may never run long enough to be a wait, whatever the last generation cost. */
+  private const val MAX_SOLVE_BUDGET_MS = 4_000L
 
   /** Longest the hedge may grow to; beyond this a long solve should have hedged much earlier. */
   private const val MAX_HEDGE_MS = 400L
@@ -121,7 +133,7 @@ object WfcGenerator {
   private const val WORKERS = 4
 
   /**
-   * How long the first worker runs alone before the portfolio spreads to the other cores, in ms.
+   * How long the last solve that produced a picture took, in milliseconds; 0 until one has been measured.
    *
    * A fixed hedge cannot be right for both ends: the native solver collapses a simple drawing in under
    * a millisecond, where starting three more workers is pure cost, and it can spend seconds on an
@@ -130,6 +142,14 @@ object WfcGenerator {
    * once three hedged workers were competing with it for the same cores. So the hedge follows the last
    * solve: 1.5x what a single worker needed last time, clamped so one fast collapse cannot disable the
    * portfolio and one slow collapse cannot stall it.
+   *
+   * A solve's budget is measured against the same number ([solveBudgetMillis]): it gets four times what
+   * the last picture cost before the drawing is reported as one that cannot be tiled. What it times is
+   * the *winning* solve, not the wall clock of a failed generation, so a drawing that keeps failing does
+   * not ratchet its own budget up towards the ceiling -- that wait is what the budget exists to cut short.
+   *
+   * Guarded by [cacheLock] like the rest of the generation state: a cancelled generation can still be
+   * inside one when the next starts.
    */
   private var lastSolveMillis: Long = 0
 
@@ -149,6 +169,12 @@ object WfcGenerator {
   private var cachedOutput: Output? = null
   private var cachedSeed: Int = Int.MIN_VALUE
 
+  /** Whether the cached picture was made with the edges wrapped; part of the cache key like the seed. */
+  private var cachedWrapEdges: Boolean = false
+
+  /** Whether the cached tile set carried mirrored patterns; part of the cache key like the seed. */
+  private var cachedMirrorSymmetry: Boolean = false
+
   /** The reusable bitmaps the collapse is drawn into. Guarded by [cacheLock]. */
   private var targets: RenderTarget? = null
 
@@ -160,6 +186,23 @@ object WfcGenerator {
   private fun hedgeMillis(): Long =
     if (lastSolveMillis <= 0) FAST_SOLVER_HEDGE_MS
     else (lastSolveMillis * 3 / 2).coerceIn(MIN_HEDGE_MS, MAX_HEDGE_MS)
+
+  /**
+   * How long a solve may run before the drawing is reported as one that cannot be tiled, in milliseconds.
+   *
+   * Tied to what the last picture cost rather than to a constant (see [SOLVE_BUDGET_FACTOR]), and clamped
+   * at both ends: the floor stops a hiccup from declaring a drawing untileable when it tiles perfectly
+   * well, and the ceiling stops one pathological generation from making the next one wait ages for it.
+   *
+   * @param previousSolveMillis how long the last picture's own solve took; 0 or less when none has been
+   *   measured yet, which is the first generation after launch.
+   */
+  internal fun solveBudgetMillis(previousSolveMillis: Long): Long =
+    (if (previousSolveMillis <= 0) FIRST_SOLVE_BUDGET_MS
+    else previousSolveMillis * SOLVE_BUDGET_FACTOR)
+      .coerceIn(MIN_SOLVE_BUDGET_MS, MAX_SOLVE_BUDGET_MS)
+
+  private fun previousSolveMillis(): Long = synchronized(cacheLock) { lastSolveMillis }
 
   /** The solver packs tile domains into 64-bit words and a 4-bit word index; this is its ceiling. */
   private const val MAX_TILES = 1024
@@ -189,14 +232,6 @@ object WfcGenerator {
     val seed: Int,
     val wonBySeed: Int?,
     val workers: Int,
-    /** True when no tiling exists (or none was found in time) and the stretched drawing was used. */
-    val usedFallback: Boolean,
-    /**
-     * True when the edge rule had to be dropped to get a tiling at all, i.e. the picture is an ordinary
-     * tiling of the drawing's patterns and its border does not show the drawing's border. See
-     * [edgeRuleNotice] for the line that says so.
-     */
-    val relaxedEdges: Boolean = false,
     /** Time spent turning the solved cells into pixels, in milliseconds. */
     val renderMillis: Long = 0,
     /** Time the solver portfolio reported for itself, in milliseconds. */
@@ -210,6 +245,12 @@ object WfcGenerator {
 
   /**
    * @param pixels ARGB of the source drawing, row-major, `sourceWidth * sourceHeight` entries.
+   * @param wrapEdges sample the drawing as a torus, so its borders are not borders and the pattern may
+   *   run off one edge and back on the other (see [BitmapWaveFunctionCell.createCells]). False -- the
+   *   default -- keeps the edge rule, where the drawing's border has to be the picture's border.
+   * @param mirrorSymmetry also offer every window's mirror image, which means more patterns to arrange and
+   *   therefore more possible pictures from the same drawing (see [BitmapWaveFunctionCell.createCells]).
+   *   Off by default: a mirrored pattern is one the drawing does not contain.
    */
   suspend fun generate(
     pixels: IntArray,
@@ -218,14 +259,17 @@ object WfcGenerator {
     seed: Int,
     columns: Int = DEFAULT_COLUMNS,
     rows: Int = DEFAULT_ROWS,
+    wrapEdges: Boolean = false,
+    mirrorSymmetry: Boolean = false,
   ): Output = withContext(Dispatchers.Default) {
     if (sourceWidth <= 0 || sourceHeight <= 0 || pixels.size < sourceWidth * sourceHeight) {
       throw GenerationException("The drawing is empty - draw a pattern first.")
     }
     val source = IntArray2D(sourceWidth, sourceHeight, pixels.copyOf())
     /*
-     * Bordered extraction: the windows that hang over an edge are blank there, which is what the
-     * solver's edge rule needs to keep the drawing's edges on the bitmap's edges.
+     * Extraction, bordered or wrapped. Bordered, the windows that hang over an edge are blank there, which
+     * is what the solver's edge rule needs to keep the drawing's edges on the bitmap's edges; wrapped, they
+     * read the opposite edge instead, which is a drawing with no edges to keep.
      *
      * Sampling is incremental (WindowTally), and the packed tile set doubles as the cache key: because
      * the collapse is seeded, an edit that leaves the tile set untouched would produce exactly the
@@ -235,7 +279,7 @@ object WfcGenerator {
     val packed: IntArray
     val extractStartedAt = System.nanoTime()
     synchronized(cacheLock) {
-      val sampled = tally.sample(source)
+      val sampled = tally.sample(source, wrap = wrapEdges, mirrorSymmetry = mirrorSymmetry)
       if (sampled.isEmpty()) {
         throw GenerationException("The drawing is empty - draw a pattern first.")
       }
@@ -248,7 +292,8 @@ object WfcGenerator {
       packed = WfcNative.packTiles(sampled)
       val reusable = cachedOutput
       if (reusable != null && cachedSeed == seed && columns == reusable.columns &&
-        rows == reusable.rows && cachedPacked.contentEquals(packed)
+        rows == reusable.rows && cachedPacked.contentEquals(packed) &&
+        cachedWrapEdges == wrapEdges && cachedMirrorSymmetry == mirrorSymmetry
       ) {
         return@withContext reusable
       }
@@ -262,48 +307,52 @@ object WfcGenerator {
       throw GenerationException("The native WFC solver is not available on this device.")
     }
     /*
-     * Two tiers, in order of what the picture should be:
+     * One solve, one rule.
      *
-     *  1. the edge rule, so the drawing's edge really is the bitmap's edge;
-     *  2. the same tile set with the edge rule dropped, which is the ordinary overlapping model.
+     * With the edges wrapped the drawing has no border for the edge rule to respect -- every tile is a
+     * complete window -- so the rule is dropped and the model is the ordinary overlapping one. Without
+     * wrapping the rule is the whole point: a border cell accepts only patterns sampled on the matching
+     * edge of the drawing, so the drawing's border is the picture's border.
      *
-     * Tier 2 exists because tier 1 can be *impossible*, not merely slow: the bitmap's border may only
-     * use patterns sampled on the drawing's matching edge, so it is a walk over the drawing's border
-     * patterns, and a border that does not repeat cannot walk 152 or 270 cells. Measured on a 16x11
-     * drawing with a per-row border: no tiling, proven in 5 ms with 0 decisions. Before this existed the
-     * app answered that with the drawing stretched across the whole preview, which is not a tiling at
-     * all; a relaxed tiling is still a picture of the drawing's patterns.
+     * That rule can be *impossible* rather than merely slow: the bitmap's border may only use patterns
+     * sampled on the drawing's matching edge, so it is a walk over the drawing's border patterns, and a
+     * border that does not repeat cannot walk 152 or 270 cells. Measured on a 16x11 drawing with a
+     * per-row border: no tiling, proven in 5 ms with 0 decisions. There is no second attempt with the
+     * rule dropped any more -- that is what the wrap setting is for, and it is a better answer than a
+     * relaxed tiling, because a wrapped tile set really does describe a pattern that runs around the
+     * picture's edge. A drawing that fails this way is reported, not drawn (see [noTilingMessage]).
+     *
+     * The budget is measured: four times what the last solve cost (see [solveBudgetMillis]), so an edit
+     * never waits for a search that this app has no recent evidence of finishing.
      */
     val scope = this
     val shouldAbort = { !scope.isActive }
-    var tier = solveTier(packed, columns, rows, seed, relaxedEdges = false, shouldAbort = shouldAbort)
+    val budgetMillis = solveBudgetMillis(previousSolveMillis())
+    val tier = solveTier(
+      packed = packed,
+      columns = columns,
+      rows = rows,
+      seed = seed,
+      dropEdgeRule = wrapEdges,
+      deadlineNanos = System.nanoTime() + budgetMillis * 1_000_000,
+      shouldAbort = shouldAbort,
+    )
     ensureActive()
-    if (tier?.result?.assignment == null) {
-      tier = solveTier(packed, columns, rows, seed, relaxedEdges = true, shouldAbort = shouldAbort)
-      ensureActive()
-    }
     if (tier == null) {
       throw GenerationException("No pattern in this drawing can touch another, so it cannot be tiled.")
     }
-    val millis = System.currentTimeMillis() - startedAt
     val assignment = tier.result.assignment
-    val usedFallback = assignment == null
-    val relaxedEdges = tier.relaxedEdges && assignment != null
+      ?: throw GenerationException(noTilingMessage(columns, rows, wrapEdges))
+    val millis = System.currentTimeMillis() - startedAt
     // A model tile's centre colour is exactly the pixel the cell represents (the model kept the packed
     // kernels), and the compatibility table guarantees every neighbour relation in the result holds in
-    // the drawing -- whichever of the two rules produced the domains.
+    // the drawing, under whichever sampling produced the domains.
     val renderStartedAt = System.nanoTime()
     val target = synchronized(cacheLock) { renderTarget(columns, rows) }
-    val bitmap = if (assignment != null) {
-      target.renderSolved(assignment, tier.sources, tier.centers, columns, rows)
-    } else {
-      target.renderColours(
-        stretchedDrawing(pixels, sourceWidth, sourceHeight, columns, rows),
-        columns,
-        rows,
-      )
-    }
+    val bitmap = target.renderSolved(assignment, tier.sources, tier.centers, columns, rows)
     val renderMillis = (System.nanoTime() - renderStartedAt) / 1_000_000
+    // What the next solve's budget is measured against: see [lastSolveMillis].
+    val solveMillis = tier.result.millis
     val output = Output(
       bitmap = bitmap,
       columns = columns,
@@ -313,41 +362,47 @@ object WfcGenerator {
       seed = seed,
       wonBySeed = tier.result.seed,
       workers = tier.result.entries.size,
-      usedFallback = usedFallback,
-      relaxedEdges = relaxedEdges,
       renderMillis = renderMillis,
-      solveMillis = tier.result.millis,
+      solveMillis = solveMillis,
       extractMillis = extractNanos / 1_000_000,
     )
     synchronized(cacheLock) {
       cachedPacked = packed
       cachedOutput = output
       cachedSeed = seed
+      cachedWrapEdges = wrapEdges
+      cachedMirrorSymmetry = mirrorSymmetry
+      lastSolveMillis = solveMillis
     }
     output
   }
 
-  /** One tier's model plus the solve on it, kept together because the mapping is needed to render. */
+  /** One model plus the solve on it, kept together because the mapping is needed to render. */
   private class Tier(
     val result: net.akachaki.processing.engine.wavefunctioncollapse.bitmap.PortfolioResult,
     val sources: IntArray,
     val centers: IntArray,
     val tileCount: Int,
-    val relaxedEdges: Boolean,
   )
 
   /**
-   * Builds a model for one tier and solves it, or returns null when the tile set has nothing placeable.
+   * Builds a model for the tile set and solves it, or returns null when nothing in it can be placed.
    *
    * The model is destroyed before returning; `sources` and `centers` are read out first because the
    * solved cells index the model's tiles and the colours live in the model.
+   *
+   * @param dropEdgeRule true for a wrapped tile set: the edge rule asks a border cell to sit on a pattern
+   *   sampled on that edge of the drawing, and a wrapped sampling has no such patterns, so the rule is
+   *   dropped and any complete pattern may sit anywhere.
+   * @param deadlineNanos the absolute [System.nanoTime] the search must stop at.
    */
   private suspend fun solveTier(
     packed: IntArray,
     columns: Int,
     rows: Int,
     seed: Int,
-    relaxedEdges: Boolean,
+    dropEdgeRule: Boolean,
+    deadlineNanos: Long,
     shouldAbort: () -> Boolean,
   ): Tier? {
     val nativeModel = WfcNative.modelCreate(
@@ -355,7 +410,7 @@ object WfcGenerator {
       packed.size / WfcNative.PACKED_TILE_INTS,
       columns,
       rows,
-      relaxedEdges,
+      relaxedEdges = dropEdgeRule,
     )
     if (nativeModel == 0L) return null
     return try {
@@ -375,40 +430,14 @@ object WfcGenerator {
       val result = portfolio.solve(
         seed = seed,
         workers = WORKERS,
-        deadlineNanos = System.nanoTime() + TIMEOUT_NANOS,
+        deadlineNanos = deadlineNanos,
         maxDecisions = MAX_DECISIONS,
         shouldAbort = shouldAbort,
       )
-      Tier(result, sources, centers, tileCount, relaxedEdges)
+      Tier(result, sources, centers, tileCount)
     } finally {
       WfcNative.modelDestroy(nativeModel)
     }
-  }
-
-  /**
-   * The drawing, stretched by nearest neighbour across the whole [columns] x [rows] grid.
-   *
-   * This is the fallback when the edge rule finds no tiling, and it is chosen because of the edge
-   * rule itself: the outermost cells map to the drawing's outermost pixels, so the drawing's edges
-   * really are the bitmap's edges -- which is the one thing the tiling is required to preserve.
-   *
-   * It is a stretch, not a tiling: the picture is the drawing magnified, with its pixel boundaries
-   * landing on the grid instead of a new arrangement of its 3x3 patterns.
-   */
-  private fun stretchedDrawing(
-    pixels: IntArray,
-    sourceWidth: Int,
-    sourceHeight: Int,
-    columns: Int,
-    rows: Int,
-  ): IntArray = IntArray(columns * rows) { index ->
-    val x = index % columns
-    val y = index / columns
-    // x * width / columns rather than a modulo: the last column maps to the drawing's last column,
-    // so the right edge stays the right edge.
-    val sx = (x.toLong() * sourceWidth / columns).toInt().coerceIn(0, sourceWidth - 1)
-    val sy = (y.toLong() * sourceHeight / rows).toInt().coerceIn(0, sourceHeight - 1)
-    pixels[sy * sourceWidth + sx]
   }
 
   /**
@@ -452,17 +481,6 @@ object WfcGenerator {
       return publish()
     }
 
-    /** Draws a ready-made grid of cell colours, e.g. the stretched fallback. */
-    fun renderColours(cellColours: IntArray, columns: Int, rows: Int): Bitmap {
-      for (y in 0 until rows) {
-        val rowBase = y * columns
-        for (x in 0 until columns) {
-          fill(x, y, cellColours[rowBase + x])
-        }
-      }
-      return publish()
-    }
-
     /** Expands one cell to a [scale] square of one colour, keeping every cell edge pixel-aligned. */
     private fun fill(x: Int, y: Int, colour: Int) {
       val pixelX = x * scale
@@ -484,26 +502,28 @@ object WfcGenerator {
 }
 
 /**
- * What the editor should say about a generated picture that is not a plain edge-respecting tiling of the
- * drawing, or null when there is nothing to say (the normal case).
+ * What to say instead of a picture when the solver found no tiling for the drawing.
  *
- * This exists because the failure is not a bug the user can report but a fact about their drawing that
- * they can change, and because the preview is image-only by design: there is nowhere in it to put an
- * explanation. Both branches name the action, not the algorithm.
+ * It is the message of the [WfcGenerator.GenerationException] that [WfcGenerator.generate] throws, so it
+ * is what the preview shows where the picture would have been. The two modes fail for two different
+ * reasons, so they get two different things to do about it:
  *
- * @param relaxedEdges the edge rule was dropped to get a tiling at all (see [WfcGenerator.Output]).
- * @param usedFallback neither rule found a tiling, so the drawing is shown stretched.
+ *  - with the edges wrapped there are no border tiles to get wrong, so the patterns themselves do not fit
+ *    together and the drawing has to change;
+ *  - with real edges the drawing's border is what could not repeat around the picture, so the wrap
+ *    setting is the first thing to try and the border's colours the second.
+ *
+ * @param wrapEdges whether the edges were being wrapped. When they were not, the message names the
+ *   setting, because "this drawing does not tile" would send someone to fix a drawing that is only
+ *   missing the allowance to wrap.
  */
-fun edgeRuleNotice(
-  relaxedEdges: Boolean,
-  usedFallback: Boolean,
+internal fun noTilingMessage(
   columns: Int,
   rows: Int,
-): String? = when {
-  usedFallback ->
-    "No tiling fits this drawing, so it is shown stretched. Simplify the shapes, or clear a few pixels."
-  relaxedEdges ->
-    "Edges relaxed: the drawing's border can't repeat around ${columns}x${rows}, so this is a plain " +
-      "tiling of your patterns. Keep the drawing's outer row and column one colour to keep real edges."
-  else -> null
+  wrapEdges: Boolean,
+): String = if (wrapEdges) {
+  "The patterns in this drawing do not fit together. Simplify the shapes, or clear a few pixels."
+} else {
+  "No tiling keeps this drawing's border around ${columns}x$rows. Turn on Wrap edges, or keep the " +
+    "drawing's outer row and column one colour."
 }

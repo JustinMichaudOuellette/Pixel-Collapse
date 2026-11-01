@@ -4,6 +4,7 @@ import net.akachaki.processing.engine.array.IntArray2D
 import net.akachaki.processing.engine.enum.Direction2d8
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.BitmapWaveFunctionCell
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -78,26 +79,6 @@ class WfcEngineTest {
     }
     for (x in 4..11) { plot(x, 8, green); plot(x, 9, green) }
     plot(6, 5, gold); plot(7, 5, gold); plot(9, 5, gold); plot(10, 5, gold)
-    return pixels
-  }
-
-  /**
-   * A one-pixel frame around noise. Its vertical edge is 11 distinct colours with no repetition, so it
-   * cannot be stretched around 135 rows: this drawing has no tiling under the edge rule. The device
-   * test proves that; here it only supplies the fallback's worst case.
-   */
-  private fun frameDrawing(): IntArray {
-    val pixels = IntArray(SOURCE_WIDTH * SOURCE_HEIGHT)
-    for (y in 0 until SOURCE_HEIGHT) {
-      for (x in 0 until SOURCE_WIDTH) {
-        pixels[y * SOURCE_WIDTH + x] = when {
-          x == 0 || y == 0 || x == SOURCE_WIDTH - 1 || y == SOURCE_HEIGHT - 1 -> rust
-          (x + y) % 3 == 0 -> gold
-          x % 4 == 0 || y % 5 == 0 -> slate
-          else -> ink
-        }
-      }
-    }
     return pixels
   }
 
@@ -240,61 +221,26 @@ class WfcEngineTest {
     )
   }
 
-  // --- the fallback -------------------------------------------------------------------------
+  // --- no tiling is reported, not drawn ------------------------------------------------------
 
   /**
-   * `WfcGenerator`'s fallback when no tiling exists is the drawing stretched across the grid. Checked
-   * here for the property it was chosen for: every border cell maps to a pixel on the drawing's border,
-   * so the edge rule survives even when the collapse cannot.
+   * A drawing that cannot be tiled is a failure to report, and the message it reports is what the preview
+   * shows in place of a picture -- so it has to say what the person can do. Which fix it names depends on
+   * the setting: with real edges the border is the problem and wrapping is the first thing to try, and with
+   * wrapping on there is no border to fix, so the drawing itself has to change.
    */
   @Test
-  fun stretchedFallbackKeepsOnlyEdgePixelsOnTheEdges() {
-    for ((name, drawing) in listOf("frame" to frameDrawing(), "rings" to ringsDrawing())) {
-      val drawingBorderColors = buildSet {
-        for (x in 0 until SOURCE_WIDTH) {
-          add(drawing[x])
-          add(drawing[(SOURCE_HEIGHT - 1) * SOURCE_WIDTH + x])
-        }
-        for (y in 0 until SOURCE_HEIGHT) {
-          add(drawing[y * SOURCE_WIDTH])
-          add(drawing[y * SOURCE_WIDTH + SOURCE_WIDTH - 1])
-        }
-      }
-      var checked = 0
-      for (y in 0 until OUTPUT_ROWS) {
-        for (x in 0 until OUTPUT_COLUMNS) {
-          val onBorder = x == 0 || y == 0 || x == OUTPUT_COLUMNS - 1 || y == OUTPUT_ROWS - 1
-          if (!onBorder) {
-            continue
-          }
-          checked++
-          // Same mapping as WfcGenerator.stretchedDrawing.
-          val sx = (x.toLong() * SOURCE_WIDTH / OUTPUT_COLUMNS).toInt()
-          val sy = (y.toLong() * SOURCE_HEIGHT / OUTPUT_ROWS).toInt()
-          val color = drawing[sy * SOURCE_WIDTH + sx]
-          assertTrue(
-            "$name: border cell ($x,$y) mapped to interior pixel ($sx,$sy)",
-            color in drawingBorderColors,
-          )
-        }
-      }
-      assertTrue("expected border cells to check", checked > 0)
+  fun aDrawingWithNoTilingIsExplainedWithTheFixForTheCurrentSetting() {
+    val withRealEdges = noTilingMessage(columns = OUTPUT_COLUMNS, rows = OUTPUT_ROWS, wrapEdges = false)
+    assertTrue("names the grid: $withRealEdges", withRealEdges.contains("${OUTPUT_COLUMNS}x$OUTPUT_ROWS"))
+    assertTrue("offers the wrap setting: $withRealEdges", withRealEdges.contains("Wrap edges", ignoreCase = true))
 
-      // The four corners of the bitmap are the four corners of the drawing, exactly.
-      val corners = listOf(
-        (0 to 0) to drawing[0],
-        ((OUTPUT_COLUMNS - 1) to 0) to drawing[SOURCE_WIDTH - 1],
-        (0 to (OUTPUT_ROWS - 1)) to drawing[(SOURCE_HEIGHT - 1) * SOURCE_WIDTH],
-        ((OUTPUT_COLUMNS - 1) to (OUTPUT_ROWS - 1)) to
-          drawing[(SOURCE_HEIGHT - 1) * SOURCE_WIDTH + SOURCE_WIDTH - 1],
-      )
-      for ((position, expected) in corners) {
-        val (x, y) = position
-        val sx = (x.toLong() * SOURCE_WIDTH / OUTPUT_COLUMNS).toInt()
-        val sy = (y.toLong() * SOURCE_HEIGHT / OUTPUT_ROWS).toInt()
-        assertEquals("$name: corner ($x,$y)", expected, drawing[sy * SOURCE_WIDTH + sx])
-      }
-    }
+    val wrapped = noTilingMessage(columns = OUTPUT_COLUMNS, rows = OUTPUT_ROWS, wrapEdges = true)
+    assertTrue("blames the patterns: $wrapped", wrapped.contains("Simplify", ignoreCase = true))
+    assertFalse(
+      "must not offer a setting that is already on: $wrapped",
+      wrapped.contains("Wrap edges", ignoreCase = true),
+    )
   }
 
   @Test

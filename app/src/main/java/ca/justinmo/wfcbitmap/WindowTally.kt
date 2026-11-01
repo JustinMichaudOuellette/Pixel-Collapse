@@ -19,29 +19,44 @@ internal class WindowTally {
   private var previous: IntArray? = null
   private var previousWidth = 0
   private var previousHeight = 0
+
+  /** Whether the cached counts were taken with wrapping on; the same drawing tallies differently. */
+  private var previousWrap = false
   private val counts = HashMap<List<Int?>, Int>()
 
   /**
    * Returns the tile set for [pixels], updated incrementally when only part of the drawing changed.
    *
    * Falls back to a full resample when there is nothing to compare against, when the dimensions moved,
-   * or when the edit touched more pixels than a resample would cost.
+   * when the wrapping changed, or when the edit touched more pixels than a resample would cost.
+   *
+   * @param wrap sample the windows across the drawing's edges, as the editor's wrap mode does. A wrapped
+   *   window centred on the left column reads the right edge, so an edit is felt by the windows centred
+   *   within one pixel of it *around the torus* -- which is what the wrapped centres below are for.
+   * @param mirrorSymmetry also offer every window's mirror image, which is the editor's symmetry setting.
+   *   It is applied when the tile set is built rather than to the counts, so the incrementally updated
+   *   tally stays the drawing's own windows and the mirror can be switched on and off without resampling.
    */
-  fun sample(pixels: IntArray2D): List<BitmapWaveFunctionCell> {
+  fun sample(
+    pixels: IntArray2D,
+    wrap: Boolean = false,
+    mirrorSymmetry: Boolean = false,
+  ): List<BitmapWaveFunctionCell> {
     val last = previous
     val canDiff = last != null &&
       last.size == pixels.data.size &&
       previousWidth == pixels.width &&
-      previousHeight == pixels.height
+      previousHeight == pixels.height &&
+      previousWrap == wrap
     if (!canDiff) {
       counts.clear()
-      BitmapWaveFunctionCell.countWindows(pixels, counts)
+      BitmapWaveFunctionCell.countWindows(pixels, counts, wrap)
     } else {
       val changed = changedPixels(last, pixels.data)
       if (changed.size * 9 >= pixels.width * pixels.height) {
         // A redraw of most of the canvas: the delta would touch nearly every window anyway.
         counts.clear()
-        BitmapWaveFunctionCell.countWindows(pixels, counts)
+        BitmapWaveFunctionCell.countWindows(pixels, counts, wrap)
       } else {
         // Windows are centred on a pixel, so an edit at p only changes the windows centred within one
         // pixel of p. A pixel shared by several edited neighbours must only be tallied once, hence the
@@ -55,10 +70,28 @@ internal class WindowTally {
             for (dx in -1..1) {
               val cx = x + dx
               val cy = y + dy
-              if (cx < 0 || cy < 0 || cx >= pixels.width || cy >= pixels.height) continue
-              if (!touched.add(cy * pixels.width + cx)) continue
-              BitmapWaveFunctionCell.add(counts, BitmapWaveFunctionCell.windowAt(old, cx, cy), -1)
-              BitmapWaveFunctionCell.add(counts, BitmapWaveFunctionCell.windowAt(pixels, cx, cy), 1)
+              if (wrap) {
+                // On a torus every one of the nine neighbours of p is a real centre, including the ones
+                // that fell off the drawing: they are the windows that read back across its edge.
+                val wrappedX = Math.floorMod(cx, pixels.width)
+                val wrappedY = Math.floorMod(cy, pixels.height)
+                if (!touched.add(wrappedY * pixels.width + wrappedX)) continue
+                BitmapWaveFunctionCell.add(
+                  counts,
+                  BitmapWaveFunctionCell.windowAt(old, wrappedX, wrappedY, wrap = true),
+                  -1,
+                )
+                BitmapWaveFunctionCell.add(
+                  counts,
+                  BitmapWaveFunctionCell.windowAt(pixels, wrappedX, wrappedY, wrap = true),
+                  1,
+                )
+              } else {
+                if (cx < 0 || cy < 0 || cx >= pixels.width || cy >= pixels.height) continue
+                if (!touched.add(cy * pixels.width + cx)) continue
+                BitmapWaveFunctionCell.add(counts, BitmapWaveFunctionCell.windowAt(old, cx, cy), -1)
+                BitmapWaveFunctionCell.add(counts, BitmapWaveFunctionCell.windowAt(pixels, cx, cy), 1)
+              }
             }
           }
         }
@@ -67,7 +100,8 @@ internal class WindowTally {
     previous = pixels.data.copyOf()
     previousWidth = pixels.width
     previousHeight = pixels.height
-    return BitmapWaveFunctionCell.createCells(counts)
+    previousWrap = wrap
+    return BitmapWaveFunctionCell.createCells(counts, mirrorSymmetry)
   }
 
   /** Indices of the pixels that differ between [before] and [after]. */

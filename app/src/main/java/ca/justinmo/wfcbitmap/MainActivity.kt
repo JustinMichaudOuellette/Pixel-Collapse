@@ -1,5 +1,8 @@
 package ca.justinmo.wfcbitmap
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -77,13 +80,41 @@ private const val PREVIEW_SEED = 1
 private const val TAG = "WfcPreview"
 
 /**
+ * What the preview says when a generation failed for a reason no message was written for.
+ *
+ * It is deliberately less specific than the messages [WfcGenerator] throws: those say what about the
+ * drawing to change, and this one is for the case where the app cannot know. It names the only thing the
+ * person can do about it, which is to retry or edit the drawing.
+ */
+private const val GENERATION_FAILED =
+  "Could not make a picture from this drawing. Try again, or change the drawing a little."
+
+/**
+ * The activity a composition is running in, however many context wrappers it is behind.
+ *
+ * `LocalContext` is the activity here, but it is documented as "a context", not "the activity", and a
+ * wrapper is enough to make a cast fail: walking the wrappers is what makes closing the app work whatever
+ * the host does with the context.
+ */
+private tailrec fun Context.hostingActivity(): Activity? = when (this) {
+  is Activity -> this
+  is ContextWrapper -> baseContext.hostingActivity()
+  else -> null
+}
+
+/**
  * Holds the in-flight generation so the next edit can cancel it.
  *
  * Deliberately a plain class rather than snapshot state: replacing the job must not recompose anything,
- * and the whole point of triggering generation from the gesture is to stay off the snapshot path.
+ * and the whole point of triggering generation from the gesture is to stay off the snapshot path. The
+ * request counter is the exception -- it is read on the main thread only, and it exists so that a
+ * cancelled job cannot report its replacement as finished (see [PixelEditor]).
  */
 private class GenerationSlot {
   var job: Job? = null
+
+  /** The newest request, counting from 1. Only the job holding this number may clear the busy flag. */
+  var newestRequest: Int = 0
 }
 
 /**
@@ -105,16 +136,46 @@ fun PixelEditor(modifier: Modifier = Modifier) {
   var seed by remember { mutableIntStateOf(PREVIEW_SEED) }
   var output by remember { mutableStateOf<WfcGenerator.Output?>(null) }
   /*
-   * What the preview cannot say about itself: that it is not a plain edge-respecting tiling of the
-   * drawing, and what to do about it. Null when there is nothing to report, which is the normal case.
+   * Whether a solve is in flight, which is what the bar across the top of the preview reports.
+   *
+   * It is a flag beside the job rather than a property of it because nothing can say how far along a
+   * solve is -- [WfcGenerator] reports its timings only once it is done -- so the most the preview can
+   * be told is "one is running". The picture already on screen stays up while it is true: a preview
+   * that blanked on every tap would be empty for most of the time it is used.
    */
-  var notice by remember { mutableStateOf<String?>(null) }
+  var generating by remember { mutableStateOf(false) }
+  /*
+   * Why there is no picture, when there is none: the message the preview shows in place of one. It is
+   * cleared by every generation that succeeds, so it can never outlive the failure that set it.
+   */
+  var error by remember { mutableStateOf<String?>(null) }
 
   /*
    * What the picture is: its shape and the size it is written at. Changing the shape regenerates, because
    * the solver grid follows it; changing the size does not, because scaling happens on the way out.
    */
   var outputSettings by remember { mutableStateOf(BitmapEditor.OutputSettings()) }
+
+  /*
+   * Whether the drawing's edges are read as wrapping into each other.
+   *
+   * Off by default, because real edges are the point of the app: what you draw on the border of the
+   * drawing appears on the border of the picture. On is the answer for a drawing whose border cannot
+   * repeat around the grid -- its patterns are then sampled across its edges, so there is no border to
+   * keep and the pattern simply runs around the picture. It is a choice about what the picture may be,
+   * so changing it regenerates the way a change of shape does.
+   */
+  var wrapEdges by remember { mutableStateOf(false) }
+
+  /*
+   * Whether every 3x3 pattern is also offered mirrored.
+   *
+   * The tile set of a drawing is every window of it, so the picture can only ever be arranged from the
+   * shapes as they were drawn. Mirroring each window adds the flipped versions as well: twice the patterns
+   * to fit together, and therefore more arrangements of the same drawing -- at the cost of shapes facing a
+   * way the drawing does not face. Off by default for that reason.
+   */
+  var mirrorSymmetry by remember { mutableStateOf(false) }
 
   /*
    * Generation is started straight from the gesture, not from observing the drawing.
@@ -141,56 +202,83 @@ fun PixelEditor(modifier: Modifier = Modifier) {
     // whatever shape is chosen.
     val (outputColumns, outputRows) = WfcGenerator.gridForAspect(outputSettings.aspect.ratio)
     generation.job?.cancel()
+    /*
+     * The newest request owns the busy flag.
+     *
+     * A cancelled job finishes *after* its replacement has been started -- cancellation is delivered, not
+     * instantaneous -- so a job that cleared the flag on its way out would report the new solve as done
+     * the instant it began, and the bar would never be seen for anything but the last edit of a burst.
+     * Each job therefore clears the flag only if it is still the newest request when it ends.
+     */
+    val request = generation.newestRequest + 1
+    generation.newestRequest = request
+    generating = true
     generation.job = scope.launch {
-      latency.bodyStart()
-      val generationStart = System.nanoTime()
-      val generated = try {
-        WfcGenerator.generate(
-          pixels = pixels,
-          sourceWidth = columns,
-          sourceHeight = rows,
-          seed = requestedSeed,
-          columns = outputColumns,
-          rows = outputRows,
-        )
-      } catch (e: CancellationException) {
-        // A newer edit replaced this one; let the cancellation through instead of reporting it.
-        throw e
-      } catch (e: Exception) {
-        // A drawing this app can make always yields a bitmap (wrap-around extraction guarantees a
-        // tiling), so this is a bug rather than something the user can act on: log it and leave the
-        // last picture up instead of covering the preview with an error.
-        Log.w(TAG, "Could not generate a bitmap for the current drawing", e)
-        null
-      }
-      val generationEnd = System.nanoTime()
-      if (generated != null) {
-        if (generated.usedFallback) {
-          // The drawing's edge could not close around the grid even with the edge rule dropped, so the
-          // preview shows the drawing stretched. The notice line says so.
-          Log.i(TAG, "No tiling for this drawing; preview shows the drawing stretched")
-        } else if (generated.relaxedEdges) {
-          // The edge rule had no tiling (the drawing's border cannot repeat around the bitmap's), so the
-          // picture was generated with it dropped: still a tiling of the drawing's patterns, but the
-          // bitmap's border is not the drawing's border.
-          Log.i(TAG, "Edge rule relaxed: the drawing's border cannot repeat around the grid")
+      try {
+        latency.bodyStart()
+        val generationStart = System.nanoTime()
+        // Why there is no picture, when there is none. Set by the catches below, which is what lets a
+        // failure come back as a message the preview can show where the picture would have been.
+        var generationError: String? = null
+        val generated = try {
+          WfcGenerator.generate(
+            pixels = pixels,
+            sourceWidth = columns,
+            sourceHeight = rows,
+            seed = requestedSeed,
+            columns = outputColumns,
+            rows = outputRows,
+            wrapEdges = wrapEdges,
+            mirrorSymmetry = mirrorSymmetry,
+          )
+        } catch (e: CancellationException) {
+          // A newer edit replaced this one; let the cancellation through instead of reporting it.
+          throw e
+        } catch (e: WfcGenerator.GenerationException) {
+          // A drawing the solver cannot tile, or one too complex to try. The message is written for the
+          // person drawing it, so it goes to the preview as it is.
+          Log.i(TAG, "No picture for this drawing: ${e.message}")
+          generationError = e.message ?: GENERATION_FAILED
+          null
+        } catch (e: Exception) {
+          // Not something the drawing can be blamed for. It is still reported in the preview rather than
+          // hidden behind the last picture, which would go on claiming to be a picture of this drawing.
+          Log.w(TAG, "Could not generate a bitmap for the current drawing", e)
+          generationError = GENERATION_FAILED
+          null
         }
-        Log.i(
-          TAG,
-          "Generated ${generated.columns * WfcGenerator.PIXELS_PER_CELL}x" +
-            "${generated.rows * WfcGenerator.PIXELS_PER_CELL} bitmap from " +
-            "${generated.columns}x${generated.rows} cells, ${generated.tileCount} patterns, " +
-            "${generated.millis} ms (extract ${generated.extractMillis} ms, " +
-            "solve ${generated.solveMillis} ms, render ${generated.renderMillis} ms)",
-        )
-        output = generated
-        notice = edgeRuleNotice(
-          relaxedEdges = generated.relaxedEdges,
-          usedFallback = generated.usedFallback,
-          columns = generated.columns,
-          rows = generated.rows,
-        )
-        latency.registerCommit(view, generationStart, generationEnd, generated)
+        val generationEnd = System.nanoTime()
+        if (generated != null) {
+          if (wrapEdges) {
+            // The drawing's edges were read as wrapping into each other, so the picture's patterns run
+            // around its border instead of the drawing's border landing on it.
+            Log.i(TAG, "Edges wrapped: the drawing's borders are not borders in this picture")
+          }
+          Log.i(
+            TAG,
+            "Generated ${generated.columns * WfcGenerator.PIXELS_PER_CELL}x" +
+              "${generated.rows * WfcGenerator.PIXELS_PER_CELL} bitmap from " +
+              "${generated.columns}x${generated.rows} cells, ${generated.tileCount} patterns, " +
+              "${generated.millis} ms (extract ${generated.extractMillis} ms, " +
+              "solve ${generated.solveMillis} ms, render ${generated.renderMillis} ms)",
+          )
+          output = generated
+          error = null
+          latency.registerCommit(view, generationStart, generationEnd, generated)
+        } else {
+          /*
+           * No picture this time: say why where the picture would have been, and forget the one that was
+           * there. Leaving the previous picture up is what an error must not do here -- it would be a
+           * picture of a drawing that no longer exists, and for a drawing that has never produced one it
+           * would be nothing at all.
+           */
+          error = generationError
+          output = null
+        }
+      } finally {
+        // Also reached when a newer request cancelled this one, which is exactly when it must not clear
+        // the flag: that newer request set it again before this job could run its last line.
+        if (request == generation.newestRequest) generating = false
       }
     }
   }
@@ -200,6 +288,12 @@ fun PixelEditor(modifier: Modifier = Modifier) {
 
   // A different output shape is a different grid to solve, so the picture has to be rebuilt for it.
   LaunchedEffect(outputSettings.aspect) { requestGeneration() }
+
+  // Wrapping the drawing's edges or not changes what the picture may be made of, so it is rebuilt too.
+  LaunchedEffect(wrapEdges) { requestGeneration() }
+
+  // Turning symmetry on or off changes the tile set, and so the picture, so it is rebuilt as well.
+  LaunchedEffect(mirrorSymmetry) { requestGeneration() }
 
   /*
    * Saving and sharing write the picture that is on screen, which is the generated bitmap.
@@ -213,6 +307,25 @@ fun PixelEditor(modifier: Modifier = Modifier) {
 
   /** The picture at the output size that was chosen, copied off the generator's reusable bitmap. */
   fun currentPicture(): Bitmap? = output?.bitmap?.copy(Bitmap.Config.ARGB_8888, false)
+
+  /**
+   * What to say when there is nothing to save or share.
+   *
+   * With a failed generation the reason is on screen in the preview, and repeating it is better than
+   * claiming the app is still drawing: it is not, and it will not finish on its own.
+   */
+  fun nothingToUse(): String = error ?: "Still drawing - nothing to save yet"
+
+  /**
+   * Closes the app.
+   *
+   * Finishing the activity is the whole of it: there is nothing to flush, because the drawing lives only in
+   * memory and the picture is written out only when the Save tool is used, so nothing here can be lost that
+   * the person had not already chosen to keep. The process follows the last activity out.
+   */
+  fun exitApp() {
+    context.hostingActivity()?.finish()
+  }
 
   fun writePicture(picture: Bitmap) {
     scope.launch {
@@ -246,7 +359,7 @@ fun PixelEditor(modifier: Modifier = Modifier) {
   fun savePicture() {
     val picture = currentPicture()
     if (picture == null) {
-      Toast.makeText(context, "Still drawing - nothing to save yet", Toast.LENGTH_SHORT).show()
+      Toast.makeText(context, nothingToUse(), Toast.LENGTH_SHORT).show()
       return
     }
     val needsPermission = ImageSaver.needsLegacyWritePermission() &&
@@ -268,7 +381,7 @@ fun PixelEditor(modifier: Modifier = Modifier) {
   fun sharePicture() {
     val picture = currentPicture()
     if (picture == null) {
-      Toast.makeText(context, "Still drawing - nothing to share yet", Toast.LENGTH_SHORT).show()
+      Toast.makeText(context, nothingToUse(), Toast.LENGTH_SHORT).show()
       return
     }
     scope.launch {
@@ -286,9 +399,15 @@ fun PixelEditor(modifier: Modifier = Modifier) {
   PixelEditorScreen(
     modifier = modifier,
     gridState = gridState,
-    notice = notice,
     output = outputSettings,
     onOutputChange = { outputSettings = it },
+    // The wrap setting belongs to whoever builds the picture, so the screen reports the tap and this side
+    // owns the answer: setting it is what rebuilds the picture (see the effect above).
+    wrapEdges = wrapEdges,
+    onWrapEdgesChange = { wrapEdges = it },
+    // Symmetry is the same kind of setting: the caller builds the picture, so it owns the answer.
+    mirrorSymmetry = mirrorSymmetry,
+    onMirrorSymmetryChange = { mirrorSymmetry = it },
     // The clock starts at the gesture; generation is requested by the same tap that edits the grid.
     onTap = {
       latency.tap()
@@ -299,9 +418,15 @@ fun PixelEditor(modifier: Modifier = Modifier) {
     },
     onSave = { savePicture() },
     onShare = { sharePicture() },
+    onExit = { exitApp() },
     preview = {
       WfcPreview(
         output = output,
+        // A drawing with no picture says why, where the picture would have been.
+        error = error,
+        // The last picture stays up while the next one is solved; the bar across its top is what says
+        // the solve is running, so the preview never has to blank to say it.
+        isGenerating = generating,
         // Next variation of the same drawing: advance the seed and regenerate from here.
         onTap = {
           latency.tap()

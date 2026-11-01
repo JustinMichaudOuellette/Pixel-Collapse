@@ -95,19 +95,27 @@ class BitmapWaveFunctionCell(
          * still be an edge, but not the one that was drawn. Every tile is exactly a window of the
          * drawing, so a pixel stays on the edge it was put on.
          *
+         * @param wrap read the drawing as a torus instead: a window that hangs over an edge takes the
+         *   pixel on the opposite edge, so no kernel is ever blank and the drawing has no borders at all.
+         *   The tile set then describes a pattern that can wrap around the picture's edges, which is the
+         *   editor's "wrap edges" mode.
+         *
          * Patterns that can never be placed next to anything are dropped by the native model, not here.
          *
          * Note the trade the edge rule makes. Because the drawing's edge must then close around the
          * output, a border that cannot repeat enough has *no* tiling at all, and
-         * [StrictSolverPortfolio] then returns nothing, which is why the caller falls back to the
-         * stretched drawing.
+         * [StrictSolverPortfolio] then returns nothing -- which is why the caller may be asked to wrap
+         * the edges instead, and why a drawing with no tiling in either mode is reported as a failure
+         * rather than drawn.
          */
         fun createCells(
             pixels: IntArray2D,
+            wrap: Boolean = false,
+            mirrorSymmetry: Boolean = false,
         ): List<BitmapWaveFunctionCell> {
             val counts = mutableMapOf<List<Int?>, Int>()
-            countWindows(pixels, counts)
-            return createCells(counts)
+            countWindows(pixels, counts, wrap)
+            return createCells(counts, mirrorSymmetry)
         }
 
         /**
@@ -117,32 +125,93 @@ class BitmapWaveFunctionCell(
          * Takes counts rather than pixels so an edit can update only the windows it touched
          * ([ca.justinmo.wfcbitmap.WindowTally]) and still produce exactly the tile set a full resample
          * would.
+         *
+         * @param mirrorSymmetry also offer every window's mirror image (see [mirroredKernel]). This is how
+         *   the picture gets *more* arrangements out of the same drawing: a mirrored window is a pattern
+         *   the drawing does not contain, so the tile set grows and the solver has more room. It is off by
+         *   default because a mirrored pattern is not what was drawn -- the picture may then show a motif
+         *   facing the way it does not face in the drawing, which is exactly the point when the drawing is
+         *   symmetric and exactly wrong when it is not.
          */
-        fun createCells(counts: Map<List<Int?>, Int>): List<BitmapWaveFunctionCell> {
-            val kernels = counts.keys.sortedWith(CANONICAL_ORDER)
+        fun createCells(
+            counts: Map<List<Int?>, Int>,
+            mirrorSymmetry: Boolean = false,
+        ): List<BitmapWaveFunctionCell> {
+            val tally = if (!mirrorSymmetry) {
+                counts
+            } else {
+                // A window's mirror is counted with it, so the two are equally likely to be picked. A
+                // window that is its own mirror adds nothing twice, hence the check.
+                val both = HashMap<List<Int?>, Int>(counts.size * 2)
+                for ((kernel, count) in counts) {
+                    both[kernel] = (both[kernel] ?: 0) + count
+                    val mirrored = mirroredKernel(kernel)
+                    if (mirrored != kernel) both[mirrored] = (both[mirrored] ?: 0) + count
+                }
+                both
+            }
+            val kernels = tally.keys.sortedWith(CANONICAL_ORDER)
             return kernels.map { kernel ->
-                BitmapWaveFunctionCell(kernel.toTypedArray(), (counts[kernel] ?: 0).toFloat())
+                BitmapWaveFunctionCell(kernel.toTypedArray(), (tally[kernel] ?: 0).toFloat())
             }
         }
 
-        /** Counts every window of [pixels], adding into [counts]. */
-        fun countWindows(pixels: IntArray2D, counts: MutableMap<List<Int?>, Int>) {
+        /**
+         * The kernel flipped on the y axis: its rows keep their place and their columns reverse.
+         *
+         * A slot is `(dy + 1) * 3 + (dx + 1)`, so mirroring is the same row read backwards. The centre is
+         * its own mirror, which is why a mirrored tile shows the same pixel as the window it came from --
+         * only the shapes around it are turned around.
+         */
+        fun mirroredKernel(kernel: List<Int?>): List<Int?> = List(KERNEL_SIZE) { slot ->
+            kernel[(slot / 3) * 3 + (2 - slot % 3)]
+        }
+
+        /**
+         * Counts every window of [pixels], adding into [counts].
+         *
+         * @param wrap sample across the drawing's edges; see [createCells].
+         */
+        fun countWindows(
+            pixels: IntArray2D,
+            counts: MutableMap<List<Int?>, Int>,
+            wrap: Boolean = false,
+        ) {
             for (y in 0 until pixels.height) {
                 for (x in 0 until pixels.width) {
-                    add(counts, windowAt(pixels, x, y), 1)
+                    add(counts, windowAt(pixels, x, y, wrap), 1)
                 }
             }
         }
 
-        /** The window centred on (x, y), or all-null where that is outside the drawing. */
-        fun windowAt(pixels: IntArray2D, x: Int, y: Int): List<Int?> {
+        /**
+         * The window centred on (x, y): all-null where that is outside the drawing, or the pixels from
+         * the opposite edge when [wrap] is set.
+         */
+        fun windowAt(pixels: IntArray2D, x: Int, y: Int, wrap: Boolean = false): List<Int?> {
             val kernel = MutableList<Int?>(KERNEL_SIZE) { null }
             for (dx in -1..1) {
                 for (dy in -1..1) {
-                    kernel[(dy + 1) * 3 + dx + 1] = pixels.getOrNull(x + dx, y + dy)
+                    val slot = (dy + 1) * 3 + dx + 1
+                    kernel[slot] = if (wrap) {
+                        pixels[wrapInto(x + dx, pixels.width), wrapInto(y + dy, pixels.height)]
+                    } else {
+                        pixels.getOrNull(x + dx, y + dy)
+                    }
                 }
             }
             return kernel
+        }
+
+        /**
+         * [value] folded into `0 until [size]`, so a window can read across the drawing's edge.
+         *
+         * Only [windowAt]'s wrapping branch reaches this, and only with coordinates one step outside the
+         * drawing, so it is a fold and not a general index: one addition at most.
+         */
+        private fun wrapInto(value: Int, size: Int): Int {
+            val remainder = value % size
+            return if (remainder < 0) remainder + size else remainder
         }
 
         /** Adds [delta] to the count of [kernel], dropping the entry when it reaches zero. */

@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
@@ -24,29 +25,37 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Colorize
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FormatColorFill
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Redo
+import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
@@ -56,6 +65,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -83,11 +93,14 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ca.justinmo.wfcbitmap.ui.theme.WFCBitmapTheme
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -133,6 +146,21 @@ object BitmapEditor {
         return CellRect(minOf(c0, c1), minOf(r0, r1), maxOf(c0, c1), maxOf(r0, r1))
       }
     }
+  }
+
+  /**
+   * A rectangle of cells lifted out of the drawing, ready to be stamped back anywhere it fits.
+   *
+   * Kept in cells rather than in pixels for the same reason a selection is: the clipboard of a drawing
+   * editor should paste what was drawn, not what the screen happened to show, and a block copied at one
+   * zoom level must paste identically at another.
+   *
+   * It is a plain value with no link to the grid it came from, so undoing the copy's source, resizing or
+   * turning the drawing leaves it intact: it is a clipboard, not a live reference.
+   */
+  data class CopiedBlock(val width: Int, val height: Int, val colors: List<Color>) {
+    /** True for a block with nothing in it, which there is no point pasting. */
+    val isEmpty: Boolean get() = width <= 0 || height <= 0 || colors.size < width * height
   }
 
   /**
@@ -782,6 +810,42 @@ object BitmapEditor {
       revision++
       return true
     }
+
+    /**
+     * Lifts the colours inside [rect] out of the drawing as a [CopiedBlock], for [paste].
+     *
+     * Cells of [rect] that fall outside the grid come back as [defaultColor], so a rectangle clipped by a
+     * resize copies cleanly instead of throwing: a clipboard is a snapshot, and taking one must never be
+     * the thing that fails.
+     */
+    fun copyBlock(rect: CellRect): CopiedBlock {
+      val width = rect.width.coerceAtLeast(0)
+      val height = rect.height.coerceAtLeast(0)
+      val colors = ArrayList<Color>(width * height)
+      for (row in rect.top until rect.top + height) {
+        for (col in rect.left until rect.left + width) {
+          colors.add(
+            if (col in 0 until columns && row in 0 until rows) pixels[row * columns + col]
+            else defaultColor,
+          )
+        }
+      }
+      return CopiedBlock(width, height, colors)
+    }
+
+    /**
+     * Stamps [block] with its top-left corner at [column], [row], as one undo step.
+     *
+     * The corner is clamped rather than clipped, the same way [moveCells] clamps: a paste near the edge
+     * drops the whole block inside the grid instead of cutting a strip off it. Reports whether anything
+     * changed, so a paste that lands on identical colours leaves the history alone.
+     */
+    fun paste(column: Int, row: Int, block: CopiedBlock): Boolean {
+      if (block.isEmpty) return false
+      val left = column.coerceIn(0, (columns - block.width).coerceAtLeast(0))
+      val top = row.coerceIn(0, (rows - block.height).coerceAtLeast(0))
+      return stamp(CellRect(left, top, left + block.width - 1, top + block.height - 1), block.colors)
+    }
   }
 
   /**
@@ -798,19 +862,20 @@ object BitmapEditor {
    * What the next gesture on the drawing does.
    *
    * [Paint] is the unarmed state: a tap paints a cell and a hold paints a stroke. Exactly one mode is armed
-   * at a time. A [oneShot] mode disarms itself as soon as it has been used, because leaving it armed makes
-   * the next tap do something the person did not ask for; the shape tools and the selection stay armed,
-   * since drawing another shape or moving the selection again is the obvious next thing to do.
+   * at a time, and every other mode is spent by the gesture that uses it, because a tool that stayed armed
+   * would make the next tap do something the person did not ask for. A shape is drawn once and a selection
+   * is made once; arming the tool again is one tap, and it is a tap the person chose to make.
    */
-  enum class EditorMode(val oneShot: Boolean) {
-    Paint(false),
-    Fill(true),
-    ReplaceColor(true),
-    Eyedropper(true),
-    Line(false),
-    Rectangle(false),
-    Ellipse(false),
-    Select(false),
+  enum class EditorMode {
+    Paint,
+    Fill,
+    ReplaceColor,
+    Eyedropper,
+    Paste,
+    Line,
+    Rectangle,
+    Ellipse,
+    Select,
     ;
 
     /** True for the modes that draw a shape between the press and the release. */
@@ -874,15 +939,31 @@ object BitmapEditor {
     onSave: () -> Unit = {},
     /** Called when the Share tool is tapped; the caller owns the bitmap and the chooser. */
     onShare: () -> Unit = {},
+    /**
+     * Called when the Close tool is tapped: leaving an app is the activity's business, not the editor's, so
+     * the caller closes itself rather than this screen reaching for a context to finish.
+     */
+    onExit: () -> Unit = {},
     output: OutputSettings = OutputSettings(),
     onOutputChange: (OutputSettings) -> Unit = {},
     /**
-     * One line under the drawing when the generated bitmap is not a plain edge-respecting tiling of it,
-     * and what to do about it. Null (the usual case) draws nothing, so the column is the drawing alone.
+     * Whether the drawing's edges are read as wrapping into each other; see [EditorTool].
      *
-     * It lives here and not in the preview because the preview is the picture and nothing else.
+     * The editor only reports it: the picture is the caller's to build, so acting on the setting is the
+     * caller's job, and this screen shows the toggle as a mode rather than keeping the answer.
      */
-    notice: String? = null,
+    wrapEdges: Boolean = false,
+    /** Called when the wrap-edges toggle is tapped, with the state it should have afterwards. */
+    onWrapEdgesChange: (Boolean) -> Unit = {},
+    /**
+     * Whether every pattern is also offered mirrored; see [EditorTool].
+     *
+     * Like [wrapEdges] the editor only reports it, because acting on it is what the caller does when it
+     * builds the picture.
+     */
+    mirrorSymmetry: Boolean = false,
+    /** Called when the symmetry toggle is tapped, with the state it should have afterwards. */
+    onMirrorSymmetryChange: (Boolean) -> Unit = {},
     preview: @Composable () -> Unit = {},
   ) {
     // The first palette colour is selected on open, so the swatch strip starts with a highlighted
@@ -895,12 +976,39 @@ object BitmapEditor {
     var selection by remember { mutableStateOf<CellRect?>(null) }
     var outputMenuOpen by remember { mutableStateOf(false) }
 
+    /*
+     * What the copy tool lifted, or null until anything has been copied. Kept here rather than in the
+     * grid because it is not part of the drawing: undo, clearing and turning the drawing must leave a
+     * clipboard alone, the same way they leave anything else that has been put on it alone.
+     */
+    var clipboard by remember { mutableStateOf<CopiedBlock?>(null) }
+
     // Tapping the armed mode puts the drawing back to painting; tapping another one arms that. A
     // selection belongs to the select tool, so arming any other tool forgets it rather than leaving a
     // rectangle on the drawing that no tool is going to act on.
     fun arm(next: EditorMode) {
       mode = if (mode == next) EditorMode.Paint else next
       if (mode != EditorMode.Select) selection = null
+    }
+
+    /*
+     * The line that explains a tool when its button is held down.
+     *
+     * A snackbar and not a tooltip: the toolbar is a scrolled strip of small squares at the very edge of
+     * the screen, and there is no room to hang anything beside one. A snackbar can be any width, sits
+     * where the eye already is, and takes itself away again.
+     */
+    val snackbar = remember { SnackbarHostState() }
+    val explainScope = rememberCoroutineScope()
+    var explanationJob by remember { mutableStateOf<Job?>(null) }
+
+    fun explain(tool: EditorTool) {
+      // Held again before the first line has gone: the second press wants the second explanation, so the
+      // old one is replaced rather than queued behind it.
+      explanationJob?.cancel()
+      explanationJob = explainScope.launch {
+        snackbar.showSnackbar(message = tool.explanation, duration = SnackbarDuration.Short)
+      }
     }
 
     // A selection cannot outlive the grid it was measured on: undo, rotate and the +/- buttons all change
@@ -913,43 +1021,72 @@ object BitmapEditor {
       EditorTool(
         icon = Icons.Default.Colorize,
         contentDescription = "Pick a colour from the drawing",
+        explanation = "Takes the colour under your finger and makes it the one you draw with.",
         selected = mode == EditorMode.Eyedropper,
       ) { arm(EditorMode.Eyedropper) },
       EditorTool(
         icon = Icons.Default.FormatColorFill,
         contentDescription = "Fill a connected area with the selected colour",
+        explanation = "Paints the whole joined area of the tapped colour, up to anything drawn in another colour.",
         selected = mode == EditorMode.Fill,
       ) { arm(EditorMode.Fill) },
       EditorTool(
         icon = Icons.Default.FindReplace,
         contentDescription = "Replace the tapped colour everywhere with the selected colour",
+        explanation = "Swaps the tapped colour for the selected one everywhere on the drawing.",
         selected = mode == EditorMode.ReplaceColor,
       ) { arm(EditorMode.ReplaceColor) },
       EditorTool(
         icon = Icons.Default.Timeline,
         contentDescription = "Draw a line",
+        explanation = "Drag from one cell to another; the line between the two points is painted.",
         selected = mode == EditorMode.Line,
         startsGroup = true,
       ) { arm(EditorMode.Line) },
       EditorTool(
         icon = Icons.Default.CropSquare,
         contentDescription = "Draw a rectangle",
+        explanation = "Drag out a box; its outline is painted and the cells inside it are left alone.",
         selected = mode == EditorMode.Rectangle,
       ) { arm(EditorMode.Rectangle) },
       EditorTool(
         icon = Icons.Default.RadioButtonUnchecked,
         contentDescription = "Draw an ellipse",
+        explanation = "Drag out a box; an ellipse filling it is painted as an outline, not a fill.",
         selected = mode == EditorMode.Ellipse,
       ) { arm(EditorMode.Ellipse) },
       EditorTool(
         icon = Icons.Default.CropFree,
         contentDescription = "Select an area to move",
+        explanation = "Drag out a rectangle to select it, then drag inside it to move what it holds.",
         selected = mode == EditorMode.Select,
       ) { arm(EditorMode.Select) },
+      // Copy and paste sit beside the select tool because a copy is a copy *of something*: with a
+      // selection that is the selection, and with none it is the whole drawing, so the tools read as one
+      // group whether or not a rectangle has been drawn first.
+      EditorTool(
+        icon = Icons.Default.ContentCopy,
+        contentDescription = "Copy the selection, or the whole drawing when nothing is selected",
+        explanation = "Copies the selected cells, or the whole drawing if nothing is selected."
+        // The copy is what the paste tool will stamp, and it stays put through undo and clearing.
+      ) {
+        val rect = selection ?: CellRect(0, 0, gridState.columns - 1, gridState.rows - 1)
+        clipboard = gridState.copyBlock(rect)
+      },
+      EditorTool(
+        icon = Icons.Default.ContentPaste,
+        contentDescription = "Paste what was copied where the drawing is tapped",
+        explanation = "Puts the copied cells where you tap next. Copy something first with the tool beside it.",
+        selected = mode == EditorMode.Paste,
+        // Nothing to paste until something has been copied: a paste tool that could paste an empty
+        // clipboard would arm, take a tap, and do nothing to the drawing.
+        enabled = clipboard != null,
+      ) { arm(EditorMode.Paste) },
 
       EditorTool(
         icon = Icons.Default.Undo,
         contentDescription = "Undo",
+        explanation = "Takes back the last edit, however many cells it touched.",
         enabled = gridState.canUndo(),
         startsGroup = true,
       ) {
@@ -959,6 +1096,7 @@ object BitmapEditor {
       EditorTool(
         icon = Icons.Default.Redo,
         contentDescription = "Redo",
+        explanation = "Puts back the edit you just took back.",
         enabled = gridState.canRedo(),
       ) {
         gridState.redo()
@@ -968,6 +1106,7 @@ object BitmapEditor {
       EditorTool(
         icon = Icons.Default.Flip,
         contentDescription = "Mirror the drawing left to right",
+        explanation = "Flips the drawing horizontally, like a mirror held to one side.",
         startsGroup = true,
       ) {
         gridState.flipHorizontal()
@@ -976,6 +1115,7 @@ object BitmapEditor {
       EditorTool(
         icon = Icons.Default.Flip,
         contentDescription = "Mirror the drawing top to bottom",
+        explanation = "Flips the drawing vertically, like a mirror laid underneath.",
         iconRotationDegrees = 90f,
       ) {
         gridState.flipVertical()
@@ -984,6 +1124,7 @@ object BitmapEditor {
       EditorTool(
         icon = Icons.Default.RotateRight,
         contentDescription = "Turn the drawing a quarter turn",
+        explanation = "Turns the whole drawing a quarter turn clockwise, which swaps its width and height.",
       ) {
         gridState.rotateClockwise()
         onResize()
@@ -992,30 +1133,65 @@ object BitmapEditor {
       EditorTool(
         icon = Icons.Default.AspectRatio,
         contentDescription = "Output shape and size",
+        explanation = "Chooses the shape of the picture and the size it is saved at.",
         startsGroup = true,
       ) { outputMenuOpen = true },
+      // A generation setting rather than an edit, which is why it sits with the output menu and not with
+      // the drawing tools: it changes what the picture is allowed to be made of, not the drawing.
+      EditorTool(
+        icon = Icons.Default.Repeat,
+        contentDescription = "Wrap the pattern around the drawing's edges",
+        explanation = "On: the drawing's edges are not edges, so the pattern wraps around them. " +
+          "Off: the drawing's border is the picture's border.",
+        // Armed means wrapped; the drawing's outer row and column stop being a border at all.
+        selected = wrapEdges,
+        onClick = { onWrapEdgesChange(!wrapEdges) },
+      ),
+      EditorTool(
+        icon = Icons.Default.SwapHoriz,
+        contentDescription = "Mirror every pattern, giving the picture more arrangements",
+        explanation = "On: every 3x3 pattern is also available flipped left to right, so there are more " +
+          "patterns to arrange. Off: only the patterns exactly as drawn.",
+        // Armed means mirrored: the picture may then use shapes facing the other way.
+        selected = mirrorSymmetry,
+        onClick = { onMirrorSymmetryChange(!mirrorSymmetry) },
+      ),
 
       EditorTool(
         icon = Icons.Default.Save,
         contentDescription = "Save the picture to the gallery",
+        explanation = "Writes the picture as it is on the left to your gallery.",
         startsGroup = true,
       ) { onSave() },
       EditorTool(
         icon = Icons.Default.Share,
         contentDescription = "Share the picture",
+        explanation = "Hands the picture to another app, like a message or a photo editor.",
       ) { onShare() },
       // Clearing changes the drawing but not its size; regeneration is requested all the same so the
       // preview does not keep showing a picture of pixels that are gone.
       EditorTool(
         icon = Icons.Default.Delete,
         contentDescription = "Clear the drawing",
+        explanation = "Empties the drawing back to one colour. The size of the grid is kept.",
       ) {
         gridState.clear()
         onResize()
       },
+
+      // Last, in its own group, and as far from the tools that edit the drawing as the strip goes: closing
+      // the app throws away a drawing that has never been saved anywhere, so it must not be a button the
+      // thumb can reach while it is painting. A held press says exactly that before it is tapped.
+      EditorTool(
+        icon = Icons.Default.PowerSettingsNew,
+        contentDescription = "Close the app",
+        explanation = "Closes the app. A drawing that has not been saved as a picture is lost with it.",
+        startsGroup = true,
+      ) { onExit() },
     )
 
-    Row(modifier = modifier) {
+    Box(modifier = modifier) {
+      Row(modifier = Modifier.fillMaxSize()) {
         // The live bitmap preview: the same shape as the generated output, so what is shown here is the
         // picture at the aspect ratio it will be saved in.
         Box(
@@ -1031,7 +1207,7 @@ object BitmapEditor {
 
       // The menu hangs off the toolbar it is opened from, so it reads as part of it.
       Box {
-        EditorToolbar(tools = editorTools)
+        EditorToolbar(tools = editorTools, onExplain = { explain(it) })
         OutputMenu(
           expanded = outputMenuOpen,
           output = output,
@@ -1063,21 +1239,12 @@ object BitmapEditor {
               mode = mode,
               selection = selection,
               baseCellSizePx = baseCellSizePx,
+              clipboard = clipboard,
               onSelectionChange = { selection = it },
               onColorPicked = { selectedColor = it },
-              onModeConsumed = { if (mode.oneShot) mode = EditorMode.Paint },
+              onModeConsumed = { mode = EditorMode.Paint },
               onTap = onTap,
               onResize = onResize,
-            )
-          }
-
-          if (notice != null) {
-            Text(
-              text = notice,
-              color = NOTICE_COLOR,
-              fontSize = 10.sp,
-              lineHeight = 13.sp,
-              modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
             )
           }
         }
@@ -1088,6 +1255,23 @@ object BitmapEditor {
           selectedColor = selectedColor,
           onColorSelected = { selectedColor = it },
         )
+      }
+
+      // Over the drawing rather than beside it: the explanation is about a button still under the finger,
+      // and moving the drawing aside to make room for a sentence would be worse than covering a corner.
+      SnackbarHost(
+        hostState = snackbar,
+        modifier = Modifier
+          .align(Alignment.BottomCenter)
+          .padding(12.dp),
+      ) { data ->
+        Snackbar(
+          snackbarData = data,
+          containerColor = SNACKBAR_BACKGROUND,
+          contentColor = Color.White,
+          dismissActionContentColor = Color.White,
+        )
+      }
     }
   }
 
@@ -1142,8 +1326,8 @@ object BitmapEditor {
   /** Slightly darker than the app background, so the preview reads as its own surface. */
   private val PREVIEW_BACKGROUND = Color(0xFF0B0910)
 
-  /** The notice line under the drawing: warm enough to be noticed, dim enough not to be an alarm. */
-  private val NOTICE_COLOR = Color(0xFFFEAE34)
+  /** Behind a tool's explanation: the toolbar's own near-black, so it reads as part of the editor. */
+  private val SNACKBAR_BACKGROUND = Color(0xFF1A1720)
 
   @Composable
   fun VerticalDividerLine() {
@@ -1160,18 +1344,24 @@ object BitmapEditor {
    * What a gesture means comes from the armed [mode]:
    * - [EditorMode.Paint]: a tap paints one cell; a hold buzzes once and then paints every cell the finger
    *   crosses. Moving before the hold is recognised still pans and zooms.
-   * - [EditorMode.Fill], [EditorMode.ReplaceColor], [EditorMode.Eyedropper]: a tap acts once, and
-   *   [onModeConsumed] lets the caller disarm the mode.
+   * - [EditorMode.Fill], [EditorMode.ReplaceColor], [EditorMode.Eyedropper], [EditorMode.Paste]: a tap acts
+   *   once, and [onModeConsumed] lets the caller disarm the mode.
    * - [EditorMode.Line], [EditorMode.Rectangle], [EditorMode.Ellipse]: press, drag to size, release to
-   *   commit, with the cells the shape would cover shown while dragging.
+   *   commit, with the cells the shape would cover shown while dragging. The committed shape spends the
+   *   tool, so a second shape means arming it again.
    * - [EditorMode.Select]: dragging outside the selection draws a new one, a tap clears it, and dragging
-   *   inside it moves the selected cells.
+   *   inside it moves the selected cells. Either drag spends the tool; the selection itself stays.
    *
+   * @param clipboard what a [EditorMode.Paste] tap stamps, or null when nothing has been copied yet. The
+   *   caller owns it: copying is a selection-level idea and the canvas only needs the colours to place.
    * @param onSelectionChange the selection after the tool changed it, or null when it was cleared.
    * @param onColorPicked the colour the eyedropper found.
-   * @param onModeConsumed a one-shot mode has been used and should be disarmed.
+   * @param onModeConsumed the armed mode has been used and should be disarmed. It is only called for a
+   *   gesture that actually happened: a press the pan handler stole, or one that started off the grid, is
+   *   not a use and leaves the tool armed.
    * @param onTap an edit that came from a tap, for the latency measurement and the regeneration.
-   * @param onResize a batch edit finished (undo, a shape, a move) and the picture should be rebuilt.
+   * @param onResize a batch edit finished (undo, a shape, a move, a paste) and the picture should be
+   *   rebuilt.
    */
   @Composable
   fun ZoomablePixelCanvas(
@@ -1182,6 +1372,7 @@ object BitmapEditor {
     baseCellSizePx: Int,
     minZoom: Float = 0.5f,
     maxZoom: Float = 10f,
+    clipboard: CopiedBlock? = null,
     onSelectionChange: (CellRect?) -> Unit = {},
     onColorPicked: (Color) -> Unit = {},
     onModeConsumed: () -> Unit = {},
@@ -1198,6 +1389,12 @@ object BitmapEditor {
      * on it would cancel its own drag the moment it moved.
      */
     val currentSelection by rememberUpdatedState(selection)
+
+    /*
+     * The clipboard is read the same way, and for the same reason: it changes when a copy happens, and the
+     * handler must see the newest block without being torn down mid-gesture for it.
+     */
+    val currentClipboard by rememberUpdatedState(clipboard)
 
     // The cells a shape would cover if it were released now, and the rectangle the selection tool is
     // dragging out. Both are drawn over the grid; neither is part of it.
@@ -1248,8 +1445,14 @@ object BitmapEditor {
             }
           }
 
-          /** Press, drag and release a shape, showing the cells it would cover while it moves. */
-          suspend fun AwaitPointerEventScope.dragShape(start: Pair<Int, Int>, id: PointerId) {
+          /**
+           * Press, drag and release a shape, showing the cells it would cover while it moves.
+           *
+           * @return true when the shape was committed, which is what tells the caller the tool has been
+           *   spent. A gesture the pan handler took over never became a shape, so it returns false and
+           *   leaves the tool armed.
+           */
+          suspend fun AwaitPointerEventScope.dragShape(start: Pair<Int, Int>, id: PointerId): Boolean {
             var end = start
             shapePreview = shapeCells(mode, start, end, gridState.columns, gridState.rows)
             val released = drag(id) { change ->
@@ -1261,13 +1464,22 @@ object BitmapEditor {
               }
             }
             shapePreview = emptyList()
-            if (!released) return
+            if (!released) return false
             gridState.paintCells(shapeCells(mode, start, end, gridState.columns, gridState.rows), selectedColor)
             onResize()
+            return true
           }
 
-          /** Select by dragging out a rectangle, or move an existing selection by dragging it. */
-          suspend fun AwaitPointerEventScope.dragSelection(down: PointerInputChange, downCell: Pair<Int, Int>?) {
+          /**
+           * Select by dragging out a rectangle, or move an existing selection by dragging it.
+           *
+           * @return true when the gesture was a real one -- a selection drawn, or one moved -- and false
+           *   when it was cancelled, in which case the tool stays armed and the selection stays as it was.
+           */
+          suspend fun AwaitPointerEventScope.dragSelection(
+            down: PointerInputChange,
+            downCell: Pair<Int, Int>?,
+          ): Boolean {
             val moving = currentSelection
             val grabbed = downCell
 
@@ -1292,7 +1504,7 @@ object BitmapEditor {
               }
               gridState.endEdit()
               if (released) onResize()
-              return
+              return released
             }
 
             // Anywhere else, drag out a new rectangle; a tap with no drag clears the selection.
@@ -1309,7 +1521,7 @@ object BitmapEditor {
             marquee = null
             // A cancelled drag (a pinch that took the gesture, say) is not a selection: leave the one
             // that was there alone rather than replacing it with whatever the finger happened to touch.
-            if (!released) return
+            if (!released) return false
             onSelectionChange(
               if (grabbed != null && end != null) {
                 CellRect.between(grabbed, end, gridState.columns, gridState.rows)
@@ -1317,6 +1529,7 @@ object BitmapEditor {
                 null
               }
             )
+            return true
           }
 
           awaitEachGesture {
@@ -1324,14 +1537,19 @@ object BitmapEditor {
             val downCell = tapToPixel(down.position)
 
             when {
-              mode == EditorMode.Select -> dragSelection(down, downCell)
+              // A tool is spent by the gesture that uses it, whatever the gesture was: one shape, one
+              // selection, one tap. The armed mode going dark is the signal that the drawing is back to
+              // painting, and re-arming a tool is the one tap it costs to draw a second shape.
+              mode == EditorMode.Select -> {
+                if (dragSelection(down, downCell)) onModeConsumed()
+              }
 
               mode.isShape -> {
                 if (downCell == null) {
                   // Started outside the grid: nothing to anchor the shape to, so let the gesture go by.
                   awaitUpOrCancel(down.id)
-                } else {
-                  dragShape(downCell, down.id)
+                } else if (dragShape(downCell, down.id)) {
+                  onModeConsumed()
                 }
               }
 
@@ -1351,6 +1569,14 @@ object BitmapEditor {
                     onTap()
                   }
                   EditorMode.Eyedropper -> onColorPicked(gridState.getPixel(cell.first, cell.second))
+                  EditorMode.Paste -> {
+                    // The tapped cell is the block's top-left corner, clamped inside the grid, so a tap
+                    // places the whole block where it was aimed rather than a piece of it.
+                    val block = currentClipboard
+                    if (block != null && gridState.paste(cell.first, cell.second, block)) {
+                      onResize()
+                    }
+                  }
                   else -> return@awaitEachGesture
                 }
                 onModeConsumed()
@@ -1684,6 +1910,9 @@ object BitmapEditor {
    * @param icon glyph drawn in the square button, from the Material icon set.
    * @param contentDescription what the glyph means. The button has no visible label, so this is the
    *   only thing a screen reader (or a UI test) can read.
+   * @param explanation one sentence saying what the tool does, shown in a snackbar when the button is
+   *   held down. A glyph cannot teach a tool it does not resemble, and this toolbar has no room for a
+   *   caption, so holding is how you ask what a button is before using it on a drawing you care about.
    * @param selected null for a plain action; true or false for a *mode* tool, which changes what the next
    *   gesture on the drawing does. A mode shows whether it is armed, to the eye and to a screen reader.
    * @param enabled false draws the button greyed out and ignores clicks.
@@ -1694,6 +1923,7 @@ object BitmapEditor {
   class EditorTool(
     val icon: ImageVector,
     val contentDescription: String,
+    val explanation: String,
     val selected: Boolean? = null,
     val enabled: Boolean = true,
     val iconRotationDegrees: Float = 0f,
@@ -1708,9 +1938,10 @@ object BitmapEditor {
    * as wide as it would be without the toolbar.
    *
    * @param tools drawn top to bottom in list order.
+   * @param onExplain called with a tool when its button is held down, for the caller to explain it.
    */
   @Composable
-  fun EditorToolbar(tools: List<EditorTool>) {
+  fun EditorToolbar(tools: List<EditorTool>, onExplain: (EditorTool) -> Unit = {}) {
     if (tools.isEmpty()) return
 
     LazyColumn(
@@ -1719,14 +1950,14 @@ object BitmapEditor {
         .fillMaxHeight(),
     ) {
       items(tools) { tool ->
-        EditorToolButton(tool)
+        EditorToolButton(tool, onExplain)
       }
     }
   }
 
   /** One icon button, wearing the same dark treatment as the canvas's resize buttons. */
   @Composable
-  private fun EditorToolButton(tool: EditorTool) {
+  private fun EditorToolButton(tool: EditorTool, onExplain: (EditorTool) -> Unit) {
     val shape = RoundedCornerShape(2.dp)
     val armed = tool.selected == true
     Column {
@@ -1751,23 +1982,25 @@ object BitmapEditor {
             color = Color.White.copy(alpha = if (armed) 0.55f else 0.2f),
             shape = shape,
           )
-          // A mode is a toggle, so it is a selectable button: the armed state reaches a screen reader as
-          // checked/not checked, instead of being only a lighter square for the eye.
-          .then(
-            if (tool.selected == null) {
-              Modifier.clickable(enabled = tool.enabled, onClick = tool.onClick)
-            } else {
-              Modifier.selectable(
-                selected = armed,
-                enabled = tool.enabled,
-                role = Role.Button,
-                onClick = tool.onClick,
-              )
-            }
+          /*
+           * One click modifier for both gestures. `selectable` would carry the armed state to a screen
+           * reader on its own, but it has no long press, so the mode tools get their toggle semantics from
+           * the modifier below instead -- Role.Button plus the selected property, which is exactly what
+           * `selectable` was setting. A held button explains its tool; it never acts on the drawing.
+           */
+          .combinedClickable(
+            enabled = tool.enabled,
+            role = Role.Button,
+            onLongClickLabel = "Explain this tool",
+            onLongClick = { onExplain(tool) },
+            onClick = tool.onClick,
           )
           // The description belongs to the button, not to the glyph inside it, so the whole square is one
           // accessibility node instead of a described icon sitting next to an undescribed button.
-          .semantics { contentDescription = tool.contentDescription },
+          .semantics {
+            contentDescription = tool.contentDescription
+            tool.selected?.let { selected = it }
+          },
         contentAlignment = Alignment.Center
       ) {
         Icon(
