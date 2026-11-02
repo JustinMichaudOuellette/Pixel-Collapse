@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Redo
 import androidx.compose.material.icons.filled.Repeat
@@ -163,7 +165,7 @@ object BitmapEditor {
    * buttons that show them do not light up in the middle of a drag.
    */
   class PixelGridState(
-    palette: List<Color> = PALETTE,
+    palette: List<Color> = PaletteStore.defaultPalette.colors,
     initialColumns: Int = 16,
     initialRows: Int = 11,
   ) {
@@ -1168,11 +1170,20 @@ object BitmapEditor {
      * borderless picture makes the band a lie and the button a truth.
      */
     edgeRuleKept: Boolean = true,
+    palettes: List<Palette> = listOf(PaletteStore.defaultPalette),
+    activePalette: Palette = PaletteStore.defaultPalette,
+    onPaletteChange: (Palette) -> Unit = {},
     preview: @Composable () -> Unit = {},
   ) {
     // The first palette colour is selected on open, so the swatch strip starts with a highlighted
     // colour and a tap on the drawing already has something to paint with.
-    var selectedColor by remember { mutableStateOf(initialColor ?: PALETTE.first()) }
+    var selectedColor by remember { mutableStateOf(initialColor ?: activePalette.colors.first()) }
+
+    LaunchedEffect(activePalette) {
+      if (selectedColor !in activePalette.colors) {
+        selectedColor = activePalette.colors.first()
+      }
+    }
 
     // Reported on every change, including the one at first composition, so the caller can save it.
     LaunchedEffect(selectedColor) { onColorChange(selectedColor) }
@@ -1182,6 +1193,7 @@ object BitmapEditor {
     var mode by remember { mutableStateOf(EditorMode.Paint) }
     var selection by remember { mutableStateOf<CellRect?>(null) }
     var outputMenuOpen by remember { mutableStateOf(false) }
+    var paletteMenuOpen by remember { mutableStateOf(false) }
 
 
     // Tapping the armed mode puts the drawing back to painting; tapping another one arms that. A
@@ -1368,10 +1380,15 @@ object BitmapEditor {
       },
 
       EditorTool(
+        icon = Icons.Default.Palette,
+        contentDescription = "Select color palette",
+        explanation = "Chooses the color palette to draw with.",
+        startsGroup = true,
+      ) { paletteMenuOpen = true },
+      EditorTool(
         icon = Icons.Default.AspectRatio,
         contentDescription = "Output shape and size",
         explanation = "Chooses the shape of the picture and the size it is saved at.",
-        startsGroup = true,
       ) { outputMenuOpen = true },
       // A generation setting rather than an edit, which is why it sits with the output menu and not with
       // the drawing tools: it changes what the picture is allowed to be made of, not the drawing.
@@ -1488,6 +1505,16 @@ object BitmapEditor {
             outputMenuOpen = false
           },
         )
+        PaletteMenu(
+          expanded = paletteMenuOpen,
+          palettes = palettes,
+          currentPalette = activePalette,
+          onDismiss = { paletteMenuOpen = false },
+          onPaletteSelected = { palette ->
+            onPaletteChange(palette)
+            paletteMenuOpen = false
+          },
+        )
       }
 
       VerticalDividerLine()
@@ -1524,6 +1551,7 @@ object BitmapEditor {
       VerticalDividerLine()
 
         ColorToolbar(
+          palette = activePalette,
           selectedColor = selectedColor,
           onColorSelected = { selectedColor = it },
         )
@@ -2628,65 +2656,94 @@ object BitmapEditor {
 // Color toolbar
 // ─────────────────────────────────────────────────────────────────────────────
 
-  // https://lospec.com/palette-list/endesga-32
-  private val PALETTE = listOf(
-       Color(0xffbe4a2f),
-       Color(0xffd77643),
-       Color(0xffead4aa),
-       Color(0xffe4a672),
-       Color(0xffb86f50),
-       Color(0xff733e39),
-       Color(0xff3e2731),
-       Color(0xffa22633),
-       Color(0xffe43b44),
-       Color(0xfff77622),
-       Color(0xfffeae34),
-       Color(0xfffee761),
-       Color(0xff63c74d),
-       Color(0xff3e8948),
-       Color(0xff265c42),
-       Color(0xff193c3e),
-       Color(0xff124e89),
-       Color(0xff0099db),
-       Color(0xff2ce8f5),
-       Color(0xffffffff),
-       Color(0xffc0cbdc),
-       Color(0xff8b9bb4),
-       Color(0xff5a6988),
-       Color(0xff3a4466),
-       Color(0xff262b44),
-       Color(0xff181425),
-       Color(0xffff0044),
-       Color(0xff68386c),
-       Color(0xffb55088),
-       Color(0xfff6757a),
-       Color(0xffe8b796),
-       Color(0xffc28569),
-  )
-
   @Composable
   fun ColorToolbar(
+    palette: Palette = PaletteStore.defaultPalette,
     selectedColor: Color,
     onColorSelected: (Color) -> Unit,
   ) {
-      Column(
-        modifier = Modifier
-          .width(BUTTON_SIZE)
-          .fillMaxHeight(),
+    Column(
+      modifier = Modifier
+        .width(BUTTON_SIZE)
+        .fillMaxHeight(),
+    ) {
+      // Color swatches
+      LazyColumn(
+        modifier = Modifier.weight(1f),
       ) {
-        // Color swatches
-        LazyColumn(
-          modifier = Modifier.weight(1f),
-        ) {
-          items(PALETTE) { color ->
-            ColorSwatch(
-              color = color,
-              isSelected = color == selectedColor,
-              onClick = { onColorSelected(color) },
-            )
-          }
+        items(palette.colors) { color ->
+          ColorSwatch(
+            color = color,
+            isSelected = color == selectedColor,
+            onClick = { onColorSelected(color) },
+          )
         }
       }
+    }
+  }
+
+  @Composable
+  private fun PaletteMenu(
+    expanded: Boolean,
+    palettes: List<Palette>,
+    currentPalette: Palette,
+    onDismiss: () -> Unit,
+    onPaletteSelected: (Palette) -> Unit,
+  ) {
+    val itemColors = MenuDefaults.itemColors(
+      textColor = MENU_TEXT_COLOR,
+      leadingIconColor = MENU_TEXT_COLOR,
+      trailingIconColor = MENU_TEXT_COLOR,
+    )
+
+    DropdownMenu(
+      expanded = expanded,
+      onDismissRequest = onDismiss,
+      containerColor = PANEL_BACKGROUND,
+    ) {
+      MenuHeading("Palette")
+      palettes.forEach { item ->
+        DropdownMenuItem(
+          text = {
+            Column(
+              modifier = Modifier
+                .width(200.dp)
+                .padding(vertical = 4.dp)
+            ) {
+              Text(
+                text = item.name,
+                color = MENU_TEXT_COLOR,
+                fontSize = 14.sp,
+              )
+              // Continuous band of all palette colors
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .height(14.dp)
+                  .padding(top = 4.dp)
+                  .clip(RoundedCornerShape(3.dp))
+              ) {
+                item.colors.forEach { color ->
+                  Box(
+                    modifier = Modifier
+                      .weight(1f)
+                      .fillMaxHeight()
+                      .background(color)
+                  )
+                }
+              }
+            }
+          },
+          onClick = { onPaletteSelected(item) },
+          colors = itemColors,
+          trailingIcon = {
+            if (item.id == currentPalette.id) {
+              Icon(Icons.Default.Check, contentDescription = "Selected", tint = MENU_TEXT_COLOR)
+            }
+          },
+        )
+      }
+    }
   }
 
   @Composable
@@ -2708,9 +2765,9 @@ object BitmapEditor {
         )
         .padding(SWATCH_MARGIN)
         .border(
-              width = 1.dp,
-              color = SWATCH_SELECTED_BORDER_COLOR,
-              shape = RoundedCornerShape(SWATCH_CORNER_RADIUS)
+          width = 1.dp,
+          color = SWATCH_SELECTED_BORDER_COLOR,
+          shape = RoundedCornerShape(SWATCH_CORNER_RADIUS)
         ),
       contentAlignment = Alignment.Center
     ) {
@@ -2723,10 +2780,9 @@ object BitmapEditor {
   }
 
   /**
-   * The colour a fresh session starts with: the palette's first entry, which the colour strip shows as
-   * selected on open. Exposed because the session snapshot needs it when nothing has been reported yet.
+   * The colour a fresh session starts with: the default palette's first entry.
    */
-  internal val defaultDrawingColor: Color get() = PALETTE.first()
+  internal val defaultDrawingColor: Color get() = PaletteStore.defaultPalette.colors.first()
 
   private val SWATCH_SELECTED_BORDER_COLOR = Color.White
   private val SWATCH_MARGIN = 5.dp

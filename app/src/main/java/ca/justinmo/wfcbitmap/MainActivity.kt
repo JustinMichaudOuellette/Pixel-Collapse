@@ -278,6 +278,14 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   val scope = rememberCoroutineScope()
   val generation = remember { GenerationSlot() }
 
+  val availablePalettes = remember(context) { PaletteStore.loadAllPalettes(context) }
+  var activePalette by remember {
+    mutableStateOf(
+      restored?.paletteId?.let { id -> availablePalettes.firstOrNull { it.id == id } }
+        ?: availablePalettes.first()
+    )
+  }
+
   /*
    * The colour the paint tools are using. It lives in the screen, because the toolbar that picks it does;
    * it is mirrored here so the session snapshot can save it.
@@ -299,13 +307,14 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       rows = gridState.rows,
       pixels = IntArray(gridState.columns * gridState.rows) { gridState.pixels[it].toArgb() },
       seed = seed,
-      colorArgb = (drawingColor ?: BitmapEditor.defaultDrawingColor).toArgb(),
+      colorArgb = (drawingColor ?: activePalette.colors.first()).toArgb(),
       aspectName = outputSettings.aspect.name,
       previewName = outputSettings.preview.name,
       scaleName = outputSettings.scale.name,
       wrapEdges = wrapEdges,
       mirrorHorizontal = mirrorHorizontal,
       mirrorVertical = mirrorVertical,
+      paletteId = activePalette.id,
     )
   }
 
@@ -596,6 +605,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onMirrorVerticalChange = { mirrorVertical = it },
     // The drawing marks its edge cells while the picture on screen really does keep the drawing's border.
     edgeRuleKept = output?.relaxedEdges != true,
+    palettes = availablePalettes,
+    activePalette = activePalette,
+    onPaletteChange = { activePalette = it },
     // The clock starts at the gesture; generation is requested by the same tap that edits the grid.
     onTap = {
       latency.tap()

@@ -37,6 +37,8 @@ data class EditorSnapshot(
   val mirrorHorizontal: Boolean,
   /** Whether every pattern was also offered flipped top to bottom. */
   val mirrorVertical: Boolean,
+  /** The selected palette ID. */
+  val paletteId: String = PaletteStore.DEFAULT_PALETTE_ID,
 ) {
 
   /** True when the snapshot describes a grid it could actually be loaded into. */
@@ -62,6 +64,7 @@ data class EditorSnapshot(
       out.writeBoolean(wrapEdges)
       out.writeBoolean(mirrorHorizontal)
       out.writeBoolean(mirrorVertical)
+      out.writeUTF(paletteId)
     }
     return buffer.toByteArray()
   }
@@ -77,10 +80,11 @@ data class EditorSnapshot(
      * whole number cannot describe it. 3 added the preview size, which is what the picture is generated at
      * and so a setting the picture cannot be reproduced without. 4 split the one mirror setting into the two
      * the editor has: either of them changes the tile set, so a session cannot come back without both.
+     * 5 added paletteId for palette selection.
      */
-    private const val VERSION = 4
+    private const val VERSION = 5
 
-    private const val HEADER_BYTES = 96
+    private const val HEADER_BYTES = 128
 
     /** The editor's own limits on a grid side, so a corrupt file cannot ask for a gigabyte of pixels. */
     const val MIN_SIDE = BitmapEditor.MIN_GRID_SIZE
@@ -102,7 +106,7 @@ data class EditorSnapshot(
         DataInputStream(ByteArrayInputStream(bytes)).use { input ->
           val magic = input.readInt()
           val version = input.readInt()
-          if (magic != MAGIC || version != VERSION) return null
+          if (magic != MAGIC || version < 4 || version > VERSION) return null
 
           val columns = input.readInt()
           val rows = input.readInt()
@@ -119,6 +123,7 @@ data class EditorSnapshot(
           val wrapEdges = input.readBoolean()
           val mirrorHorizontal = input.readBoolean()
           val mirrorVertical = input.readBoolean()
+          val paletteId = if (version >= 5) input.readUTF() else PaletteStore.DEFAULT_PALETTE_ID
 
           EditorSnapshot(
             columns = columns,
@@ -132,6 +137,7 @@ data class EditorSnapshot(
             wrapEdges = wrapEdges,
             mirrorHorizontal = mirrorHorizontal,
             mirrorVertical = mirrorVertical,
+            paletteId = paletteId,
           )
         }
       } catch (e: IOException) {
@@ -150,7 +156,8 @@ data class EditorSnapshot(
       seed == other.seed && colorArgb == other.colorArgb && aspectName == other.aspectName &&
       previewName == other.previewName && scaleName == other.scaleName && wrapEdges == other.wrapEdges &&
       mirrorHorizontal == other.mirrorHorizontal &&
-      mirrorVertical == other.mirrorVertical
+      mirrorVertical == other.mirrorVertical &&
+      paletteId == other.paletteId
   }
 
   override fun hashCode(): Int {
@@ -165,6 +172,7 @@ data class EditorSnapshot(
     result = 31 * result + wrapEdges.hashCode()
     result = 31 * result + mirrorHorizontal.hashCode()
     result = 31 * result + mirrorVertical.hashCode()
+    result = 31 * result + paletteId.hashCode()
     return result
   }
 }
