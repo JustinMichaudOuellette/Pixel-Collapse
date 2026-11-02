@@ -122,12 +122,8 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 
 ## Roadmap
 
-- [ ] **Palette selection** — work from a chosen palette instead of the fixed swatch strip: pick which colours the
-  drawing is allowed to use, and quantise an imported picture onto them.
 - [ ] **Pixel-art scaling algorithm** — a dedicated upscaler (EPX/hqx/xBR family) for the saved file, so a
   bigger save size is a rounder piece of pixel art rather than a copy of the same blocks.
-- [ ] **Pattern save** — save the drawing's tile set and load it onto a new drawing, so a look can be reused
-  without redrawing the pattern that produced it.
 - [ ] **GIF output** — export an animated tiling: the same drawing, scrolling one cell at a time, written as a
   looping GIF.
 - [ ] **Video output** — record the same kind of motion to MP4 with `MediaCodec`, at a speed and length the
@@ -135,6 +131,7 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 - [ ] **3D rendering output** — stand the picture up as a solid scene, one block per cell, and export it as a
   rotating shot through the video output above or as a model file another tool can open.
 - [ ] **Input Photo** — input a photo, downscale it, posterize it and use it as a pattern.
+- [ ] **Group Pixels** — allow to group pixels 2x2, 3x3, 4x4, etc. So that it acts like a tilemap.
 
 ## License
 

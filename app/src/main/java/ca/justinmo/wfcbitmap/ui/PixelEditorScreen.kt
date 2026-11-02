@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Colorize
 import androidx.compose.material.icons.filled.ContentCopy
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.Flip
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.Palette as PaletteIcon
 import androidx.compose.material.icons.filled.PowerSettingsNew
@@ -132,6 +134,10 @@ fun PixelEditorScreen(
   onSave: () -> Unit = {},
   /** Called when the Share tool is tapped; the caller owns the bitmap and the chooser. */
   onShare: () -> Unit = {},
+  /** Called when the Save pattern tool is tapped. */
+  onSavePattern: () -> Unit = {},
+  /** Called when the Load pattern tool is tapped. */
+  onLoadPattern: () -> Unit = {},
   /**
    * Called when the Close tool is tapped: leaving an app is the activity's business, not the editor's, so
    * the caller closes itself rather than this screen reaching for a context to finish.
@@ -471,6 +477,20 @@ fun PixelEditorScreen(
       selected = mirrorVertical,
       onClick = { onMirrorVerticalChange(!mirrorVertical) },
     ),
+
+    // A pattern is the drawing plus its palette, kept inside the app so it can be loaded again instead
+    // of being written out as a picture.
+    EditorTool(
+      icon = Icons.Default.BookmarkAdd,
+      contentDescription = "Save the drawing as a pattern",
+      explanation = "Saves this drawing and its palette inside the app so you can load it again later.",
+      startsGroup = true,
+    ) { onSavePattern() },
+    EditorTool(
+      icon = Icons.Default.FolderOpen,
+      contentDescription = "Load a saved pattern",
+      explanation = "Brings back a saved drawing and the palette it was made with.",
+    ) { onLoadPattern() },
 
     EditorTool(
       icon = Icons.Default.Save,

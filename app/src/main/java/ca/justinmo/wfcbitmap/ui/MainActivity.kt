@@ -52,15 +52,20 @@ import ca.justinmo.wfcbitmap.LatencyMeter
 import ca.justinmo.wfcbitmap.OutputAspect
 import ca.justinmo.wfcbitmap.OutputScale
 import ca.justinmo.wfcbitmap.OutputSettings
+import ca.justinmo.wfcbitmap.Palette
+import ca.justinmo.wfcbitmap.PatternStore
 import ca.justinmo.wfcbitmap.PixelCollapseApplication
 import ca.justinmo.wfcbitmap.PixelGridState
 import ca.justinmo.wfcbitmap.PreviewScale
+import ca.justinmo.wfcbitmap.SavedPattern
 import ca.justinmo.wfcbitmap.savedPixelSize
 import ca.justinmo.wfcbitmap.ui.theme.WFCBitmapTheme
 import ca.justinmo.wfcbitmap.WfcGenerator
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
@@ -220,6 +225,21 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     PixelGridState(palette = initialPalette.colors).apply {
       restored?.let { restoreDrawing(it.columns, it.rows, it.pixels) }
     }
+  }
+
+  val patternStore = remember(context) { PatternStore.forDirectory(context.filesDir) }
+  var savePatternDialogOpen by remember { mutableStateOf(false) }
+  var loadPatternDialogOpen by remember { mutableStateOf(false) }
+  var savedPatterns by remember { mutableStateOf<List<SavedPattern>>(emptyList()) }
+  /*
+   * A loaded pattern may name a palette that is no longer in the assets. The pattern file carries the
+   * palette's colours too, so it can be put back into the picker as a one-off entry rather than losing
+   * the colours the drawing was made with.
+   */
+  var patternPalette by remember { mutableStateOf<Palette?>(null) }
+  val availablePalettes = remember(palettes, patternPalette) {
+    val restored = patternPalette
+    if (restored != null && palettes.none { it.id == restored.id }) palettes + restored else palettes
   }
   // End-to-end measurement: tap detected -> the frame that shows the new preview is committed.
   val view = LocalView.current
@@ -668,7 +688,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onMirrorVerticalChange = { mirrorVertical = it },
     // The drawing marks its edge cells while the picture on screen really does keep the drawing's border.
     edgeRuleKept = output?.relaxedEdges != true,
-    palettes = palettes,
+    palettes = availablePalettes,
     activePalette = activePalette,
     // The drawing is rewritten here, where both the grid and the generator are: a palette swap that
     // changes any cell is a new picture, not just a new strip of swatches.
@@ -679,6 +699,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         requestGeneration()
       }
       activePalette = palette
+      if (palette.id != patternPalette?.id) patternPalette = null
     },
     // The clock starts at the gesture; generation is requested by the same tap that edits the grid.
     onTap = {
@@ -690,6 +711,15 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     },
     onSave = { savePicture() },
     onShare = { sharePicture() },
+    onSavePattern = { savePatternDialogOpen = true },
+    onLoadPattern = {
+      scope.launch {
+        savedPatterns = withContext(Dispatchers.IO) {
+          patternStore.list().mapNotNull { patternStore.load(it.id) }
+        }
+        loadPatternDialogOpen = true
+      }
+    },
     onExit = { exitApp() },
     // Only a restored session has a colour to start with; otherwise the palette's first swatch is it.
     initialColor = restored?.let { Color(it.colorArgb) },
@@ -711,4 +741,91 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       )
     },
   )
+
+  if (savePatternDialogOpen) {
+    SavePatternDialog(
+      onDismiss = { savePatternDialogOpen = false },
+      onSave = { name ->
+        val snapshot = snapshotProvider()
+        savePatternDialogOpen = false
+        scope.launch {
+          val saved = withContext(Dispatchers.IO) {
+            patternStore.save(name, activePalette, snapshot)
+          }
+          message = if (saved != null) {
+            EditorMessage("Pattern saved")
+          } else {
+            EditorMessage("Could not save that pattern")
+          }
+        }
+      },
+    )
+  }
+
+  if (loadPatternDialogOpen) {
+    LoadPatternDialog(
+      patterns = savedPatterns,
+      onDismiss = { loadPatternDialogOpen = false },
+      onLoad = { metadata ->
+        loadPatternDialogOpen = false
+        scope.launch {
+          val saved = withContext(Dispatchers.IO) { patternStore.load(metadata.id) }
+          if (saved == null) {
+            message = EditorMessage("Could not load that pattern")
+            return@launch
+          }
+
+          val snapshot = saved.snapshot
+          gridState.restoreDrawing(snapshot.columns, snapshot.rows, snapshot.pixels)
+          seed = snapshot.seed
+          outputSettings = OutputSettings(
+            aspect = OutputAspect.entries.firstOrNull { it.name == snapshot.aspectName }
+              ?: outputSettings.aspect,
+            preview = PreviewScale.entries.firstOrNull { it.name == snapshot.previewName }
+              ?: outputSettings.preview,
+            scale = OutputScale.entries.firstOrNull { it.name == snapshot.scaleName }
+              ?: outputSettings.scale,
+          )
+          wrapEdges = snapshot.wrapEdges
+          mirrorHorizontal = snapshot.mirrorHorizontal
+          mirrorVertical = snapshot.mirrorVertical
+          drawingColor = Color(snapshot.colorArgb)
+
+          // The palette is part of the pattern's metadata. Use the bundled file when it still exists;
+          // otherwise put the saved colours back as a one-off picker entry.
+          val bundled = availablePalettes.firstOrNull { it.id == metadata.paletteId }
+          if (bundled != null) {
+            patternPalette = null
+            activePalette = bundled
+          } else {
+            val restored = Palette(
+              id = metadata.paletteId,
+              name = metadata.paletteName,
+              colors = metadata.paletteColors,
+            )
+            if (restored.colors.isNotEmpty()) {
+              patternPalette = restored
+              activePalette = restored
+            }
+          }
+
+          requestGeneration()
+          message = EditorMessage("Pattern loaded")
+        }
+      },
+      onDelete = { metadata ->
+        scope.launch {
+          val deleted = withContext(Dispatchers.IO) { patternStore.delete(metadata.id) }
+          savedPatterns = withContext(Dispatchers.IO) {
+            patternStore.list().mapNotNull { patternStore.load(it.id) }
+          }
+          message = if (deleted) {
+            EditorMessage("Pattern deleted")
+          } else {
+            EditorMessage("Could not delete that pattern")
+          }
+        }
+      },
+    )
+  }
 }
