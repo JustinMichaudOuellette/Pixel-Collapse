@@ -13,6 +13,8 @@ data class Palette(
   val id: String,
   val name: String,
   val colors: List<Color>,
+  /** The file's `;Description:` line, kept as written; it may contain HTML. */
+  val description: String = "",
 ) {
   /**
    * The colour in this palette closest to [color], or [color] itself when the palette is empty.
@@ -38,6 +40,7 @@ object PaletteStore {
   fun parsePalette(id: String, inputStream: InputStream): Palette {
     var name = id.removeSuffix(".txt").replace('-', ' ').replace('_', ' ')
       .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+    var description = ""
     val colors = mutableListOf<Color>()
 
     inputStream.bufferedReader().useLines { lines ->
@@ -49,6 +52,8 @@ object PaletteStore {
             if (parsedName.isNotEmpty()) {
               name = parsedName
             }
+          } else if (line.startsWith(";Description:", ignoreCase = true)) {
+            description = line.substringAfter(":").trim()
           }
           continue
         }
@@ -61,6 +66,7 @@ object PaletteStore {
       id = id,
       name = name,
       colors = colors,
+      description = description,
     )
   }
 

@@ -15,7 +15,7 @@ class PaletteStoreTest {
       ;paint.net Palette File
       ;Downloaded from Lospec.com/palette-list
       ;Palette Name: Endesga 32
-      ;Description: Originally created for NYKRA
+      ;Description: Originally created for <a href="http://nykra.com/">NYKRA</a>
       ;Colors: 32
       FFbe4a2f
       FFd77643
@@ -27,6 +27,10 @@ class PaletteStoreTest {
 
     assertEquals("endesga-32.txt", palette.id)
     assertEquals("Endesga 32", palette.name)
+    assertEquals(
+      "Originally created for <a href=\"http://nykra.com/\">NYKRA</a>",
+      palette.description,
+    )
     assertEquals(3, palette.colors.size)
     assertEquals(Color(0xFFBE4A2F.toInt()), palette.colors[0])
     assertEquals(Color(0xFFD77643.toInt()), palette.colors[1])
