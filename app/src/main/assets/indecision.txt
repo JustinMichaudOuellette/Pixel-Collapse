@@ -1,0 +1,22 @@
+;paint.net Palette File
+;Downloaded from Lospec.com/palette-list
+;Palette Name: Indecision
+;Description: Created by <a target="_blank" href="https://twitter.com/Warxwell">Nelson SMG</a> for the <a target="_blank" href="http://pixeljoint.com/forum/forum_posts.asp?TID=26590">PixelJoint 17 Color Palette Competition</a> (2019).
+;Colors: 17
+FFfff4e0
+FF8fcccb
+FF449489
+FF285763
+FF2f2b5c
+FF4b3b9c
+FF457cd6
+FFf2b63d
+FFd46e33
+FFe34262
+FF94353d
+FF57253b
+FF9c656c
+FFd1b48c
+FFb4ba47
+FF6d8c32
+FF2c1b2e

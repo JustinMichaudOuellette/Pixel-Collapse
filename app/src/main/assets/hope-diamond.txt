@@ -1,0 +1,11 @@
+;paint.net Palette File
+;Downloaded from Lospec.com/palette-list
+;Palette Name: Hope Diamond
+;Description: Vivify your nights with these lustrous blue tones
+;Colors: 6
+FF150e10
+FF272739
+FF393849
+FF3b4152
+FF4f5a64
+FF77888c

@@ -1,0 +1,13 @@
+;paint.net Palette File
+;Downloaded from Lospec.com/palette-list
+;Palette Name: FunkyFuture 8
+;Description: Neon and futuristic palette that was mainly inspired by retrowave aesthics
+;Colors: 8
+FF2b0f54
+FFab1f65
+FFff4f69
+FFfff7f8
+FFff8142
+FFffda45
+FF3368dc
+FF49e7ec

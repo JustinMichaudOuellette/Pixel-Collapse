@@ -51,9 +51,9 @@ import kotlinx.coroutines.delay
  * a sentence about this drawing is still about the drawing, and the column is the only place the editor
  * has to say it at the size the picture would be.
  *
- * What is drawn here is the generated bitmap, fitted to the column and resampled with nearest neighbour:
- * `FilterQuality.None` keeps the pattern's pixels as blocks instead of smearing them, so a smaller preview is
- * visibly blockier rather than smaller. The size is worked out by [previewDrawSize].
+ * What is drawn here is the generated bitmap, fitted to fill the column and resampled with nearest neighbour:
+ * `FilterQuality.None` keeps the pattern's pixels as blocks instead of smearing them. The size is worked out
+ * by [previewDrawSize].
  *
  * @param output the last generated bitmap, or null before the first one is ready, or after a generation
  *   that failed. Holding on to the previous output is what keeps the preview steady while a newer edit is
@@ -210,14 +210,13 @@ private const val PREVIEW_DESCRIPTION = "Live bitmap generated from the drawing"
 /**
  * The size the generated picture is drawn at inside a preview column of [columnWidth] x [columnHeight].
  *
- * The column is filled, whichever preview size was generated: the picture is fitted to it, up or down, keeping
- * its shape. A smaller preview is therefore scaled *up* -- one source pixel becomes a block of them -- which is
- * what makes the setting mean something: a 0.5x picture is a quarter of the pixels of a 2x one, so filling the
- * same column draws each of its pixels four times as large, and the picture reads blockier. Shrinking the
- * picture instead would leave a small picture in the middle of the column, which is not what a preview is for.
+ * The picture always fills the column, whichever preview size was generated: it is fitted to the column,
+ * up or down, keeping its shape, and drawn with nearest-neighbour resampling so its pixels stay blocks.
+ * Nothing is left small in the middle of the column, and nothing is cropped.
  *
- * The result is in whole pixels so the blocks stay even, and it is centred: fitting a 9:16 picture to a column
- * of very slightly different shape leaves a pixel or two over, and they belong on both sides, not on one.
+ * The result is in whole pixels so the blocks stay even, and it is centred: fitting a 9:16 picture to a
+ * column of very slightly different shape leaves a pixel or two over, and they belong on both sides, not
+ * on one.
  */
 internal fun previewDrawSize(
   bitmapWidth: Int,

@@ -8,11 +8,9 @@ import org.junit.Test
 /**
  * How big the generated picture is drawn in the preview column.
  *
- * The column is always filled. A smaller preview is scaled up, one source pixel to a block of them, which is
- * what the preview size is for: 0.5x has a quarter of the pixels of 2x, so the same column shows each of them
- * four times as large and the picture reads blockier. Nothing is ever left small in the middle of the column --
- * that is the thing a preview must not do -- and nothing is cropped: a picture too big for the column is fitted
- * to it rather than cut off.
+ * The column is always filled, whatever preview size was generated: the picture is fitted to it, up or
+ * down, keeping its shape. A smaller preview is scaled up, one source pixel to a block of them, and a
+ * picture too big for the column is fitted to it rather than cropped.
  */
 class PreviewDrawSizeTest {
 
@@ -46,7 +44,7 @@ class PreviewDrawSizeTest {
 
   @Test
   fun aSmallerPreviewIsScaledUpToFill() {
-    // 0.5x is 152x270; fitted to the column it is drawn at nearly four times its own size, not left small.
+    // 1x is 152x270; fitted to the column it is drawn at nearly four times its own size, not left small.
     val (width, height) = previewDrawSize(152, 270, columnWidth, columnHeight)
     assertEquals("it fills the column's width", columnWidth, width)
     assertTrue("and nearly all of its height: $height", height > columnHeight * 0.95)

@@ -2,6 +2,8 @@ package ca.justinmo.wfcbitmap
 
 import android.content.Context
 import androidx.compose.ui.graphics.Color
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.InputStream
 
 /**
@@ -11,58 +13,27 @@ data class Palette(
   val id: String,
   val name: String,
   val colors: List<Color>,
-)
+) {
+  /**
+   * The colour in this palette closest to [color], or [color] itself when the palette is empty.
+   *
+   * Closeness is plain RGB distance: palette files hold opaque screen colours, and the nearest entry
+   * in that space is what a palette swap has always meant in pixel art.
+   */
+  fun closestColor(color: Color): Color = PaletteStore.closestColor(color, colors)
+}
 
 object PaletteStore {
 
-  /** Default palette (Endesga 32) fallback colors when assets cannot be loaded. */
-  val DEFAULT_PALETTE_COLORS = listOf(
-    Color(0xffbe4a2f),
-    Color(0xffd77643),
-    Color(0xffead4aa),
-    Color(0xffe4a672),
-    Color(0xffb86f50),
-    Color(0xff733e39),
-    Color(0xff3e2731),
-    Color(0xffa22633),
-    Color(0xffe43b44),
-    Color(0xfff77622),
-    Color(0xfffeae34),
-    Color(0xfffee761),
-    Color(0xff63c74d),
-    Color(0xff3e8948),
-    Color(0xff265c42),
-    Color(0xff193c3e),
-    Color(0xff124e89),
-    Color(0xff0099db),
-    Color(0xff2ce8f5),
-    Color(0xffffffff),
-    Color(0xffc0cbdc),
-    Color(0xff8b9bb4),
-    Color(0xff5a6988),
-    Color(0xff3a4466),
-    Color(0xff262b44),
-    Color(0xff181425),
-    Color(0xffff0044),
-    Color(0xff68386c),
-    Color(0xffb55088),
-    Color(0xfff6757a),
-    Color(0xffe8b796),
-    Color(0xffc28569),
-  )
-
   const val DEFAULT_PALETTE_ID = "endesga-32.txt"
-
-  val defaultPalette = Palette(
-    id = DEFAULT_PALETTE_ID,
-    name = "Endesga 32",
-    colors = DEFAULT_PALETTE_COLORS,
-  )
 
   /**
    * Parses a paint.net format palette stream (.txt file).
    * Lines starting with ';' are comments/metadata (e.g. ';Palette Name: Name').
    * Hex color lines are 8 (AARRGGBB) or 6 (RRGGBB) hex chars.
+   *
+   * A file with no colour lines comes back with no colours: the default palette is read from
+   * `endesga-32.txt` like any other, so there is no built-in list to fall back to.
    */
   fun parsePalette(id: String, inputStream: InputStream): Palette {
     var name = id.removeSuffix(".txt").replace('-', ' ').replace('_', ' ')
@@ -89,7 +60,7 @@ object PaletteStore {
     return Palette(
       id = id,
       name = name,
-      colors = colors.ifEmpty { DEFAULT_PALETTE_COLORS },
+      colors = colors,
     )
   }
 
@@ -108,42 +79,93 @@ object PaletteStore {
   }
 
   /**
-   * Loads all palette files from the app's assets folder (`.txt` palette files).
-   * Ensures `endesga-32.txt` is listed first as the default palette.
+   * The palette asset file names, sorted, without reading any of them.
+   *
+   * Palette files are the `.txt` files in assets; `dummy.txt` is skipped, and a file that cannot be
+   * listed is simply not offered.
    */
-  fun loadAllPalettes(context: Context): List<Palette> {
-    val assetManager = context.assets
-    val paletteFiles = try {
-      assetManager.list("")?.filter { it.endsWith(".txt") && (it != "dummy.txt") } ?: emptyList()
+  suspend fun paletteFiles(context: Context): List<String> = withContext(Dispatchers.IO) {
+    try {
+      context.assets.list("")
+        ?.filter { it.endsWith(".txt", ignoreCase = true) && !it.equals("dummy.txt", ignoreCase = true) }
+        ?.sortedBy { it.lowercase() }
+        ?: emptyList()
     } catch (_: Exception) {
       emptyList()
     }
+  }
 
-    if (paletteFiles.isEmpty()) {
-      return listOf(defaultPalette)
-    }
-
-    val palettes = paletteFiles.mapNotNull { filename ->
-      try {
-        assetManager.open(filename).use { stream ->
-          parsePalette(filename, stream)
-        }
-      } catch (_: Exception) {
-        null
+  /**
+   * Parses one palette asset, or null when it cannot be read or has no colours.
+   */
+  suspend fun loadPalette(context: Context, id: String): Palette? = withContext(Dispatchers.IO) {
+    val palette = try {
+      context.assets.open(id).use { stream ->
+        parsePalette(id, stream)
       }
-    }.toMutableList()
-
-    if (palettes.isEmpty()) {
-      return listOf(defaultPalette)
+    } catch (_: Exception) {
+      null
     }
+    palette?.takeIf { it.colors.isNotEmpty() }
+  }
 
-    // Ensure default palette (endesga-32.txt) is at index 0
-    val defaultIndex = palettes.indexOfFirst { it.id.equals(DEFAULT_PALETTE_ID, ignoreCase = true) }
-    if (defaultIndex > 0) {
-      val defaultP = palettes.removeAt(defaultIndex)
-      palettes.add(0, defaultP)
+  /**
+   * Loads every palette file in the app's assets folder, with `endesga-32.txt` first.
+   *
+   * The files are read and parsed on [Dispatchers.IO]. The Application uses [paletteFiles] and
+   * [loadPalette] to load the first palette before this full list, but this remains the one call that
+   * reads everything.
+   */
+  suspend fun loadAllPalettes(context: Context): List<Palette> {
+    val palettes = paletteFiles(context).mapNotNull { loadPalette(context, it) }
+    return orderWithDefaultFirst(palettes)
+  }
+
+  /** The same list with `endesga-32.txt` moved to the front, when it is present. */
+  fun orderWithDefaultFirst(palettes: List<Palette>): List<Palette> {
+    val defaultIndex = palettes.indexOfFirst {
+      it.id.equals(DEFAULT_PALETTE_ID, ignoreCase = true)
     }
+    if (defaultIndex <= 0) return palettes
+    val ordered = palettes.toMutableList()
+    val defaultPalette = ordered.removeAt(defaultIndex)
+    ordered.add(0, defaultPalette)
+    return ordered
+  }
 
-    return palettes
+  /**
+   * The palette the editor starts on: `endesga-32.txt`, or the first loaded palette when the asset is
+   * missing.
+   */
+  fun defaultPalette(palettes: List<Palette>): Palette {
+    require(palettes.isNotEmpty()) { "No palettes were loaded" }
+    return palettes.firstOrNull { it.id.equals(DEFAULT_PALETTE_ID, ignoreCase = true) }
+      ?: palettes.first()
+  }
+
+  /**
+   * The colour in [palette] closest to [color], measured as squared RGB distance, or [color] itself
+   * when there is no palette to choose from.
+   */
+  fun closestColor(color: Color, palette: List<Color>): Color {
+    if (palette.isEmpty()) return color
+    var closest = palette.first()
+    var closestDistance = colorDistanceSquared(color, closest)
+    for (index in 1 until palette.size) {
+      val candidate = palette[index]
+      val distance = colorDistanceSquared(color, candidate)
+      if (distance < closestDistance) {
+        closest = candidate
+        closestDistance = distance
+      }
+    }
+    return closest
+  }
+
+  private fun colorDistanceSquared(first: Color, second: Color): Float {
+    val red = first.red - second.red
+    val green = first.green - second.green
+    val blue = first.blue - second.blue
+    return red * red + green * green + blue * blue
   }
 }

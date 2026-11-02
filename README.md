@@ -12,8 +12,9 @@ anything invented.
 
 * **Draw** with paint, fill, replace-colour, eyedropper, line, rectangle, ellipse, select-and-move and
   duplicate tools, plus undo/redo, mirror, rotate and clear. A long press on any tool explains it.
-* **Generate** by tapping the drawing: a seeded collapse fills a grid of 152x270 cells (9:16 by default).
-  Tapping the preview asks for the next variation of the same drawing.
+* **Generate** by tapping the drawing: a seeded collapse fills a grid of cells sized by the preview
+  resolution (38x68 at the default 1x, 152x270 at 4x, 9:16). Tapping the preview asks for the next variation
+  of the same drawing.
 * **Keep the border** — with real edges on, the drawing's outer row and column has to land on the picture's
   border, and the grid marks the band those cells sit in. If no tiling can hold that rule the picture is
   generated without it and says so in two words: *Edges relaxed*.
@@ -21,7 +22,7 @@ anything invented.
   pattern runs off one side and back on the other.
 * **Mirror every pattern** left to right, top to bottom, or both — as well as offering them as drawn — which
   gives the solver more shapes to arrange, and so more possible pictures from the same drawing.
-* **Pick the output**: shape (9:16, 3:4, 1:1, 4:3, 16:9), the size the picture is generated at (0.5x, 1x, 2x,
+* **Pick the output**: shape (9:16, 3:4, 1:1, 4:3, 16:9), the size the picture is generated at (1x, 2x, 4x,
   shown in pixels), and the size it is saved at (1x to 16x, from 304x540 up to 4864x8640).
 * **Save and share** through MediaStore and a FileProvider. A save says what it did in a snackbar with a
   *View* button that opens the file it just wrote.
@@ -68,9 +69,11 @@ which is also why an edit that introduces no new pattern hands the previous bitm
 saved session can be restored without saving a single pixel of the output.
 
 **Sizes.** The grid is what decides the picture's structure, so the size settings only change pixels per
-cell. The preview size decides how many pixels a cell is drawn with (0.5x, 1x, 2x — the preview column is
-always filled, so a smaller size shows as bigger blocks); the save size decides how many pixels each cell of
-the file gets, and is independent of the preview.
+cell. The preview size is the picture's resolution: 1x is the default and solves the fewest cells (the
+blockiest picture), 2x solves four times as many, and 4x solves the base 41,040-cell grid (the finest). The
+preview always fills its column with the picture, scaled with nearest-neighbour resampling, so the resolution
+is visible as the size of its blocks. The save size decides how many pixels each cell of the file gets, and is
+independent of the preview.
 
 ## Building
 

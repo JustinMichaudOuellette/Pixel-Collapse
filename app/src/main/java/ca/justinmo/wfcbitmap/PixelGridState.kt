@@ -68,7 +68,12 @@ data class CellRect(val left: Int, val top: Int, val right: Int, val bottom: Int
  * buttons that show them do not light up in the middle of a drag.
  */
 class PixelGridState(
-  palette: List<Color> = PaletteStore.defaultPalette.colors,
+  /**
+   * The colours the drawing may start from. The app hands over the palette it loaded from
+   * `endesga-32.txt`; the single black fallback only keeps the state constructible in previews and
+   * tests that do not care which palette they are on.
+   */
+  palette: List<Color> = listOf(Color.Black),
   initialColumns: Int = 16,
   initialRows: Int = 11,
 ) {
@@ -77,7 +82,12 @@ class PixelGridState(
   var rows by mutableIntStateOf(initialRows)
     private set
 
-  val defaultColor: Color = palette.minBy { it.luminance() }
+  /**
+   * The colour new cells start as, and the one [clear] paints the whole drawing with. It follows the
+   * active palette whenever the drawing is migrated to that palette.
+   */
+  var defaultColor: Color = palette.minByOrNull { it.luminance() } ?: Color.Black
+    private set
 
   /** One colour per cell, row-major. */
   val pixels = mutableStateListOf<Color>().apply {
@@ -628,6 +638,42 @@ class PixelGridState(
     previousColors = arrayOfNulls(columns * rows)
     revision++
     return targets.size
+  }
+
+  /**
+   * Re-colours every cell to the closest colour in [palette] and reports how many cells changed.
+   *
+   * This is how a drawing moves to a new palette without losing its shapes: each existing colour is
+   * replaced by its nearest entry in the palette, so the picture keeps its structure but is drawn only
+   * with colours the new palette has. The whole swap is one undo step.
+   *
+   * [defaultColor] follows the new palette too, so a later [clear] or a cell revealed by erasing does
+   * not bring a colour from the old palette back. The per-cell revert colours are dropped: after the
+   * migration they refer to colours the drawing no longer uses.
+   */
+  fun migrateColors(palette: List<Color>): Int {
+    if (palette.isEmpty()) return 0
+    defaultColor = palette.minByOrNull { it.luminance() } ?: defaultColor
+
+    // Resolve each distinct colour once rather than once per cell: a drawing is mostly a handful of
+    // palette colours repeated over a large grid.
+    val replacements = HashMap<Color, Color>()
+    for (current in pixels) {
+      if (current !in replacements) {
+        replacements[current] = PaletteStore.closestColor(current, palette)
+      }
+    }
+    val changed = pixels.count { replacements.getValue(it) != it }
+    if (changed == 0) return 0
+
+    noteEdit()
+    for (index in pixels.indices) {
+      val replacement = replacements.getValue(pixels[index])
+      if (pixels[index] != replacement) pixels[index] = replacement
+    }
+    previousColors = arrayOfNulls(columns * rows)
+    revision++
+    return changed
   }
 
   fun flipHorizontal() {

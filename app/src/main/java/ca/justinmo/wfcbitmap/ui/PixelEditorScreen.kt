@@ -85,7 +85,6 @@ import ca.justinmo.wfcbitmap.OutputAspect
 import ca.justinmo.wfcbitmap.OutputScale
 import ca.justinmo.wfcbitmap.OutputSettings
 import ca.justinmo.wfcbitmap.Palette
-import ca.justinmo.wfcbitmap.PaletteStore
 import ca.justinmo.wfcbitmap.PixelGridState
 import ca.justinmo.wfcbitmap.previewPixelSize
 import ca.justinmo.wfcbitmap.PreviewScale
@@ -93,6 +92,18 @@ import ca.justinmo.wfcbitmap.savedPixelSize
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+/**
+ * The palette a preview or UI test sees when the caller supplies none.
+ *
+ * The app always passes the palettes it parsed from assets; this one exists so the screen can be
+ * composed on its own, and it is deliberately not the app's default -- that is `endesga-32.txt`.
+ */
+private val PREVIEW_PALETTE = Palette(
+  id = "preview.txt",
+  name = "Preview",
+  colors = listOf(Color.Black, Color.White),
+)
 
 /**
  * @param preview fills the column left of the drawing grid. It is kept as a slot so the editor does
@@ -104,7 +115,7 @@ import kotlin.math.roundToInt
 @Composable
 fun PixelEditorScreen(
   modifier: Modifier = Modifier,
-  gridState: PixelGridState = remember { PixelGridState() },
+  gridState: PixelGridState = remember { PixelGridState(palette = PREVIEW_PALETTE.colors) },
   /**
    * Called when a tap that may edit the grid is detected, before the cell changes.
    *
@@ -190,8 +201,17 @@ fun PixelEditorScreen(
    * borderless picture makes the band a lie and the button a truth.
    */
   edgeRuleKept: Boolean = true,
-  palettes: List<Palette> = listOf(PaletteStore.defaultPalette),
-  activePalette: Palette = PaletteStore.defaultPalette,
+  palettes: List<Palette> = listOf(PREVIEW_PALETTE),
+  activePalette: Palette = PREVIEW_PALETTE,
+  /**
+   * Whether picking a palette also re-colours the drawing to the closest colours in it.
+   *
+   * The drawing itself is the caller's to rewrite, so the editor only carries the switch and reports
+   * changes; the caller performs the migration when it changes the active palette.
+   */
+  autoMigrateColors: Boolean = true,
+  /** Called when the palette picker's auto-migrate switch is tapped, with its new state. */
+  onAutoMigrateColorsChange: (Boolean) -> Unit = {},
   onPaletteChange: (Palette) -> Unit = {},
   preview: @Composable () -> Unit = {},
 ) {
@@ -529,8 +549,15 @@ fun PixelEditorScreen(
         expanded = paletteMenuOpen,
         palettes = palettes,
         currentPalette = activePalette,
+        autoMigrateColors = autoMigrateColors,
+        onAutoMigrateColorsChange = onAutoMigrateColorsChange,
         onDismiss = { paletteMenuOpen = false },
         onPaletteSelected = { palette ->
+          // Keep the paint tools on a colour the new palette actually has. The caller migrates the
+          // drawing itself; this is the same rule for the one colour that lives in the editor.
+          if (autoMigrateColors) {
+            selectedColor = palette.closestColor(selectedColor)
+          }
           onPaletteChange(palette)
           paletteMenuOpen = false
         },

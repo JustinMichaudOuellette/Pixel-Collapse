@@ -29,9 +29,10 @@ import kotlin.math.sqrt
  * tiling -- the editor shows the message in the preview instead of a picture. A picture that is not a
  * tiling of the drawing and is not the drawing either has nothing to say for itself, so it is not drawn.
  *
- * The bitmap is [BITMAP_WIDTH] x [BITMAP_HEIGHT] (9:16, 270 tall). The grid the solver fills is
- * [DEFAULT_COLUMNS] x [DEFAULT_ROWS] cells, each drawn as a [PIXELS_PER_CELL] square of that bitmap:
- * one cell per pixel would be a 152x270 grid, which the strict search does not finish.
+ * The bitmap is the solver grid times the pixels per cell the caller asks for. The editor's preview
+ * resolutions trade detail for speed: the default 1x fills roughly 38x68 cells with four pixels each,
+ * the base 41,040-cell 9:16 grid (152x270) is the finest preview, and one cell per pixel would be a
+ * 304x540 grid, which the strict search does not finish.
  *
  * All the heavy work runs on [Dispatchers.Default]; callers pass a snapshot of the drawing (plain
  * `IntArray` of ARGB) rather than the Compose state, so no snapshot state is touched off the main
@@ -82,8 +83,9 @@ object WfcGenerator {
    * The solver grid to fill for an output of [aspect] (width / height) with about [cells] cells.
    *
    * Time and memory follow the *number* of cells, not the shape, so reshaping an output keeps the cost of
-   * the default 9:16 one: a square is 202x202, a 16:9 one is 270x152, all within a cell or two of 41,040.
-   * The result is in cells, so the bitmap is this multiplied by [PIXELS_PER_CELL].
+   * the 9:16 one: a square is 202x202, a 16:9 one is 270x152, all within a cell or two of 41,040 at the
+   * default count. The preview passes its own count to trade detail for solve time. The result is in cells,
+   * so the bitmap is this multiplied by the caller's pixels per cell.
    */
   fun gridForAspect(aspect: Float, cells: Int = DEFAULT_CELL_COUNT): Pair<Int, Int> {
     // coerceIn passes a NaN straight through, and rounding one throws, so a nonsense aspect falls back
@@ -244,8 +246,7 @@ object WfcGenerator {
    */
   data class Output(
     /**
-     * The generated image: [columns] x [rows] cells expanded to [BITMAP_WIDTH] x [BITMAP_HEIGHT] pixels,
-     * i.e. a [PIXELS_PER_CELL] square per cell.
+     * The generated image: [columns] x [rows] cells expanded to one square of pixels per cell.
      *
      * This is the image the app hands to the preview and the one a caller would save; there is no
      * separately-scaled copy.

@@ -25,33 +25,33 @@ class SavedSizeTest {
   }
 
   @Test
-  fun thePreviewStepsAreWholePixelsPerCell() {
-    // A cell has to be a whole number of pixels: half a pixel is not a size a picture can be generated at.
+  fun thePreviewStepsSolveMoreCellsAsTheyGrow() {
+    assertEquals("1× is a sixteenth of the base cells", WfcGenerator.DEFAULT_CELL_COUNT / 16, PreviewScale.Half.cellCount)
+    assertEquals("2× is a quarter of the base cells", WfcGenerator.DEFAULT_CELL_COUNT / 4, PreviewScale.One.cellCount)
+    assertEquals("4× is the base cell count", WfcGenerator.DEFAULT_CELL_COUNT, PreviewScale.Two.cellCount)
+    assertTrue(PreviewScale.Half.cellCount < PreviewScale.One.cellCount)
+    assertTrue(PreviewScale.One.cellCount < PreviewScale.Two.cellCount)
+
     for (preview in PreviewScale.entries) {
-      val (width, height) = previewPixelSize(
-        OutputAspect.Portrait9x16,
-        preview,
+      val (columns, rows) = WfcGenerator.gridForAspect(
+        OutputAspect.Portrait9x16.ratio,
+        preview.cellCount,
       )
-      assertEquals("${preview.label} width divides the grid", 0, width % WfcGenerator.DEFAULT_COLUMNS)
-      assertEquals("${preview.label} height divides the grid", 0, height % WfcGenerator.DEFAULT_ROWS)
-      assertEquals(
-        "${preview.label} is ${preview.factor} of the default picture",
-        (WfcGenerator.BITMAP_WIDTH * preview.factor).toInt(),
-        width,
-      )
+      val (width, height) = previewPixelSize(OutputAspect.Portrait9x16, preview)
+      assertEquals("${preview.label} width is its grid times its cell size", columns * preview.pixelsPerCell, width)
+      assertEquals("${preview.label} height is its grid times its cell size", rows * preview.pixelsPerCell, height)
     }
   }
 
   @Test
-  fun thePreviewDefaultsToTheSizeThatFillsAPhoneColumn() {
-    // Two pixels per cell quadrupled: 608x1080, which is a phone's preview column drawn 1:1. The default is
-    // the size worth looking at rather than the smallest one that works.
+  fun thePreviewDefaultsToTheSmallestSize() {
+    // The coarsest preview is the starting point. The bigger previews are there to be chosen.
     assertEquals(
-      PreviewScale.Two,
+      PreviewScale.Half,
       OutputSettings().preview,
     )
     assertEquals(
-      608 to 1080,
+      152 to 272,
       previewPixelSize(OutputAspect.Portrait9x16, OutputSettings().preview),
     )
   }

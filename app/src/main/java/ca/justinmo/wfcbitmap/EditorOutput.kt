@@ -55,46 +55,43 @@ enum class OutputScale(val label: String, val numerator: Int, val denominator: I
   fun pixels(value: Int): Int = (value.toLong() * numerator / denominator).toInt()
 }
 
-/**
- * How many pixels the picture on screen is generated at, per cell of the solver grid.
- *
- * The drawing is cells and the picture is pixels, and this is the one place the two are tied together. It
- * is a rendering choice and nothing more: the solver fills the same grid whatever it is set to, so the
- * picture has the same patterns in the same places and only its pixels get bigger or smaller.
- *
- * The preview column is always filled, whichever of these is chosen -- a smaller picture is scaled up to fit
- * it, one pixel to one block, which is why a smaller size looks blockier rather than smaller. [Two] is the
- * top of the list because it is as many pixels as a phone's column can show: a bigger preview would be
- * generated, scaled back down to fit, and look exactly like this one.
- */
-enum class PreviewScale(val label: String, val pixelsPerCell: Int) {
-  /**
-   * One pixel per cell, the smallest a picture can be made of: the blockiest the preview gets and the
-   * cheapest to generate.
-   */
-  Half("0.5×", 1),
-  One("1×", 2),
-  /**
-   * The default: four pixels per cell, which on a phone is a picture that fills the column at 1:1, so the
-   * preview shows exactly the pixels that were generated and none of them twice.
-   */
-  Two("2×", 4),
-  ;
+/** The number of pixels each solved cell is drawn with, whatever the preview resolution. */
+private const val PREVIEW_PIXELS_PER_CELL = 4
 
-  /** How many times the default [WfcGenerator.PIXELS_PER_CELL] square this draws a cell with. */
-  val factor: Double get() = pixelsPerCell.toDouble() / WfcGenerator.PIXELS_PER_CELL
+/**
+ * How much detail the preview is generated with.
+ *
+ * The preview always fills its column, so the setting changes what is in the picture: 1x solves a
+ * sixteenth of the base cells (the blockiest picture), 2x a quarter, and 4x the base cells -- today's
+ * detail. Every cell is drawn as four pixels in the generated bitmap, so the bitmap grows with the
+ * number of cells while the preview stays the same size on screen.
+ *
+ * The constant names predate the labels; they are kept because sessions and preferences store the enum
+ * by name.
+ */
+enum class PreviewScale(
+  val label: String,
+  val cellCount: Int,
+  val pixelsPerCell: Int = PREVIEW_PIXELS_PER_CELL,
+) {
+  /** The default: a sixteenth of the base cells, and the coarsest picture. */
+  Half("1×", WfcGenerator.DEFAULT_CELL_COUNT / 16),
+  /** A quarter of the base cells. */
+  One("2×", WfcGenerator.DEFAULT_CELL_COUNT / 4),
+  /** The base cell count: the finest picture, and today's detail. */
+  Two("4×", WfcGenerator.DEFAULT_CELL_COUNT),
 }
 
 /**
- * The pixel size the picture on screen is generated at: the solver grid for [aspect], one cell being
- * [PreviewScale.pixelsPerCell] pixels of it.
+ * The pixel size the picture on screen is generated at: the solver grid for [aspect] at the preview's
+ * cell count, one cell being [PreviewScale.pixelsPerCell] pixels of it.
  *
- * The shape decides it as much as the scale does -- the grid keeps a fixed number of cells whatever the
- * aspect, so a square picture is wider than a 9:16 one at the same scale -- which is why the menu shows the
- * size beside each option rather than a bare multiplier.
+ * The shape decides it as much as the resolution does -- the grid keeps the requested cell count
+ * whatever the aspect, so a square picture is wider than a 9:16 one at the same resolution -- which is
+ * why the menu shows the size beside each option rather than a bare multiplier.
  */
 internal fun previewPixelSize(aspect: OutputAspect, preview: PreviewScale): Pair<Int, Int> {
-  val (columns, rows) = WfcGenerator.gridForAspect(aspect.ratio)
+  val (columns, rows) = WfcGenerator.gridForAspect(aspect.ratio, preview.cellCount)
   return columns * preview.pixelsPerCell to rows * preview.pixelsPerCell
 }
 
@@ -132,6 +129,6 @@ data class EditorMessage(
  */
 data class OutputSettings(
   val aspect: OutputAspect = OutputAspect.Portrait9x16,
-  val preview: PreviewScale = PreviewScale.Two,
+  val preview: PreviewScale = PreviewScale.Half,
   val scale: OutputScale = OutputScale.One,
 )

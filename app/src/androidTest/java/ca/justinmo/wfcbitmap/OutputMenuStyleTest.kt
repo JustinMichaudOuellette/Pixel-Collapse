@@ -95,11 +95,10 @@ class OutputMenuStyleTest {
     // Nothing below 1x: a file smaller than the picture is not one of the sizes on offer.
     rule.onNodeWithText("0.25×").assertDoesNotExist()
     rule.onNodeWithText("→ 76 x 135").assertDoesNotExist()
-    // The preview list is its own, and half the generated picture is a size no save option offers.
-    rule.onNodeWithText("0.5×").assertExists("the preview size list has to show 0.5×")
-    rule.onNodeWithText("→ 152 x 270").assertExists("the preview size list has to show its pixels")
-    // And it stops at 2x: a preview row of 4x would print the same 1216x2160 as the save row of 4x, so this
-    // row appearing exactly once is what says the preview list has no 4x in it.
+    // The preview list is its own: the smallest preview is 1x, and its pixels say so.
+    rule.onAllNodesWithText("1×").assertCountEquals(2)
+    rule.onNodeWithText("→ 152 x 272").assertExists("the preview size list has to show its pixels")
+    // The preview list ends at 4x, 608x1080. The save 4x is a different size, 1216x2160, and appears once.
     rule.onAllNodesWithText("→ 1216 x 2160").assertCountEquals(1)
   }
 

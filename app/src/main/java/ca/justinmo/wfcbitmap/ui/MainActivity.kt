@@ -17,6 +17,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.SystemBarStyle
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -50,7 +52,7 @@ import ca.justinmo.wfcbitmap.LatencyMeter
 import ca.justinmo.wfcbitmap.OutputAspect
 import ca.justinmo.wfcbitmap.OutputScale
 import ca.justinmo.wfcbitmap.OutputSettings
-import ca.justinmo.wfcbitmap.PaletteStore
+import ca.justinmo.wfcbitmap.PixelCollapseApplication
 import ca.justinmo.wfcbitmap.PixelGridState
 import ca.justinmo.wfcbitmap.PreviewScale
 import ca.justinmo.wfcbitmap.savedPixelSize
@@ -182,6 +184,23 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   val context = LocalContext.current
 
   /*
+   * The palettes were already being parsed before this composition existed.
+   *
+   * The Application starts on the one palette the editor opens with -- the last session's, or
+   * `endesga-32.txt` -- and parses the rest immediately afterwards. Waiting only for that first palette
+   * is what lets the editor come up as soon as it has colours, while the picker fills in behind it.
+   */
+  val application = context.applicationContext as PixelCollapseApplication
+  val paletteRepository = application.palettes
+  val preferences = application.preferences
+  val initialPalette = paletteRepository.initialPalette
+  if (initialPalette == null) {
+    Box(Modifier.fillMaxSize().background(Color.Black))
+    return
+  }
+  val palettes = paletteRepository.palettes
+
+  /*
    * The session from the last time the app was open, if there was one.
    *
    * Read once, before any state is created, so every piece of the editor can start from it: the drawing,
@@ -197,8 +216,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     }
   }
 
-  val gridState = remember {
-    PixelGridState().apply {
+  val gridState = remember(initialPalette) {
+    PixelGridState(palette = initialPalette.colors).apply {
       restored?.let { restoreDrawing(it.columns, it.rows, it.pixels) }
     }
   }
@@ -241,31 +260,30 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * what keeps the picture on screen and the picture in the file independent of each other.
    */
   var outputSettings by remember {
-    mutableStateOf(
-      OutputSettings(
-        aspect = restored?.aspectName?.let { name ->
-          OutputAspect.entries.firstOrNull { it.name == name }
-        } ?: OutputAspect.Portrait9x16,
-        preview = restored?.previewName?.let { name ->
-          PreviewScale.entries.firstOrNull { it.name == name }
-        } ?: PreviewScale.Two,
-        scale = restored?.scaleName?.let { name ->
-          OutputScale.entries.firstOrNull { it.name == name }
-        } ?: OutputScale.One,
-      ),
+    val restoredOutput = OutputSettings(
+      aspect = restored?.aspectName?.let { name ->
+        OutputAspect.entries.firstOrNull { it.name == name }
+      } ?: OutputAspect.Portrait9x16,
+      preview = restored?.previewName?.let { name ->
+        PreviewScale.entries.firstOrNull { it.name == name }
+      } ?: PreviewScale.Half,
+      scale = restored?.scaleName?.let { name ->
+        OutputScale.entries.firstOrNull { it.name == name }
+      } ?: OutputScale.One,
     )
+    mutableStateOf(preferences.outputSettings(restoredOutput))
   }
 
   /*
    * Whether the drawing's edges are read as wrapping into each other.
    *
-   * Off by default, because real edges are the point of the app: what you draw on the border of the
-   * drawing appears on the border of the picture. On is the answer for a drawing whose border cannot
-   * repeat around the grid -- its patterns are then sampled across its edges, so there is no border to
-   * keep and the pattern simply runs around the picture. It is a choice about what the picture may be,
-   * so changing it regenerates the way a change of shape does.
+   * On by default: the picture is a tiling, and a tiling has no border of its own. Off is the choice for
+   * a drawing whose drawn border has to stay the picture's border. It is a choice about what the picture
+   * may be, so changing it regenerates the way a change of shape does.
    */
-  var wrapEdges by remember { mutableStateOf(restored?.wrapEdges ?: false) }
+  var wrapEdges by remember {
+    mutableStateOf(preferences.wrapEdges(fallback = restored?.wrapEdges ?: true))
+  }
 
   /*
    * Whether every 3x3 pattern is also offered mirrored left to right.
@@ -275,7 +293,11 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * to fit together, and therefore more arrangements of the same drawing -- at the cost of shapes facing a
    * way the drawing does not face. Off by default for that reason.
    */
-  var mirrorHorizontal by remember { mutableStateOf(restored?.mirrorHorizontal ?: false) }
+  var mirrorHorizontal by remember {
+    mutableStateOf(
+      preferences.mirrorHorizontal(fallback = restored?.mirrorHorizontal ?: false)
+    )
+  }
 
   /*
    * Whether every 3x3 pattern is also offered flipped top to bottom.
@@ -284,7 +306,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * tile set also carries the half turn the two make, which is four arrangements of every window instead of
    * one. Either is a choice about what the picture may be made of, so both regenerate like the shape does.
    */
-  var mirrorVertical by remember { mutableStateOf(restored?.mirrorVertical ?: false) }
+  var mirrorVertical by remember {
+    mutableStateOf(preferences.mirrorVertical(fallback = restored?.mirrorVertical ?: false))
+  }
 
   /*
    * Generation is started straight from the gesture, not from observing the drawing.
@@ -299,13 +323,28 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   val scope = rememberCoroutineScope()
   val generation = remember { GenerationSlot() }
 
-  val availablePalettes = remember(context) { PaletteStore.loadAllPalettes(context) }
-  var activePalette by remember {
-    mutableStateOf(
-      restored?.paletteId?.let { id -> availablePalettes.firstOrNull { it.id == id } }
-        ?: availablePalettes.first()
-    )
+  // The Application already picked the saved session's palette (or endesga-32.txt) as the one to parse
+  // first, so the editor can open straight into it; the rest of the list arrives for the picker.
+  var activePalette by remember { mutableStateOf(initialPalette) }
+
+  /*
+   * Whether choosing a palette also rewrites the drawing's colours to the nearest entries in it.
+   *
+   * On by default, because picking a palette is meant to change what the picture is made of; a drawing
+   * left with colours the palette does not contain looks unchanged, which is not a palette swap. The
+   * rewrite is a single undo step, so it is easy to take back.
+   */
+  var autoMigrateColors by remember {
+    mutableStateOf(preferences.autoMigrateColors(fallback = true))
   }
+
+  // The settings are small and independent, so each one is written when it changes. The first run also
+  // seeds preferences that have never been written with the value restored from the session.
+  LaunchedEffect(wrapEdges) { preferences.setWrapEdges(wrapEdges) }
+  LaunchedEffect(mirrorHorizontal) { preferences.setMirrorHorizontal(mirrorHorizontal) }
+  LaunchedEffect(mirrorVertical) { preferences.setMirrorVertical(mirrorVertical) }
+  LaunchedEffect(outputSettings) { preferences.setOutputSettings(outputSettings) }
+  LaunchedEffect(autoMigrateColors) { preferences.setAutoMigrateColors(autoMigrateColors) }
 
   /*
    * The colour the paint tools are using. It lives in the screen, because the toolbar that picks it does;
@@ -350,9 +389,12 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     val pixels = IntArray(columns * rows) { gridState.pixels[it].toArgb() }
     val requestedSeed = seed
     // The shape of the output is a solving decision: the grid the solver fills is what gives the picture
-    // its proportions, and [WfcGenerator.gridForAspect] keeps the cell count (and so the cost) fixed
-    // whatever shape is chosen.
-    val (outputColumns, outputRows) = WfcGenerator.gridForAspect(outputSettings.aspect.ratio)
+    // its proportions, and the preview size is the resolution it fills that grid at. Both keep the cost
+    // bounded: the coarsest preview solves the fewest cells, and 4x is capped at [WfcGenerator.DEFAULT_CELL_COUNT].
+    val (outputColumns, outputRows) = WfcGenerator.gridForAspect(
+      outputSettings.aspect.ratio,
+      cells = outputSettings.preview.cellCount,
+    )
     generation.job?.cancel()
     /*
      * The newest request owns the busy flag.
@@ -626,9 +668,18 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onMirrorVerticalChange = { mirrorVertical = it },
     // The drawing marks its edge cells while the picture on screen really does keep the drawing's border.
     edgeRuleKept = output?.relaxedEdges != true,
-    palettes = availablePalettes,
+    palettes = palettes,
     activePalette = activePalette,
-    onPaletteChange = { activePalette = it },
+    // The drawing is rewritten here, where both the grid and the generator are: a palette swap that
+    // changes any cell is a new picture, not just a new strip of swatches.
+    autoMigrateColors = autoMigrateColors,
+    onAutoMigrateColorsChange = { autoMigrateColors = it },
+    onPaletteChange = { palette ->
+      if (autoMigrateColors && gridState.migrateColors(palette.colors) > 0) {
+        requestGeneration()
+      }
+      activePalette = palette
+    },
     // The clock starts at the gesture; generation is requested by the same tap that edits the grid.
     onTap = {
       latency.tap()

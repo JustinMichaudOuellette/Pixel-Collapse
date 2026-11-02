@@ -1,0 +1,9 @@
+;paint.net Palette File
+;Downloaded from Lospec.com/palette-list
+;Palette Name: Nintendo Gameboy (bgb)
+;Description: The default palette used by the <a href="http://bgb.bircd.org/">bgb emulator</a> for Gameboy games.
+;Colors: 4
+FF081820
+FF346856
+FF88c070
+FFe0f8d0

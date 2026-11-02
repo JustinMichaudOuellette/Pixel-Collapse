@@ -1,0 +1,27 @@
+;paint.net Palette File
+;Downloaded from Lospec.com/palette-list
+;Palette Name: chasm
+;Description: 
+;Colors: 22
+FF85daeb
+FF5fc9e7
+FF5fa1e7
+FF5f6ee7
+FF4c60aa
+FF444774
+FF32313b
+FF463c5e
+FF5d4776
+FF855395
+FFab58a8
+FFca60ae
+FFf3a787
+FFf5daa7
+FF8dd894
+FF5dc190
+FF4ab9a3
+FF4593a5
+FF5efdf7
+FFff5dcc
+FFfdfe89
+FFffffff

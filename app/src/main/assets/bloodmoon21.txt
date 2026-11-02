@@ -1,0 +1,14 @@
+;paint.net Palette File
+;Downloaded from Lospec.com/palette-list
+;Palette Name: BloodMoon21
+;Description: A Dark Art inspired Palette I made for myself. If used correctly, you could make a piece that looks quite sinister and or apocalyptic.
+;Colors: 9
+FF130310
+FF1d0518
+FF270721
+FF3c0921
+FF520b20
+FF7d0f1f
+FFa8141d
+FFd3181c
+FFff252b

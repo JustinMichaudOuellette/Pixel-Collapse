@@ -1,0 +1,13 @@
+;paint.net Palette File
+;Downloaded from Lospec.com/palette-list
+;Palette Name: Gothic Bit
+;Description: A more dark and moody palette with gothic aesthetic to it.
+;Colors: 8
+FF0e0e12
+FF1a1a24
+FF333346
+FF535373
+FF8080a4
+FFa6a6bf
+FFc1c1d2
+FFe6e6ec

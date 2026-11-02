@@ -67,11 +67,66 @@ class PaletteStoreTest {
   }
 
   @Test
-  fun fallsBackToDefaultPaletteWhenFileIsEmpty() {
+  fun keepsAnEmptyFileEmptyInsteadOfInventingColours() {
     val stream = ByteArrayInputStream("".toByteArray(Charsets.UTF_8))
     val palette = PaletteStore.parsePalette("empty.txt", stream)
 
     assertEquals("empty.txt", palette.id)
-    assertEquals(PaletteStore.DEFAULT_PALETTE_COLORS, palette.colors)
+    assertEquals("A file with no colours has none", emptyList<Color>(), palette.colors)
+  }
+
+  @Test
+  fun theDefaultPaletteIsEndesga32WhereverItAppearsInTheList() {
+    val other = Palette("mulfok32.txt", "mulfok32", listOf(Color.White))
+    val endesga = Palette("endesga-32.txt", "Endesga 32", listOf(Color.Black))
+
+    assertEquals(endesga, PaletteStore.defaultPalette(listOf(other, endesga)))
+  }
+
+  @Test
+  fun theDefaultPaletteIsMatchedWithoutWorryingAboutCase() {
+    val endesga = Palette("Endesga-32.TXT", "Endesga 32", listOf(Color.Black))
+    val other = Palette("other.txt", "Other", listOf(Color.White))
+
+    assertEquals(endesga, PaletteStore.defaultPalette(listOf(other, endesga)))
+  }
+
+  @Test
+  fun fallsBackToTheFirstPaletteWhenEndesgaIsMissing() {
+    val only = Palette("other.txt", "Other", listOf(Color.White))
+
+    assertEquals(only, PaletteStore.defaultPalette(listOf(only)))
+  }
+
+  @Test
+  fun closestColorIsTheNearestEntryInRgb() {
+    val palette = listOf(
+      Color(0xFFBE4A2F),
+      Color(0xFF3E8948),
+      Color(0xFF124E89),
+    )
+
+    assertEquals(Color(0xFFBE4A2F), PaletteStore.closestColor(Color(0xFFC05035), palette))
+    assertEquals(Color(0xFF3E8948), PaletteStore.closestColor(Color(0xFF4F9A58), palette))
+    assertEquals(Color(0xFF124E89), PaletteStore.closestColor(Color(0xFF1A5A96), palette))
+  }
+
+  @Test
+  fun closestColorReturnsTheColorWhenThePaletteIsEmpty() {
+    val color = Color(0xFFBE4A2F)
+
+    assertEquals(color, PaletteStore.closestColor(color, emptyList()))
+    assertEquals(color, Palette("empty.txt", "Empty", emptyList()).closestColor(color))
+  }
+
+  @Test
+  fun orderingMovesEndesgaToTheFront() {
+    val other = Palette("mulfok32.txt", "mulfok32", listOf(Color.White))
+    val endesga = Palette("endesga-32.txt", "Endesga 32", listOf(Color.Black))
+
+    assertEquals(
+      listOf(endesga, other),
+      PaletteStore.orderWithDefaultFirst(listOf(other, endesga)),
+    )
   }
 }
