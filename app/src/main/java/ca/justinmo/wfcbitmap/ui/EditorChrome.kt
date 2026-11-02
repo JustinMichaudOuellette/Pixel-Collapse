@@ -2,7 +2,8 @@
  * The measurements and colours the editor's panels share: how big a tool button is, what sits behind the preview,
  * the panel's own background, and the look of the two dropdown menus.
  *
- * Kept together so that the strip, the canvas, the preview and the menus are cut from the same cloth.
+ * Kept together so that the strip, the canvas, the preview and the menus are cut from the same cloth. The cloth
+ * is black and white, like the theme: the drawing's colours are the only colour on screen.
  */
 
 package ca.justinmo.wfcbitmap.ui
@@ -15,18 +16,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** Slightly darker than the app background, so the preview reads as its own surface. */
-internal val PREVIEW_BACKGROUND = Color(0xFF0B0910)
+/** Behind the preview, where the picture does not reach: the app's black, so the picture is all that shows. */
+internal val PREVIEW_BACKGROUND = Color.Black
 
-/** Behind a menu or a tool's explanation: the toolbar's own near-black, so they read as part of the editor. */
-internal val PANEL_BACKGROUND = Color(0xFF1A1720)
+/** Behind a menu or a tool's explanation: the same black, so they read as part of the editor. */
+internal val PANEL_BACKGROUND = Color.Black
 
 const val BUTTON_SIZE_DP_INT = 38
 
 internal val BUTTON_SIZE = BUTTON_SIZE_DP_INT.dp
 
-/** The menu's labels: light enough to read on the panel, dim enough not to compete with the drawing. */
-internal val MENU_TEXT_COLOR = Color.White.copy(alpha = 0.92f)
+/** The menu's labels, in the theme's ink. */
+internal val MENU_TEXT_COLOR = Color.White
 
 /** A hairline between the parts of a menu -- the shape from the sizes, the palettes from each other. */
 internal val MENU_DIVIDER_COLOR = Color.White.copy(alpha = 0.15f)

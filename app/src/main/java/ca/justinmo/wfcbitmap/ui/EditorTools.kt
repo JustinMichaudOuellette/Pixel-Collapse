@@ -259,7 +259,7 @@ private fun EditorToolButton(tool: EditorTool, onExplain: (EditorTool) -> Unit) 
       Icon(
         imageVector = tool.icon,
         contentDescription = null,
-        tint = if (tool.enabled) Color.White.copy(alpha = 0.9f) else Color.Gray.copy(alpha = 0.3f),
+        tint = if (tool.enabled) Color.White.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.15f),
         modifier = Modifier
           .size(TOOL_ICON_SIZE)
           .rotate(tool.iconRotationDegrees),

@@ -814,7 +814,7 @@ private fun SubtleCellButton(
   ) {
     Text(
       text = text,
-      color = if (enabled) Color.White.copy(alpha = 0.9f) else Color.Gray.copy(alpha = 0.3f),
+      color = if (enabled) Color.White.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.15f),
       fontSize = 14.sp
     )
   }

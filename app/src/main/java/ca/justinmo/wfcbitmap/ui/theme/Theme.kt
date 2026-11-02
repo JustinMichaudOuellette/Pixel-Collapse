@@ -1,52 +1,75 @@
 package ca.justinmo.wfcbitmap.ui.theme
 
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 
-private val DarkColorScheme = darkColorScheme(
-  primary = Purple80,
-  secondary = PurpleGrey80,
-  tertiary = Pink80,
+/**
+ * The app's only colour scheme: black surfaces, white ink.
+ *
+ * There is no light scheme and no dynamic colour, whatever the system is set to. The editor is a drawing on a
+ * black surface, and the drawing's own colours are the point of it -- a Material accent, or a palette taken
+ * from the wallpaper, would put a second colour on screen beside the one the person chose.
+ *
+ * Every role is one of the two colours, so nothing can fall back to Material's defaults and arrive purple: a
+ * surface is black, anything printed on a surface is white, and a filled control is white with black ink.
+ */
+private val EditorColorScheme = darkColorScheme(
+  // Accents. A filled control is white, so its ink is black.
+  primary = Color.White,
+  onPrimary = Color.Black,
+  primaryContainer = Color.Black,
+  onPrimaryContainer = Color.White,
+  inversePrimary = Color.Black,
+  secondary = Color.White,
+  onSecondary = Color.Black,
+  secondaryContainer = Color.Black,
+  onSecondaryContainer = Color.White,
+  tertiary = Color.White,
+  onTertiary = Color.Black,
+  tertiaryContainer = Color.Black,
+  onTertiaryContainer = Color.White,
+  // The surfaces, and what is written on them.
   background = Color.Black,
-  surface = Color.Black
+  onBackground = Color.White,
+  surface = Color.Black,
+  onSurface = Color.White,
+  surfaceVariant = Color.Black,
+  onSurfaceVariant = Color.White,
+  surfaceTint = Color.White,
+  inverseSurface = Color.White,
+  inverseOnSurface = Color.Black,
+  // A failure is reported in the same ink as everything else: this app has no red.
+  error = Color.White,
+  onError = Color.Black,
+  errorContainer = Color.Black,
+  onErrorContainer = Color.White,
+  // The lines that divide one black surface from the next are white, at the thickness Material draws them.
+  outline = Color.White,
+  outlineVariant = Color.White,
+  scrim = Color.Black,
+  // Material's container steps are a light theme's way of separating surfaces; here there is one surface.
+  surfaceBright = Color.Black,
+  surfaceDim = Color.Black,
+  surfaceContainer = Color.Black,
+  surfaceContainerHigh = Color.Black,
+  surfaceContainerHighest = Color.Black,
+  surfaceContainerLow = Color.Black,
+  surfaceContainerLowest = Color.Black,
 )
 
-private val LightColorScheme = lightColorScheme(
-  primary = Purple40,
-  secondary = PurpleGrey40,
-  tertiary = Pink40,
-  background = Color.Black,
-  surface = Color.Black
-)
-
+/**
+ * Wraps the editor in its theme.
+ *
+ * There is nothing to choose: the app is dark and black-and-white however the system is set, so the theme takes
+ * no arguments and cannot be asked for a light one.
+ */
 @Composable
-fun WFCBitmapTheme(
-  darkTheme: Boolean = isSystemInDarkTheme(),
-  // Dynamic color is available on Android 12+
-  dynamicColor: Boolean = false,
-  content: @Composable () -> Unit
-) {
-  val colorScheme = when {
-    dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-      val context = LocalContext.current
-      if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-    }
-
-    darkTheme -> DarkColorScheme
-    else -> LightColorScheme
-  }
-
+fun WFCBitmapTheme(content: @Composable () -> Unit) {
   MaterialTheme(
-    colorScheme = colorScheme,
+    colorScheme = EditorColorScheme,
     typography = Typography,
-    content = content
+    content = content,
   )
 }

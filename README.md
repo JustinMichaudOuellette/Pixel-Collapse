@@ -27,6 +27,8 @@ anything invented.
   *View* button that opens the file it just wrote.
 * **Come back to it**: the drawing, seed and settings are saved when the app goes to the background and
   restored on the next launch.
+* **Stay out of the picture's way**: the app is dark and black and white, whatever the system is set to, so the
+  drawing's colours are the only colour on screen.
 
 ## How it works
 
@@ -54,7 +56,8 @@ drawing (cells) ─► 3x3 window tally ─► packed tile set ─► native sol
   drawing tools fill; [`ColorToolbar`](app/src/main/java/ca/justinmo/wfcbitmap/ui/ColorToolbar.kt) the palette
   and its swatches; [`WfcPreview`](app/src/main/java/ca/justinmo/wfcbitmap/ui/WfcPreview.kt) the live preview and
   its loading bar; [`EditorChrome`](app/src/main/java/ca/justinmo/wfcbitmap/ui/EditorChrome.kt) the measurements
-  and colours they share. What the UI acts on stays outside it:
+  and colours they share; [`WFCBitmapTheme`](app/src/main/java/ca/justinmo/wfcbitmap/ui/theme/Theme.kt) the one
+  colour scheme, black surfaces and white ink. What the UI acts on stays outside it:
   [`PixelGridState`](app/src/main/java/ca/justinmo/wfcbitmap/PixelGridState.kt) the drawing and its undo history,
   [`EditorOutput`](app/src/main/java/ca/justinmo/wfcbitmap/EditorOutput.kt) the shape and the two size settings.
 * [`MainActivity`](app/src/main/java/ca/justinmo/wfcbitmap/ui/MainActivity.kt) wires the two together and owns

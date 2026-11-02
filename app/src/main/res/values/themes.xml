@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.WFCBitmap" parent="android:Theme.Material.Light.NoActionBar.Fullscreen"/>
+    <!--
+        The dark platform theme, and deliberately not the light one: the app draws on black, so the window has to
+        be dark before Compose's first frame and the system bars have to keep their light icons whatever the
+        system-wide appearance is set to.
+    -->
+    <style name="Theme.WFCBitmap" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <!-- Black, not the platform dark theme's grey: the first frame and the last are the same colour. -->
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
 </resources>

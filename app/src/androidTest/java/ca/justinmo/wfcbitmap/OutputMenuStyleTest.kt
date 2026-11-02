@@ -23,10 +23,8 @@ import org.junit.Test
 /**
  * The output menu is a dark panel with light labels.
  *
- * Left to the Material defaults it is a light panel with dark labels, because this app's colour scheme is
- * the stock one with only the background painted black -- so the menu floated over a black editor looking
- * like a piece of some other app. This renders the menu and measures the two things that matter: the panel
- * behind a label is dark, and the label itself is light.
+ * The menu names its own colours instead of leaning on the theme, so this renders it and measures the two
+ * things that matter: the panel behind a label is dark, and the label itself is light.
  */
 @RunWith(AndroidJUnit4::class)
 class OutputMenuStyleTest {

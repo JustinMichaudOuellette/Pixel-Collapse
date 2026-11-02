@@ -239,10 +239,10 @@ private val BAR_HEIGHT = 2.dp
 /**
  * The colour of the message shown when there is no picture.
  *
- * The editor's notice colour, because it is the same kind of thing: a statement about the drawing that
- * the person can act on. It also reads well on the preview's near-black, which white would out-shout.
+ * The theme's ink, because the app has only the two colours: a message is written like everything else, and the
+ * words themselves -- the preview's own place, where a picture was expected -- are what mark it as a failure.
  */
-private val PREVIEW_ERROR_COLOR = Color(0xFFFEAE34)
+private val PREVIEW_ERROR_COLOR = Color.White
 
 /**
  * How long a solve has to run before the bar is shown at all.

@@ -16,6 +16,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.SystemBarStyle
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -79,7 +80,15 @@ class MainActivity : ComponentActivity() {
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
-    enableEdgeToEdge()
+    /*
+     * The bars are drawn over black, always: `SystemBarStyle.dark` is the light-icon style, and naming it rather
+     * than letting `enableEdgeToEdge` pick by the system-wide appearance keeps the icons visible in light mode
+     * too.
+     */
+    enableEdgeToEdge(
+      statusBarStyle = SystemBarStyle.dark(Color.Transparent.toArgb()),
+      navigationBarStyle = SystemBarStyle.dark(Color.Transparent.toArgb()),
+    )
     super.onCreate(savedInstanceState)
 
     /*
