@@ -40,7 +40,8 @@ class EditorSnapshotTest {
     previewName = "Two",
     scaleName = "Sixteen",
     wrapEdges = true,
-    mirrorSymmetry = true,
+    mirrorHorizontal = true,
+    mirrorVertical = true,
   )
 
   @Test

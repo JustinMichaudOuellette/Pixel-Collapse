@@ -188,8 +188,11 @@ object WfcGenerator {
   /** Whether the cached picture was made with the edges wrapped; part of the cache key like the seed. */
   private var cachedWrapEdges: Boolean = false
 
-  /** Whether the cached tile set carried mirrored patterns; part of the cache key like the seed. */
-  private var cachedMirrorSymmetry: Boolean = false
+  /** Whether the cached tile set carried patterns mirrored left to right; part of the cache key like the seed. */
+  private var cachedMirrorHorizontal: Boolean = false
+
+  /** Whether the cached tile set carried patterns flipped top to bottom; part of the cache key as well. */
+  private var cachedMirrorVertical: Boolean = false
 
   /** How many pixels per cell the cached picture was drawn with; part of the cache key as well. */
   private var cachedPixelsPerCell: Int = PIXELS_PER_CELL
@@ -277,9 +280,12 @@ object WfcGenerator {
    * @param wrapEdges sample the drawing as a torus, so its borders are not borders and the pattern may
    *   run off one edge and back on the other (see [BitmapWaveFunctionCell.createCells]). False -- the
    *   default -- keeps the edge rule, where the drawing's border has to be the picture's border.
-   * @param mirrorSymmetry also offer every window's mirror image, which means more patterns to arrange and
-   *   therefore more possible pictures from the same drawing (see [BitmapWaveFunctionCell.createCells]).
-   *   Off by default: a mirrored pattern is one the drawing does not contain.
+   * @param mirrorHorizontal also offer every window mirrored left to right, which means more patterns to
+   *   arrange and therefore more possible pictures from the same drawing (see
+   *   [BitmapWaveFunctionCell.createCells]). Off by default: a mirrored pattern is one the drawing does not
+   *   contain.
+   * @param mirrorVertical also offer every window flipped top to bottom, the other mirror; with both on the
+   *   half turn comes with them.
    * @param pixelsPerCell how many pixels of the picture each solved cell becomes. It changes only the size
    *   of the picture, not what it is -- the solver fills the same grid either way -- so it is a rendering
    *   choice rather than a solving one, and the save size is applied on top of it.
@@ -292,7 +298,8 @@ object WfcGenerator {
     columns: Int = DEFAULT_COLUMNS,
     rows: Int = DEFAULT_ROWS,
     wrapEdges: Boolean = false,
-    mirrorSymmetry: Boolean = false,
+    mirrorHorizontal: Boolean = false,
+    mirrorVertical: Boolean = false,
     pixelsPerCell: Int = PIXELS_PER_CELL,
   ): Output = withContext(Dispatchers.Default) {
     if (sourceWidth <= 0 || sourceHeight <= 0 || pixels.size < sourceWidth * sourceHeight) {
@@ -312,7 +319,12 @@ object WfcGenerator {
     val packed: IntArray
     val extractStartedAt = System.nanoTime()
     synchronized(cacheLock) {
-      val sampled = tally.sample(source, wrap = wrapEdges, mirrorSymmetry = mirrorSymmetry)
+      val sampled = tally.sample(
+        source,
+        wrap = wrapEdges,
+        mirrorHorizontal = mirrorHorizontal,
+        mirrorVertical = mirrorVertical,
+      )
       if (sampled.isEmpty()) {
         throw GenerationException("The drawing is empty - draw a pattern first.")
       }
@@ -326,8 +338,8 @@ object WfcGenerator {
       val reusable = cachedOutput
       if (reusable != null && cachedSeed == seed && columns == reusable.columns &&
         rows == reusable.rows && cachedPacked.contentEquals(packed) &&
-        cachedWrapEdges == wrapEdges && cachedMirrorSymmetry == mirrorSymmetry &&
-        cachedPixelsPerCell == pixelsPerCell
+        cachedWrapEdges == wrapEdges && cachedMirrorHorizontal == mirrorHorizontal &&
+        cachedMirrorVertical == mirrorVertical && cachedPixelsPerCell == pixelsPerCell
       ) {
         return@withContext reusable
       }
@@ -423,7 +435,8 @@ object WfcGenerator {
       cachedOutput = output
       cachedSeed = seed
       cachedWrapEdges = wrapEdges
-      cachedMirrorSymmetry = mirrorSymmetry
+      cachedMirrorHorizontal = mirrorHorizontal
+      cachedMirrorVertical = mirrorVertical
       cachedPixelsPerCell = pixelsPerCell
       lastSolveMillis = solveMillis
     }

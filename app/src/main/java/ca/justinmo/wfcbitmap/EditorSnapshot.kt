@@ -15,7 +15,7 @@ import java.io.IOException
  * worth hundreds of megabytes of snapshot file for a convenience, and the second is a scratch buffer.
  *
  * The encoding is written and read by hand rather than through a schema library: there are two producers
- * (this file and its test) and one consumer, the format is nine fields, and a versioned header costs less
+ * (this file and its test) and one consumer, the format is eleven fields, and a versioned header costs less
  * than a dependency.
  */
 data class EditorSnapshot(
@@ -33,7 +33,10 @@ data class EditorSnapshot(
   /** [BitmapEditor.OutputScale] by name, for the same reason as [aspectName]. */
   val scaleName: String,
   val wrapEdges: Boolean,
-  val mirrorSymmetry: Boolean,
+  /** Whether every pattern was also offered flipped left to right. */
+  val mirrorHorizontal: Boolean,
+  /** Whether every pattern was also offered flipped top to bottom. */
+  val mirrorVertical: Boolean,
 ) {
 
   /** True when the snapshot describes a grid it could actually be loaded into. */
@@ -57,7 +60,8 @@ data class EditorSnapshot(
       out.writeUTF(previewName)
       out.writeUTF(scaleName)
       out.writeBoolean(wrapEdges)
-      out.writeBoolean(mirrorSymmetry)
+      out.writeBoolean(mirrorHorizontal)
+      out.writeBoolean(mirrorVertical)
     }
     return buffer.toByteArray()
   }
@@ -71,9 +75,10 @@ data class EditorSnapshot(
      *
      * 2 changed the save size from its multiplier to its name: the list now has a scale below 1, and a
      * whole number cannot describe it. 3 added the preview size, which is what the picture is generated at
-     * and so a setting the picture cannot be reproduced without.
+     * and so a setting the picture cannot be reproduced without. 4 split the one mirror setting into the two
+     * the editor has: either of them changes the tile set, so a session cannot come back without both.
      */
-    private const val VERSION = 3
+    private const val VERSION = 4
 
     private const val HEADER_BYTES = 96
 
@@ -112,7 +117,8 @@ data class EditorSnapshot(
           val previewName = input.readUTF()
           val scaleName = input.readUTF()
           val wrapEdges = input.readBoolean()
-          val mirrorSymmetry = input.readBoolean()
+          val mirrorHorizontal = input.readBoolean()
+          val mirrorVertical = input.readBoolean()
 
           EditorSnapshot(
             columns = columns,
@@ -124,7 +130,8 @@ data class EditorSnapshot(
             previewName = previewName,
             scaleName = scaleName,
             wrapEdges = wrapEdges,
-            mirrorSymmetry = mirrorSymmetry,
+            mirrorHorizontal = mirrorHorizontal,
+            mirrorVertical = mirrorVertical,
           )
         }
       } catch (e: IOException) {
@@ -142,7 +149,8 @@ data class EditorSnapshot(
     return columns == other.columns && rows == other.rows && pixels.contentEquals(other.pixels) &&
       seed == other.seed && colorArgb == other.colorArgb && aspectName == other.aspectName &&
       previewName == other.previewName && scaleName == other.scaleName && wrapEdges == other.wrapEdges &&
-      mirrorSymmetry == other.mirrorSymmetry
+      mirrorHorizontal == other.mirrorHorizontal &&
+      mirrorVertical == other.mirrorVertical
   }
 
   override fun hashCode(): Int {
@@ -155,7 +163,8 @@ data class EditorSnapshot(
     result = 31 * result + previewName.hashCode()
     result = 31 * result + scaleName.hashCode()
     result = 31 * result + wrapEdges.hashCode()
-    result = 31 * result + mirrorSymmetry.hashCode()
+    result = 31 * result + mirrorHorizontal.hashCode()
+    result = 31 * result + mirrorVertical.hashCode()
     return result
   }
 }

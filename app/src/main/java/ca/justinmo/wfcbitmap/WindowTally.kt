@@ -33,14 +33,16 @@ internal class WindowTally {
    * @param wrap sample the windows across the drawing's edges, as the editor's wrap mode does. A wrapped
    *   window centred on the left column reads the right edge, so an edit is felt by the windows centred
    *   within one pixel of it *around the torus* -- which is what the wrapped centres below are for.
-   * @param mirrorSymmetry also offer every window's mirror image, which is the editor's symmetry setting.
-   *   It is applied when the tile set is built rather than to the counts, so the incrementally updated
-   *   tally stays the drawing's own windows and the mirror can be switched on and off without resampling.
+   * @param mirrorHorizontal also offer every window mirrored left to right, and @param mirrorVertical every
+   *   window flipped top to bottom: the editor's two symmetry settings. They are applied when the tile set
+   *   is built rather than to the counts, so the incrementally updated tally stays the drawing's own windows
+   *   and a mirror can be switched on or off without resampling.
    */
   fun sample(
     pixels: IntArray2D,
     wrap: Boolean = false,
-    mirrorSymmetry: Boolean = false,
+    mirrorHorizontal: Boolean = false,
+    mirrorVertical: Boolean = false,
   ): List<BitmapWaveFunctionCell> {
     val last = previous
     val canDiff = last != null &&
@@ -101,7 +103,7 @@ internal class WindowTally {
     previousWidth = pixels.width
     previousHeight = pixels.height
     previousWrap = wrap
-    return BitmapWaveFunctionCell.createCells(counts, mirrorSymmetry)
+    return BitmapWaveFunctionCell.createCells(counts, mirrorHorizontal, mirrorVertical)
   }
 
   /** Indices of the pixels that differ between [before] and [after]. */

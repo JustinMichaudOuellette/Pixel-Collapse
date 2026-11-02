@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material3.DropdownMenu
@@ -1141,14 +1142,23 @@ object BitmapEditor {
     /** Called with the drawing colour whenever it changes, so the caller can save a session. */
     onColorChange: (Color) -> Unit = {},
     /**
-     * Whether every pattern is also offered mirrored; see [EditorTool].
+     * Whether every pattern is also offered mirrored left to right; see [EditorTool].
      *
      * Like [wrapEdges] the editor only reports it, because acting on it is what the caller does when it
      * builds the picture.
      */
-    mirrorSymmetry: Boolean = false,
-    /** Called when the symmetry toggle is tapped, with the state it should have afterwards. */
-    onMirrorSymmetryChange: (Boolean) -> Unit = {},
+    mirrorHorizontal: Boolean = false,
+    /** Called when the left-to-right mirror is tapped, with the state it should have afterwards. */
+    onMirrorHorizontalChange: (Boolean) -> Unit = {},
+    /**
+     * Whether every pattern is also offered flipped top to bottom; see [EditorTool].
+     *
+     * The second of the two mirrors, and independent of the first: the drawing is the same either way, so
+     * the picture can be given the shapes turned about one axis, the other, both, or neither.
+     */
+    mirrorVertical: Boolean = false,
+    /** Called when the top-to-bottom mirror is tapped, with the state it should have afterwards. */
+    onMirrorVerticalChange: (Boolean) -> Unit = {},
     /**
      * Whether the edge rule held for the picture on screen. False once the generator had to drop it, which
      * means the drawing's border is not the picture's border any more.
@@ -1381,14 +1391,28 @@ object BitmapEditor {
         selected = wrapEdges || !edgeRuleKept,
         onClick = { onWrapEdgesChange(!wrapEdges) },
       ),
+      /*
+       * The two mirrors, side by side and independent of each other. Together they are the three flips a
+       * 3x3 window has -- one axis, the other, and the half turn the two make -- so a drawing with both on
+       * is arranged from four times the shapes it was drawn with.
+       */
       EditorTool(
         icon = Icons.Default.SwapHoriz,
-        contentDescription = "Mirror every pattern, giving the picture more arrangements",
+        contentDescription = "Mirror every pattern left to right, giving the picture more arrangements",
         explanation = "On: every 3x3 pattern is also available flipped left to right, so there are more " +
           "patterns to arrange. Off: only the patterns exactly as drawn.",
         // Armed means mirrored: the picture may then use shapes facing the other way.
-        selected = mirrorSymmetry,
-        onClick = { onMirrorSymmetryChange(!mirrorSymmetry) },
+        selected = mirrorHorizontal,
+        onClick = { onMirrorHorizontalChange(!mirrorHorizontal) },
+      ),
+      EditorTool(
+        icon = Icons.Default.SwapVert,
+        contentDescription = "Mirror every pattern top to bottom, giving the picture more arrangements",
+        explanation = "On: every 3x3 pattern is also available flipped top to bottom. Off: only the " +
+          "patterns exactly as drawn. With the left-to-right mirror on as well, the half turn comes too.",
+        // The other axis; the two do not depend on each other.
+        selected = mirrorVertical,
+        onClick = { onMirrorVerticalChange(!mirrorVertical) },
       ),
 
       EditorTool(
@@ -2604,6 +2628,7 @@ object BitmapEditor {
 // Color toolbar
 // ─────────────────────────────────────────────────────────────────────────────
 
+  // https://lospec.com/palette-list/endesga-32
   private val PALETTE = listOf(
        Color(0xffbe4a2f),
        Color(0xffd77643),

@@ -114,7 +114,8 @@ class WfcIconHarvestTest {
                   columns = side,
                   rows = side,
                   wrapEdges = true,
-                  mirrorSymmetry = mirror,
+                  mirrorHorizontal = mirror,
+                  mirrorVertical = false,
                 )
               }
             } catch (e: Exception) {

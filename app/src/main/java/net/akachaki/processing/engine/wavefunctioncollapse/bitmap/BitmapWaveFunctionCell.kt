@@ -111,11 +111,12 @@ class BitmapWaveFunctionCell(
         fun createCells(
             pixels: IntArray2D,
             wrap: Boolean = false,
-            mirrorSymmetry: Boolean = false,
+            mirrorHorizontal: Boolean = false,
+            mirrorVertical: Boolean = false,
         ): List<BitmapWaveFunctionCell> {
             val counts = mutableMapOf<List<Int?>, Int>()
             countWindows(pixels, counts, wrap)
-            return createCells(counts, mirrorSymmetry)
+            return createCells(counts, mirrorHorizontal, mirrorVertical)
         }
 
         /**
@@ -126,27 +127,34 @@ class BitmapWaveFunctionCell(
          * ([ca.justinmo.wfcbitmap.WindowTally]) and still produce exactly the tile set a full resample
          * would.
          *
-         * @param mirrorSymmetry also offer every window's mirror image (see [mirroredKernel]). This is how
-         *   the picture gets *more* arrangements out of the same drawing: a mirrored window is a pattern
-         *   the drawing does not contain, so the tile set grows and the solver has more room. It is off by
-         *   default because a mirrored pattern is not what was drawn -- the picture may then show a motif
-         *   facing the way it does not face in the drawing, which is exactly the point when the drawing is
-         *   symmetric and exactly wrong when it is not.
+         * @param mirrorHorizontal also offer every window mirrored left to right (see [horizontalMirror]).
+         * @param mirrorVertical also offer every window flipped top to bottom (see [verticalMirror]).
+         *
+         * Either mirror is how the picture gets *more* arrangements out of the same drawing: a mirrored
+         * window is a pattern the drawing does not contain, so the tile set grows and the solver has more
+         * room. With both on, the half turn comes with them -- flipping left to right and then top to
+         * bottom is the same as turning the window upside down -- so the two add up to four orientations
+         * rather than three. They are off by default because a mirrored pattern is not what was drawn: the
+         * picture may then show a motif facing a way it does not face in the drawing, which is exactly the
+         * point when the drawing is symmetric and exactly wrong when it is not.
          */
         fun createCells(
             counts: Map<List<Int?>, Int>,
-            mirrorSymmetry: Boolean = false,
+            mirrorHorizontal: Boolean = false,
+            mirrorVertical: Boolean = false,
         ): List<BitmapWaveFunctionCell> {
-            val tally = if (!mirrorSymmetry) {
+            val tally = if (!mirrorHorizontal && !mirrorVertical) {
                 counts
             } else {
-                // A window's mirror is counted with it, so the two are equally likely to be picked. A
-                // window that is its own mirror adds nothing twice, hence the check.
-                val both = HashMap<List<Int?>, Int>(counts.size * 2)
+                // Every orientation the setting allows is counted with the window it came from, so they are
+                // all equally likely to be picked. A window that is its own mirror contributes once rather
+                // than twice, hence the dedup: a symmetric motif must not become twice as likely as the
+                // motifs around it.
+                val both = HashMap<List<Int?>, Int>(counts.size * 4)
                 for ((kernel, count) in counts) {
-                    both[kernel] = (both[kernel] ?: 0) + count
-                    val mirrored = mirroredKernel(kernel)
-                    if (mirrored != kernel) both[mirrored] = (both[mirrored] ?: 0) + count
+                    for (variant in orientations(kernel, mirrorHorizontal, mirrorVertical)) {
+                        both[variant] = (both[variant] ?: 0) + count
+                    }
                 }
                 both
             }
@@ -157,14 +165,45 @@ class BitmapWaveFunctionCell(
         }
 
         /**
-         * The kernel flipped on the y axis: its rows keep their place and their columns reverse.
+         * The distinct orientations of [kernel] the two settings allow: itself, and whichever of the flips
+         * are on.
+         *
+         * Deduplicated, because many patterns are their own mirror -- a vertical bar is, a checkerboard is,
+         * so is anything drawn down the middle -- and counting one of those twice would make it twice as
+         * likely to be picked as the patterns beside it.
+         */
+        fun orientations(
+            kernel: List<Int?>,
+            mirrorHorizontal: Boolean = false,
+            mirrorVertical: Boolean = false,
+        ): List<List<Int?>> {
+            val variants = ArrayList<List<Int?>>(4)
+            variants.add(kernel)
+            if (mirrorHorizontal) variants.add(horizontalMirror(kernel))
+            if (mirrorVertical) variants.add(verticalMirror(kernel))
+            if (mirrorHorizontal && mirrorVertical) variants.add(verticalMirror(horizontalMirror(kernel)))
+            return variants.distinct()
+        }
+
+        /**
+         * The kernel flipped on the y axis: its rows keep their place and their columns reverse. This is the
+         * left-to-right mirror.
          *
          * A slot is `(dy + 1) * 3 + (dx + 1)`, so mirroring is the same row read backwards. The centre is
          * its own mirror, which is why a mirrored tile shows the same pixel as the window it came from --
          * only the shapes around it are turned around.
          */
-        fun mirroredKernel(kernel: List<Int?>): List<Int?> = List(KERNEL_SIZE) { slot ->
+        fun horizontalMirror(kernel: List<Int?>): List<Int?> = List(KERNEL_SIZE) { slot ->
             kernel[(slot / 3) * 3 + (2 - slot % 3)]
+        }
+
+        /**
+         * The kernel flipped on the x axis: its columns keep their place and its rows reverse. This is the
+         * top-to-bottom mirror, and the same reasoning holds as for [horizontalMirror] -- the centre pixel is
+         * its own, so the tile still shows what its window showed.
+         */
+        fun verticalMirror(kernel: List<Int?>): List<Int?> = List(KERNEL_SIZE) { slot ->
+            kernel[(2 - slot / 3) * 3 + slot % 3]
         }
 
         /**

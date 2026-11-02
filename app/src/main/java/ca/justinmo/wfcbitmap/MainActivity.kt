@@ -247,14 +247,23 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   var wrapEdges by remember { mutableStateOf(restored?.wrapEdges ?: false) }
 
   /*
-   * Whether every 3x3 pattern is also offered mirrored.
+   * Whether every 3x3 pattern is also offered mirrored left to right.
    *
    * The tile set of a drawing is every window of it, so the picture can only ever be arranged from the
    * shapes as they were drawn. Mirroring each window adds the flipped versions as well: twice the patterns
    * to fit together, and therefore more arrangements of the same drawing -- at the cost of shapes facing a
    * way the drawing does not face. Off by default for that reason.
    */
-  var mirrorSymmetry by remember { mutableStateOf(restored?.mirrorSymmetry ?: false) }
+  var mirrorHorizontal by remember { mutableStateOf(restored?.mirrorHorizontal ?: false) }
+
+  /*
+   * Whether every 3x3 pattern is also offered flipped top to bottom.
+   *
+   * The same bargain as the other mirror, around the other axis, and independent of it: with both on the
+   * tile set also carries the half turn the two make, which is four arrangements of every window instead of
+   * one. Either is a choice about what the picture may be made of, so both regenerate like the shape does.
+   */
+  var mirrorVertical by remember { mutableStateOf(restored?.mirrorVertical ?: false) }
 
   /*
    * Generation is started straight from the gesture, not from observing the drawing.
@@ -295,7 +304,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       previewName = outputSettings.preview.name,
       scaleName = outputSettings.scale.name,
       wrapEdges = wrapEdges,
-      mirrorSymmetry = mirrorSymmetry,
+      mirrorHorizontal = mirrorHorizontal,
+      mirrorVertical = mirrorVertical,
     )
   }
 
@@ -341,7 +351,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
             columns = outputColumns,
             rows = outputRows,
             wrapEdges = wrapEdges,
-            mirrorSymmetry = mirrorSymmetry,
+            mirrorHorizontal = mirrorHorizontal,
+            mirrorVertical = mirrorVertical,
             pixelsPerCell = outputSettings.preview.pixelsPerCell,
           )
         } catch (e: CancellationException) {
@@ -403,13 +414,15 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   // A different output shape is a different grid to solve, so the picture has to be rebuilt for it.
   LaunchedEffect(outputSettings.aspect) { requestGeneration() }
 
-  // Wrapping the drawing's edges or not changes what the picture may be made of, so it is rebuilt too.
+  // A different preview size is the same picture drawn with more or fewer pixels, so it is rebuilt too.
   LaunchedEffect(outputSettings.preview) { requestGeneration() }
 
+  // Wrapping the drawing's edges or not changes what the picture may be made of, so it is rebuilt too.
   LaunchedEffect(wrapEdges) { requestGeneration() }
 
-  // Turning symmetry on or off changes the tile set, and so the picture, so it is rebuilt as well.
-  LaunchedEffect(mirrorSymmetry) { requestGeneration() }
+  // Either mirror changes the tile set, and so the picture, so the picture is rebuilt for both.
+  LaunchedEffect(mirrorHorizontal) { requestGeneration() }
+  LaunchedEffect(mirrorVertical) { requestGeneration() }
 
   /*
    * Saving and sharing write the picture that is on screen, which is the generated bitmap.
@@ -576,9 +589,11 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     // owns the answer: setting it is what rebuilds the picture (see the effect above).
     wrapEdges = wrapEdges,
     onWrapEdgesChange = { wrapEdges = it },
-    // Symmetry is the same kind of setting: the caller builds the picture, so it owns the answer.
-    mirrorSymmetry = mirrorSymmetry,
-    onMirrorSymmetryChange = { mirrorSymmetry = it },
+    // The mirrors are the same kind of setting: the caller builds the picture, so it owns the answer.
+    mirrorHorizontal = mirrorHorizontal,
+    onMirrorHorizontalChange = { mirrorHorizontal = it },
+    mirrorVertical = mirrorVertical,
+    onMirrorVerticalChange = { mirrorVertical = it },
     // The drawing marks its edge cells while the picture on screen really does keep the drawing's border.
     edgeRuleKept = output?.relaxedEdges != true,
     // The clock starts at the gesture; generation is requested by the same tap that edits the grid.

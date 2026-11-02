@@ -19,8 +19,8 @@ anything invented.
   generated without it and says so in two words: *Edges relaxed*.
 * **Wrap the edges** instead: the drawing is sampled as a torus, so its border is not a border at all and the
   pattern runs off one side and back on the other.
-* **Mirror every pattern** as well as offering them as drawn, which gives the solver more to arrange — and so
-  more possible pictures from the same drawing.
+* **Mirror every pattern** left to right, top to bottom, or both — as well as offering them as drawn — which
+  gives the solver more shapes to arrange, and so more possible pictures from the same drawing.
 * **Pick the output**: shape (9:16, 3:4, 1:1, 4:3, 16:9), the size the picture is generated at (0.5x, 1x, 2x,
   shown in pixels), and the size it is saved at (1x to 16x, from 304x540 up to 4864x8640).
 * **Save and share** through MediaStore and a FileProvider. A save says what it did in a snackbar with a
@@ -117,6 +117,7 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
   person picks.
 - [ ] **3D rendering output** — stand the picture up as a solid scene, one block per cell, and export it as a
   rotating shot through the video output above or as a model file another tool can open.
+- [ ] **Input Photo** — input a photo, downscale it, posterize it and use it as a pattern.
 
 ## License
 
