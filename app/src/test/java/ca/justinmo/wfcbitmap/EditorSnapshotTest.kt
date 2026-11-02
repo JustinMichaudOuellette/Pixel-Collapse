@@ -39,6 +39,7 @@ class EditorSnapshotTest {
     aspectName = "Square",
     previewName = "Two",
     scaleName = "Sixteen",
+    scalerName = PixelArtScaler.Epx.name,
     wrapEdges = true,
     mirrorHorizontal = true,
     mirrorVertical = true,

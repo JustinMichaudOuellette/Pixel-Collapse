@@ -32,6 +32,8 @@ data class EditorSnapshot(
   val previewName: String,
   /** [OutputScale] by name, for the same reason as [aspectName]. */
   val scaleName: String,
+  /** [PixelArtScaler] by name, for the same reason as [aspectName]. */
+  val scalerName: String = PixelArtScaler.Nearest.name,
   val wrapEdges: Boolean,
   /** Whether every pattern was also offered flipped left to right. */
   val mirrorHorizontal: Boolean,
@@ -61,6 +63,7 @@ data class EditorSnapshot(
       out.writeUTF(aspectName)
       out.writeUTF(previewName)
       out.writeUTF(scaleName)
+      out.writeUTF(scalerName)
       out.writeBoolean(wrapEdges)
       out.writeBoolean(mirrorHorizontal)
       out.writeBoolean(mirrorVertical)
@@ -80,9 +83,9 @@ data class EditorSnapshot(
      * whole number cannot describe it. 3 added the preview size, which is what the picture is generated at
      * and so a setting the picture cannot be reproduced without. 4 split the one mirror setting into the two
      * the editor has: either of them changes the tile set, so a session cannot come back without both.
-     * 5 added paletteId for palette selection.
+     * 5 added paletteId for palette selection. 6 added the pixel-art scaler used when saving.
      */
-    private const val VERSION = 5
+    private const val VERSION = 6
 
     private const val HEADER_BYTES = 128
 
@@ -120,6 +123,11 @@ data class EditorSnapshot(
           val aspectName = input.readUTF()
           val previewName = input.readUTF()
           val scaleName = input.readUTF()
+          val scalerName = if (version >= 6) {
+            input.readUTF()
+          } else {
+            PixelArtScaler.Nearest.name
+          }
           val wrapEdges = input.readBoolean()
           val mirrorHorizontal = input.readBoolean()
           val mirrorVertical = input.readBoolean()
@@ -134,6 +142,7 @@ data class EditorSnapshot(
             aspectName = aspectName,
             previewName = previewName,
             scaleName = scaleName,
+            scalerName = scalerName,
             wrapEdges = wrapEdges,
             mirrorHorizontal = mirrorHorizontal,
             mirrorVertical = mirrorVertical,
@@ -154,7 +163,8 @@ data class EditorSnapshot(
     if (other !is EditorSnapshot) return false
     return columns == other.columns && rows == other.rows && pixels.contentEquals(other.pixels) &&
       seed == other.seed && colorArgb == other.colorArgb && aspectName == other.aspectName &&
-      previewName == other.previewName && scaleName == other.scaleName && wrapEdges == other.wrapEdges &&
+      previewName == other.previewName && scaleName == other.scaleName &&
+      scalerName == other.scalerName && wrapEdges == other.wrapEdges &&
       mirrorHorizontal == other.mirrorHorizontal &&
       mirrorVertical == other.mirrorVertical &&
       paletteId == other.paletteId
@@ -169,6 +179,7 @@ data class EditorSnapshot(
     result = 31 * result + aspectName.hashCode()
     result = 31 * result + previewName.hashCode()
     result = 31 * result + scaleName.hashCode()
+    result = 31 * result + scalerName.hashCode()
     result = 31 * result + wrapEdges.hashCode()
     result = 31 * result + mirrorHorizontal.hashCode()
     result = 31 * result + mirrorVertical.hashCode()

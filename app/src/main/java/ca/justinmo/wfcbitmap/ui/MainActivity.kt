@@ -54,6 +54,7 @@ import ca.justinmo.wfcbitmap.OutputScale
 import ca.justinmo.wfcbitmap.OutputSettings
 import ca.justinmo.wfcbitmap.Palette
 import ca.justinmo.wfcbitmap.PatternStore
+import ca.justinmo.wfcbitmap.PixelArtScaler
 import ca.justinmo.wfcbitmap.PixelCollapseApplication
 import ca.justinmo.wfcbitmap.PixelGridState
 import ca.justinmo.wfcbitmap.PreviewScale
@@ -290,8 +291,11 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       scale = restored?.scaleName?.let { name ->
         OutputScale.entries.firstOrNull { it.name == name }
       } ?: OutputScale.One,
+      scaler = restored?.scalerName?.let { name ->
+        PixelArtScaler.entries.firstOrNull { it.name == name }
+      } ?: PixelArtScaler.Nearest,
     )
-    mutableStateOf(preferences.outputSettings(restoredOutput))
+    mutableStateOf(preferences.outputSettings(restoredOutput).withSupportedScale())
   }
 
   /*
@@ -391,6 +395,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       aspectName = outputSettings.aspect.name,
       previewName = outputSettings.preview.name,
       scaleName = outputSettings.scale.name,
+      scalerName = outputSettings.scaler.name,
       wrapEdges = wrapEdges,
       mirrorHorizontal = mirrorHorizontal,
       mirrorVertical = mirrorVertical,
@@ -593,7 +598,14 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           "size ${outputSettings.scale.label})",
       )
       val outcome = runCatching {
-        ImageSaver.saveToGallery(context, picture, width = width, height = height)
+        ImageSaver.saveToGallery(
+          context,
+          picture,
+          width = width,
+          height = height,
+          scaler = outputSettings.scaler,
+          scaleFactor = outputSettings.scale.factor.toInt(),
+        )
       }
       outcome.fold(
         onSuccess = { saved ->
@@ -656,7 +668,14 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     scope.launch {
       val (width, height) = savedSize()
       val outcome = runCatching {
-        val uri = ImageSaver.prepareShare(context, picture, width = width, height = height)
+        val uri = ImageSaver.prepareShare(
+          context,
+          picture,
+          width = width,
+          height = height,
+          scaler = outputSettings.scaler,
+          scaleFactor = outputSettings.scale.factor.toInt(),
+        )
         context.startActivity(Intent.createChooser(ImageSaver.shareIntent(uri), "Share the picture"))
       }
       if (outcome.isFailure) {
@@ -732,6 +751,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         // The last picture stays up while the next one is solved; the bar across its top is what says
         // the solve is running, so the preview never has to blank to say it.
         isGenerating = generating,
+        // The preview uses the same smoothing the saved file will, so it is visible while drawing.
+        scaler = outputSettings.scaler,
         // Next variation of the same drawing: advance the seed and regenerate from here.
         onTap = {
           latency.tap()
@@ -785,7 +806,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
               ?: outputSettings.preview,
             scale = OutputScale.entries.firstOrNull { it.name == snapshot.scaleName }
               ?: outputSettings.scale,
-          )
+            scaler = PixelArtScaler.entries.firstOrNull { it.name == snapshot.scalerName }
+              ?: outputSettings.scaler,
+          ).withSupportedScale()
           wrapEdges = snapshot.wrapEdges
           mirrorHorizontal = snapshot.mirrorHorizontal
           mirrorVertical = snapshot.mirrorVertical

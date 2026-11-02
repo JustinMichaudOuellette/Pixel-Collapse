@@ -151,6 +151,7 @@ class PatternStoreTest {
       aspectName = OutputAspect.Portrait9x16.name,
       previewName = PreviewScale.Half.name,
       scaleName = OutputScale.One.name,
+      scalerName = PixelArtScaler.Epx.name,
       wrapEdges = true,
       mirrorHorizontal = true,
       mirrorVertical = false,

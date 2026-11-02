@@ -26,7 +26,7 @@ import java.util.zip.Inflater
 internal object PatternPng {
 
   private const val MAGIC = 0x57464350 // "WFCP"
-  private const val VERSION = 1
+  private const val VERSION = 2
   private const val KEYWORD = "PixelCollapsePattern"
   private const val COLOR_TYPE_RGBA = 6
   private const val BYTES_PER_PIXEL = 4
@@ -64,6 +64,7 @@ internal object PatternPng {
       aspectName = payload.aspectName,
       previewName = payload.previewName,
       scaleName = payload.scaleName,
+      scalerName = payload.scalerName,
       wrapEdges = payload.wrapEdges,
       mirrorHorizontal = payload.mirrorHorizontal,
       mirrorVertical = payload.mirrorVertical,
@@ -84,6 +85,7 @@ internal object PatternPng {
     val aspectName: String,
     val previewName: String,
     val scaleName: String,
+    val scalerName: String,
     val wrapEdges: Boolean,
     val mirrorHorizontal: Boolean,
     val mirrorVertical: Boolean,
@@ -196,7 +198,8 @@ internal object PatternPng {
     return try {
       DataInputStream(bytes.inputStream()).use { input ->
         if (input.readInt() != MAGIC) return null
-        if (input.readInt() != VERSION) return null
+        val version = input.readInt()
+        if (version !in 1..VERSION) return null
         val name = input.readUTF()
         val paletteId = input.readUTF()
         val paletteName = input.readUTF()
@@ -210,6 +213,11 @@ internal object PatternPng {
         val aspectName = input.readUTF()
         val previewName = input.readUTF()
         val scaleName = input.readUTF()
+        val scalerName = if (version >= 2) {
+          input.readUTF()
+        } else {
+          PixelArtScaler.Nearest.name
+        }
         val wrapEdges = input.readBoolean()
         val mirrorHorizontal = input.readBoolean()
         val mirrorVertical = input.readBoolean()
@@ -229,6 +237,7 @@ internal object PatternPng {
           aspectName = aspectName,
           previewName = previewName,
           scaleName = scaleName,
+          scalerName = scalerName,
           wrapEdges = wrapEdges,
           mirrorHorizontal = mirrorHorizontal,
           mirrorVertical = mirrorVertical,
@@ -357,6 +366,7 @@ internal object PatternPng {
       out.writeUTF(snapshot.aspectName)
       out.writeUTF(snapshot.previewName)
       out.writeUTF(snapshot.scaleName)
+      out.writeUTF(snapshot.scalerName)
       out.writeBoolean(snapshot.wrapEdges)
       out.writeBoolean(snapshot.mirrorHorizontal)
       out.writeBoolean(snapshot.mirrorVertical)

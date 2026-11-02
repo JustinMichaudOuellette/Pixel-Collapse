@@ -11,8 +11,8 @@ package ca.justinmo.wfcbitmap.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.drag
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -20,12 +20,15 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Colorize
@@ -70,9 +73,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
@@ -80,6 +83,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
 import ca.justinmo.wfcbitmap.CellRect
 import ca.justinmo.wfcbitmap.EditorMessage
@@ -87,6 +91,7 @@ import ca.justinmo.wfcbitmap.OutputAspect
 import ca.justinmo.wfcbitmap.OutputScale
 import ca.justinmo.wfcbitmap.OutputSettings
 import ca.justinmo.wfcbitmap.Palette
+import ca.justinmo.wfcbitmap.PixelArtScaler
 import ca.justinmo.wfcbitmap.PixelGridState
 import ca.justinmo.wfcbitmap.previewPixelSize
 import ca.justinmo.wfcbitmap.PreviewScale
@@ -239,6 +244,7 @@ fun PixelEditorScreen(
   var mode by remember { mutableStateOf(EditorMode.Paint) }
   var selection by remember { mutableStateOf<CellRect?>(null) }
   var outputMenuOpen by remember { mutableStateOf(false) }
+  var scalerMenuOpen by remember { mutableStateOf(false) }
   var paletteMenuOpen by remember { mutableStateOf(false) }
 
 
@@ -433,9 +439,18 @@ fun PixelEditorScreen(
     ) { paletteMenuOpen = true },
     EditorTool(
       icon = Icons.Default.AspectRatio,
-      contentDescription = "Output shape and size",
-      explanation = "Chooses the shape of the picture and the size it is saved at.",
+      contentDescription = "Output shape and preview size",
+      explanation = "Chooses the shape of the picture and the resolution it is generated and previewed at.",
     ) { outputMenuOpen = true },
+    // A saving decision, not a drawing one: EPX only changes the file, never the grid being painted.
+    // The save-size multiplier lives here too, because the algorithm is what decides which sizes exist.
+    EditorTool(
+      icon = Icons.Default.AutoFixHigh,
+      contentDescription = "Choose the pixel-art upscaling and save size",
+      explanation = "Chooses how a saved file is enlarged -- square blocks, EPX or Scale3x -- and the " +
+        "multiplier it is saved at.",
+      selected = output.scaler != PixelArtScaler.Nearest,
+    ) { scalerMenuOpen = true },
     // A generation setting rather than an edit, which is why it sits with the output menu and not with
     // the drawing tools: it changes what the picture is allowed to be made of, not the drawing.
     EditorTool(
@@ -526,30 +541,41 @@ fun PixelEditorScreen(
     ) { onExit() },
   )
 
-  Box(modifier = modifier) {
-    Row(modifier = Modifier.fillMaxSize()) {
-      // The live bitmap preview: the same shape as the generated output, so what is shown here is the
-      // picture at the aspect ratio it will be saved in.
-      //
-      // Capped at what is left after the columns beside it, and clipped. Without the cap a tall phone's
-      // preview takes the width its own aspect ratio asks for -- the whole screen in portrait -- and the
-      // toolbars are pushed off the row behind it; everything drawn inside the preview, the loading bar
-      // included, then spans the full width and reads as if it were over the toolbar. The cap keeps the
-      // preview inside its own column at every aspect ratio, and the clip means nothing it draws can
-      // reach a neighbour even if a size ever disagrees.
-      BoxWithConstraints {
-        val previewWidth = (maxWidth - PREVIEW_CHROME_WIDTH).coerceAtLeast(minPreviewWidth())
-        Box(
-          modifier = Modifier
-            .widthIn(max = previewWidth)
-            .aspectRatio(output.aspect.ratio)
-            .fillMaxHeight()
-            .clipToBounds()
-            .background(PREVIEW_BACKGROUND),
-        ) {
-          preview()
-        }
+  val density = LocalDensity.current
+  // The panel's horizontal position. Until the slot is measured there is nothing to clamp to, so the
+  // first frame falls back to the leftmost position and the effect below stores it as the real value.
+  var previewOffset by remember { mutableStateOf<Float?>(null) }
+  // Whether the person has dragged the preview. Until they have, every layout change keeps it at the
+  // leftmost position: the window animates up to full height on launch, and the panel has to follow that
+  // instead of keeping the leftmost offset of the smaller, first frame.
+  var previewDragged by remember { mutableStateOf(false) }
+  BoxWithConstraints(modifier = modifier) {
+    // The preview never gets wider than its 9:16 shape at full height; a wider picture grows over the
+    // editor from that slot, and can be dragged left out of the way.
+    val maxPreviewSlot = (maxWidth - PREVIEW_CHROME_WIDTH).coerceAtLeast(minPreviewWidth())
+    val previewSlot = (maxHeight * 9f / 16f).coerceIn(minPreviewWidth(), maxPreviewSlot)
+    val previewPanelWidth = maxOf(previewSlot, maxHeight * output.aspect.ratio)
+    val previewPanelWidthPx = with(density) { previewPanelWidth.toPx() }
+    // Stop where the panel's right edge meets the editor's left edge: it may leave the editor, but it
+    // never retracts past that edge and leaves the preview slot empty.
+    val previewSlotPx = with(density) { previewSlot.toPx() }
+    val previewMinOffset = (previewSlotPx - previewPanelWidthPx).coerceAtMost(0f)
+    // Opening the app leaves the preview pushed left: a picture wider than its slot starts beside the
+    // editor instead of over it, and the person drags it back when they want to see it whole. It keeps
+    // tracking that edge until the first drag, so the launch animation cannot leave it short.
+
+    LaunchedEffect(previewMinOffset, previewPanelWidthPx) {
+      previewOffset = if (previewDragged) {
+        (previewOffset ?: previewMinOffset).coerceIn(previewMinOffset, 0f)
+      } else {
+        previewMinOffset
       }
+    }
+
+    Row(modifier = Modifier.fillMaxSize()) {
+      // The slot the 9:16 preview occupies. A wider aspect draws over the part of the editor to the
+      // right of it instead of taking width away from the drawing.
+      Spacer(modifier = Modifier.width(previewSlot))
 
     VerticalDividerLine()
 
@@ -561,8 +587,18 @@ fun PixelEditorScreen(
         output = output,
         onDismiss = { outputMenuOpen = false },
         onOutputChange = {
-          onOutputChange(it)
+          onOutputChange(it.withSupportedScale())
           outputMenuOpen = false
+        },
+      )
+      ScalerMenu(
+        expanded = scalerMenuOpen,
+        aspect = output.aspect,
+        current = output.scaler,
+        currentScale = output.scale,
+        onDismiss = { scalerMenuOpen = false },
+        onSelect = { scaler, scale ->
+          onOutputChange(output.copy(scaler = scaler, scale = scale))
         },
       )
       PaletteMenu(
@@ -624,6 +660,28 @@ fun PixelEditorScreen(
       )
     }
 
+    // The live preview, over the editor rather than beside it. Its slot above stays 9:16, but a wider
+    // aspect draws across the toolbar and drawing; dragging it left moves it off the editor, stopping at
+    // the editor's edge rather than past it.
+    Box(
+      modifier = Modifier
+        .align(Alignment.TopStart)
+        .offset { IntOffset((previewOffset ?: previewMinOffset).roundToInt(), 0) }
+        .requiredWidth(previewPanelWidth)
+        .fillMaxHeight()
+        .background(PREVIEW_BACKGROUND)
+        .pointerInput(previewMinOffset, previewPanelWidthPx) {
+          detectHorizontalDragGestures { change, dragAmount ->
+            change.consume()
+            previewDragged = true
+            previewOffset = ((previewOffset ?: previewMinOffset) + dragAmount)
+              .coerceIn(previewMinOffset, 0f)
+          }
+        },
+    ) {
+      preview()
+    }
+
     // Over the drawing rather than beside it: the explanation is about a button still under the finger,
     // and moving the drawing aside to make room for a sentence would be worse than covering a corner.
     SnackbarHost(
@@ -643,7 +701,10 @@ fun PixelEditorScreen(
 }
 
 /**
- * The output shape and save size, as a menu off the toolbar.
+ * The output shape and preview size, as a menu off the toolbar.
+ *
+ * The save size is not here: it belongs to the upscaling tool, where the algorithm decides which
+ * multipliers can be made.
  *
  * A menu rather than two cycling buttons: with no text on the toolbar, a button that cycled through
  * "9:16 / 1:1 / 16:9" could not show which one is current, and a menu can mark it.
@@ -690,10 +751,10 @@ private fun OutputMenu(
     }
     HorizontalDivider(color = MENU_DIVIDER_COLOR)
     /*
-     * Two sizes, and they are separate: the one the picture is generated and shown at, and the one it is
-     * written to a file at. They used to be one list, which read as though picking a bigger file size
-     * would give a bigger picture on screen -- it cannot, because what is on screen is the bitmap the
-     * solver's grid was drawn into.
+     * The resolution the picture itself is generated at -- the number of cells the solver fills. The size
+     * it is written to a file at is the upscaling tool's decision, because the algorithm is what decides
+     * which multipliers are possible; keeping it here as well would show a list the algorithm might not
+     * be able to make.
      */
     MenuHeading("Preview size")
     PreviewScale.entries.forEach { preview ->
@@ -709,21 +770,104 @@ private fun OutputMenu(
         },
       )
     }
-    HorizontalDivider(color = MENU_DIVIDER_COLOR)
-    MenuHeading("Save size")
-    OutputScale.entries.forEach { scale ->
-      val (width, height) = savedPixelSize(output.aspect, scale)
+  }
+}
+
+/**
+ * The upscaling picker: the algorithm and the save-size multiplier in one panel.
+ *
+ * The two are one decision -- an algorithm only has the multipliers it can actually produce (EPX has no
+ * 1x) -- so they are chosen together here. Picking an algorithm keeps the panel open and moves the size
+ * list to the sizes that algorithm can make, letting the current size stand when it is still possible.
+ */
+@Composable
+private fun ScalerMenu(
+  expanded: Boolean,
+  aspect: OutputAspect,
+  current: PixelArtScaler,
+  currentScale: OutputScale,
+  onDismiss: () -> Unit,
+  onSelect: (PixelArtScaler, OutputScale) -> Unit,
+) {
+  val itemColors = MenuDefaults.itemColors(
+    textColor = MENU_TEXT_COLOR,
+    leadingIconColor = MENU_TEXT_COLOR,
+    trailingIconColor = MENU_TEXT_COLOR,
+  )
+
+  DropdownMenu(
+    expanded = expanded,
+    onDismissRequest = onDismiss,
+    containerColor = PANEL_BACKGROUND,
+  ) {
+    MenuHeading("Upscaling")
+    PixelArtScaler.entries.forEach { scaler ->
       DropdownMenuItem(
-        text = { SizeRow(scale.label, width, height) },
-        onClick = { onOutputChange(output.copy(scale = scale)) },
+        text = {
+          Column(modifier = Modifier.width(220.dp)) {
+            Text(
+              text = scaler.label,
+              color = MENU_TEXT_COLOR,
+              fontSize = 14.sp,
+            )
+            Text(
+              text = when (scaler) {
+                PixelArtScaler.Nearest -> "Square blocks, any size"
+                PixelArtScaler.Epx -> "Rounded corners; 2x, 4x or 16x"
+                PixelArtScaler.Scale3x -> "Rounded corners; 3x, 6x or 9x"
+                PixelArtScaler.Eagle -> "Corner from the diagonal; 2x, 4x or 16x"
+                PixelArtScaler.Smooth -> "Blended corners; 2x, 4x or 16x"
+                PixelArtScaler.Hq2x -> "Smoothest diagonals; 2x, 4x or 16x"
+                PixelArtScaler.Sai -> "Blended edges; 2x, 4x or 16x"
+                PixelArtScaler.SuperSai -> "Edge-aware blending; 2x, 4x or 16x"
+                PixelArtScaler.SuperEagle -> "Eagle with blending; 2x, 4x or 16x"
+              },
+              color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+              fontSize = 11.sp,
+              modifier = Modifier.padding(top = 2.dp),
+            )
+          }
+        },
+        onClick = {
+          /*
+           * The panel stays open: the size list under the algorithms is part of the same choice, and
+           * closing here would make everyone reopen the tool just to pick how big the file is.
+           */
+          val scale = if (currentScale in scaler.supportedScales) {
+            currentScale
+          } else {
+            OutputScale.entries.first { it in scaler.supportedScales }
+          }
+          onSelect(scaler, scale)
+        },
         colors = itemColors,
         trailingIcon = {
-          if (output.scale == scale) {
+          if (scaler == current) {
             Icon(Icons.Default.Check, contentDescription = "Selected", tint = MENU_TEXT_COLOR)
           }
         },
       )
     }
+    HorizontalDivider(color = MENU_DIVIDER_COLOR)
+    MenuHeading("Save size")
+    OutputScale.entries
+      .filter { it in current.supportedScales }
+      .forEach { scale ->
+        val (width, height) = savedPixelSize(aspect, scale)
+        DropdownMenuItem(
+          text = { SizeRow(scale.label, width, height) },
+          onClick = {
+            onSelect(current, scale)
+            onDismiss()
+          },
+          colors = itemColors,
+          trailingIcon = {
+            if (currentScale == scale) {
+              Icon(Icons.Default.Check, contentDescription = "Selected", tint = MENU_TEXT_COLOR)
+            }
+          },
+        )
+      }
   }
 }
 

@@ -1,5 +1,6 @@
 package ca.justinmo.wfcbitmap.ui
 
+import android.graphics.Bitmap
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -9,6 +10,10 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,15 +25,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
@@ -39,8 +50,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
+import ca.justinmo.wfcbitmap.PixelArtScaler
+import ca.justinmo.wfcbitmap.PixelScaler
 import ca.justinmo.wfcbitmap.WfcGenerator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 /**
  * The live bitmap generated from the drawing, filling the column left of the grid edge to edge.
@@ -71,14 +87,56 @@ fun WfcPreview(
   modifier: Modifier = Modifier,
   error: String? = null,
   isGenerating: Boolean = false,
+  scaler: PixelArtScaler = PixelArtScaler.Nearest,
   onTap: () -> Unit = {},
 ) {
+  var zoom by remember { mutableStateOf(1f) }
+  var pan by remember { mutableStateOf(Offset.Zero) }
+
+  // The chosen upscaler is shown on screen too, not only in the saved file: a 2x pass is enough to make
+  // the difference visible, and it is small enough to compute off the main thread.
+  val displayImage by produceState<ImageBitmap?>(
+    initialValue = null,
+    output?.bitmap,
+    scaler,
+  ) {
+    val bitmap = output?.bitmap
+    value = if (scaler != PixelArtScaler.Nearest && bitmap != null) {
+      withContext(Dispatchers.Default) { scaledPreview(bitmap, scaler) }
+    } else {
+      null
+    }
+  }
+
   Box(
     modifier = modifier
       .fillMaxSize()
+      .clipToBounds()
       // A tap asks for the next variation: same drawing, next seed. The ripple is the only feedback
       // the preview has, which is why it is left on.
-      .clickable(onClickLabel = "Generate a new variation", onClick = onTap),
+      .clickable(onClickLabel = "Generate a new variation", onClick = onTap)
+      // Pinching takes over only with two fingers, or with one while already zoomed: a single finger on
+      // a 1x preview still belongs to the panel that slides it over the editor.
+      .pointerInput(Unit) {
+        awaitEachGesture {
+          awaitFirstDown(requireUnconsumed = false)
+          var pinched = false
+          do {
+            val event = awaitPointerEvent()
+            val pressed = event.changes.count { it.pressed }
+            if (pressed >= 2) {
+              pinched = true
+              val nextZoom = (zoom * event.calculateZoom()).coerceIn(1f, 8f)
+              zoom = nextZoom
+              pan = if (nextZoom > 1f) pan + event.calculatePan() else Offset.Zero
+              event.changes.forEach { it.consume() }
+            } else if (pinched || (zoom > 1f && pressed == 1)) {
+              if (zoom > 1f) pan += event.calculatePan()
+              event.changes.forEach { it.consume() }
+            }
+          } while (event.changes.any { it.pressed })
+        }
+      },
   ) {
     if (error != null) {
       Text(
@@ -95,30 +153,35 @@ fun WfcPreview(
           .wrapContentHeight(Alignment.CenterVertically),
       )
     } else if (output != null) {
-      val picture = output.image
+      val picture = displayImage ?: output.image
       Canvas(
         modifier = Modifier
           .fillMaxSize()
           // Says to a screen reader what the picture is; the drawing itself has no text to give it.
           .semantics { contentDescription = PREVIEW_DESCRIPTION },
       ) {
-        val (width, height) = previewDrawSize(
+        val (baseWidth, baseHeight) = previewDrawSize(
           bitmapWidth = picture.width,
           bitmapHeight = picture.height,
           columnWidth = size.width.toInt(),
           columnHeight = size.height.toInt(),
         )
-        if (width <= 0 || height <= 0) return@Canvas
-        // Centred, so a picture smaller than the column sits in the middle of it rather than against a corner.
-        drawImage(
-          image = picture,
-          dstOffset = IntOffset(
-            x = ((size.width - width) / 2f).toInt(),
-            y = ((size.height - height) / 2f).toInt(),
-          ),
-          dstSize = IntSize(width, height),
-          filterQuality = FilterQuality.None,
-        )
+        if (baseWidth <= 0 || baseHeight <= 0) return@Canvas
+        val width = (baseWidth * zoom).roundToInt().coerceAtLeast(1)
+        val height = (baseHeight * zoom).roundToInt().coerceAtLeast(1)
+        val maxPanX = ((width - size.width) / 2f).coerceAtLeast(0f)
+        val maxPanY = ((height - size.height) / 2f).coerceAtLeast(0f)
+        // Centred at 1x; while zoomed, the pinch's pan moves the picture but never past its edges.
+        val left = (size.width - width) / 2f + pan.x.coerceIn(-maxPanX, maxPanX)
+        val top = (size.height - height) / 2f + pan.y.coerceIn(-maxPanY, maxPanY)
+        clipRect(0f, 0f, size.width, size.height) {
+          drawImage(
+            image = picture,
+            dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
+            dstSize = IntSize(width, height),
+            filterQuality = FilterQuality.None,
+          )
+        }
       }
     }
     // Drawn after the picture, so it is drawn *over* it: the bar is about the picture it covers, and it
@@ -206,6 +269,19 @@ private fun GeneratingBar(visible: Boolean, modifier: Modifier = Modifier) {
 
 /** The preview's accessibility name: it is the picture, and saying so is the only thing it can be called. */
 private const val PREVIEW_DESCRIPTION = "Live bitmap generated from the drawing"
+
+/** A 2x copy of the generated picture through [scaler], for the smoothing to be visible while drawing. */
+private fun scaledPreview(source: Bitmap, scaler: PixelArtScaler): ImageBitmap {
+  val pixels = IntArray(source.width * source.height)
+  source.getPixels(pixels, 0, source.width, 0, 0, source.width, source.height)
+  val scaled = PixelScaler.scale(pixels, source.width, source.height, scaler, 2)
+  return Bitmap.createBitmap(
+    scaled.pixels,
+    scaled.width,
+    scaled.height,
+    Bitmap.Config.ARGB_8888,
+  ).asImageBitmap()
+}
 
 /**
  * The size the generated picture is drawn at inside a preview column of [columnWidth] x [columnHeight].

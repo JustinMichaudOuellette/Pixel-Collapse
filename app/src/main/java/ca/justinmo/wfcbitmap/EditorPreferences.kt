@@ -77,6 +77,8 @@ class EditorPreferences(context: Context) {
       ?: fallback.preview,
     scale = enumByName(preferences.getString(KEY_OUTPUT_SCALE, null), OutputScale.entries)
       ?: fallback.scale,
+    scaler = enumByName(preferences.getString(KEY_OUTPUT_SCALER, null), PixelArtScaler.entries)
+      ?: fallback.scaler,
   )
 
   fun setOutputSettings(settings: OutputSettings) {
@@ -84,6 +86,7 @@ class EditorPreferences(context: Context) {
       .putString(KEY_OUTPUT_ASPECT, settings.aspect.name)
       .putString(KEY_OUTPUT_PREVIEW, settings.preview.name)
       .putString(KEY_OUTPUT_SCALE, settings.scale.name)
+      .putString(KEY_OUTPUT_SCALER, settings.scaler.name)
       .apply()
   }
 
@@ -104,5 +107,6 @@ class EditorPreferences(context: Context) {
     const val KEY_OUTPUT_ASPECT = "output_aspect"
     const val KEY_OUTPUT_PREVIEW = "output_preview"
     const val KEY_OUTPUT_SCALE = "output_scale"
+    const val KEY_OUTPUT_SCALER = "output_scaler"
   }
 }

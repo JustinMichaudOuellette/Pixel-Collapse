@@ -24,6 +24,44 @@ enum class OutputAspect(val label: String, val ratio: Float) {
 }
 
 /**
+ * How a saved picture's pixels are enlarged.
+ *
+ * [Nearest] copies each block as it is. [Epx] is the EPX/Scale2x family: it looks at the four neighbours
+ * of every pixel and rounds the stair-steps where two edges meet. [Scale3x] does the same on a 3x grid.
+ * [Eagle] takes a corner from the diagonal neighbour when that neighbour matches both edges of the
+ * corner. [Smooth] blends a corner halfway towards the two matching neighbours. [Hq2x] compares each
+ * pixel with its neighbours in YUV and mixes according to a 256-entry rule table. [Sai], [SuperSai] and
+ * [SuperEagle] are the 2xSaI family, which blends a corner from its surroundings instead of picking one
+ * existing colour.
+ */
+enum class PixelArtScaler(val label: String) {
+  Nearest("Blocks"),
+  Epx("EPX"),
+  Scale3x("Scale3x"),
+  Eagle("Eagle"),
+  Smooth("Smooth"),
+  Hq2x("HQ2x"),
+  Sai("2xSaI"),
+  SuperSai("Super 2xSaI"),
+  SuperEagle("Super Eagle"),
+  ;
+
+  /**
+   * Which save sizes this algorithm can make. Blocks can make any size. EPX doubles, so it has 2x, 4x
+   * and 16x, while Scale3x starts at 3x and can be repeated (6x is 3x then 2x, 9x is 3x twice). The
+   * others are 2x passes, so they make 2x, 4x and 16x by repeating.
+   */
+  val supportedScales: Set<OutputScale>
+    get() = when (this) {
+      Nearest -> OutputScale.entries.toSet()
+      Epx -> setOf(OutputScale.Two, OutputScale.Four, OutputScale.Sixteen)
+      Scale3x -> setOf(OutputScale.Three, OutputScale.Six, OutputScale.Nine)
+      Eagle, Smooth, Hq2x, Sai, SuperSai, SuperEagle ->
+        setOf(OutputScale.Two, OutputScale.Four, OutputScale.Sixteen)
+    }
+}
+
+/**
  * How many pixels the picture is written at, as a multiple of the generated bitmap.
  *
  * This is a saving decision, not a solving one: the structure of the picture is decided by the grid, so
@@ -40,6 +78,8 @@ enum class OutputScale(val label: String, val numerator: Int, val denominator: I
   Two("2×", 2),
   Three("3×", 3),
   Four("4×", 4),
+  Six("6×", 6),
+  Nine("9×", 9),
   Sixteen("16×", 16),
   ;
 
@@ -131,4 +171,12 @@ data class OutputSettings(
   val aspect: OutputAspect = OutputAspect.Portrait9x16,
   val preview: PreviewScale = PreviewScale.Half,
   val scale: OutputScale = OutputScale.One,
-)
+  val scaler: PixelArtScaler = PixelArtScaler.Nearest,
+) {
+  /** The same settings with a save size the chosen scaler can actually make. */
+  fun withSupportedScale(): OutputSettings {
+    if (scale in scaler.supportedScales) return this
+    val supported = OutputScale.entries.firstOrNull { it in scaler.supportedScales } ?: scale
+    return copy(scale = supported)
+  }
+}

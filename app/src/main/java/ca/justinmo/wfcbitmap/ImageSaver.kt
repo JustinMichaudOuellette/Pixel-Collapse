@@ -79,15 +79,49 @@ object ImageSaver {
    *
    * A size rather than a multiplier, because the save size is not a multiple of anything on screen: it is
    * its own size, worked out from the grid by [savedPixelSize]. The factors between any preview
-   * size and any save size are whole numbers (one, two, four, eight times a cell), so resampling with nearest
-   * neighbour is exact: the file is the same picture, with more or fewer pixels each.
+   * size and any save size are whole numbers (one, two, four, eight times a cell).
    *
-   * Nearest neighbour on purpose: the picture is pixel art, and a smooth filter would blur exactly the
-   * edges the drawing put there. The caller owns the result and must recycle it when it is not [bitmap].
+   * [scaler] decides how a bigger size is made. [PixelArtScaler.Nearest] copies blocks, which is exact but
+   * keeps every stair-step. The others first put the picture back to its base resolution, then run their
+   * own pass for [scaleFactor] so the corners are shaped at the size the file is written at. The caller
+   * owns the result and must recycle it when it is not [bitmap].
    */
-  fun atSize(bitmap: Bitmap, width: Int, height: Int): Bitmap {
+  fun atSize(
+    bitmap: Bitmap,
+    width: Int,
+    height: Int,
+    scaler: PixelArtScaler = PixelArtScaler.Nearest,
+    scaleFactor: Int = 1,
+  ): Bitmap {
+    if (scaler != PixelArtScaler.Nearest && scaleFactor > 1) {
+      val baseWidth = width / scaleFactor
+      val baseHeight = height / scaleFactor
+      if (baseWidth > 0 && baseHeight > 0) {
+        val base = if (bitmap.width == baseWidth && bitmap.height == baseHeight) {
+          bitmap
+        } else {
+          Bitmap.createScaledBitmap(bitmap, baseWidth, baseHeight, false)
+        }
+        val upscaled = try {
+          upscale(base, scaleFactor, scaler)
+        } finally {
+          if (base !== bitmap) base.recycle()
+        }
+        if (upscaled.width == width && upscaled.height == height) return upscaled
+        val fitted = Bitmap.createScaledBitmap(upscaled, width, height, false)
+        if (fitted !== upscaled) upscaled.recycle()
+        return fitted
+      }
+    }
     if (width == bitmap.width && height == bitmap.height) return bitmap
     return Bitmap.createScaledBitmap(bitmap, width, height, false)
+  }
+
+  private fun upscale(bitmap: Bitmap, factor: Int, scaler: PixelArtScaler): Bitmap {
+    val pixels = IntArray(bitmap.width * bitmap.height)
+    bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+    val scaled = PixelScaler.scale(pixels, bitmap.width, bitmap.height, scaler, factor)
+    return Bitmap.createBitmap(scaled.pixels, scaled.width, scaled.height, Bitmap.Config.ARGB_8888)
   }
 
   /**
@@ -104,11 +138,13 @@ object ImageSaver {
     name: String = fileName(System.currentTimeMillis()),
     width: Int = bitmap.width,
     height: Int = bitmap.height,
+    scaler: PixelArtScaler = PixelArtScaler.Nearest,
+    scaleFactor: Int = 1,
   ): Uri = withContext(Dispatchers.IO) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      writeThroughMediaStore(context, bitmap, name, width, height)
+      writeThroughMediaStore(context, bitmap, name, width, height, scaler, scaleFactor)
     } else {
-      writeToSharedStorage(context, bitmap, name, width, height)
+      writeToSharedStorage(context, bitmap, name, width, height, scaler, scaleFactor)
     }
   }
 
@@ -126,6 +162,8 @@ object ImageSaver {
     bitmap: Bitmap,
     width: Int = bitmap.width,
     height: Int = bitmap.height,
+    scaler: PixelArtScaler = PixelArtScaler.Nearest,
+    scaleFactor: Int = 1,
   ): Uri = withContext(Dispatchers.IO) {
     val name = fileName(System.currentTimeMillis())
     val dir = File(context.cacheDir, SHARE_FOLDER)
@@ -138,7 +176,7 @@ object ImageSaver {
     dir.listFiles()?.forEach { old -> if (old.lastModified() < cutoff) old.delete() }
     val file = File(dir, name)
 
-    val scaled = atSize(bitmap, width, height)
+    val scaled = atSize(bitmap, width, height, scaler, scaleFactor)
     try {
       file.outputStream().use { out ->
         if (!scaled.compress(Bitmap.CompressFormat.PNG, PNG_QUALITY, out)) {
@@ -177,7 +215,15 @@ object ImageSaver {
    * deleted again if the encode fails, so a failure leaves no empty entry in the gallery.
    */
   @RequiresApi(Build.VERSION_CODES.Q)
-  private fun writeThroughMediaStore(context: Context, bitmap: Bitmap, name: String, width: Int, height: Int): Uri {
+  private fun writeThroughMediaStore(
+    context: Context,
+    bitmap: Bitmap,
+    name: String,
+    width: Int,
+    height: Int,
+    scaler: PixelArtScaler,
+    scaleFactor: Int,
+  ): Uri {
     val resolver = context.contentResolver
     val pending = ContentValues().apply {
       put(MediaStore.Images.Media.DISPLAY_NAME, name)
@@ -188,7 +234,7 @@ object ImageSaver {
     val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, pending)
       ?: throw IOException("The gallery would not create an entry for $name")
 
-    val scaled = atSize(bitmap, width, height)
+    val scaled = atSize(bitmap, width, height, scaler, scaleFactor)
     try {
       encodeInto(resolver, uri, scaled)
       resolver.update(
@@ -212,14 +258,22 @@ object ImageSaver {
    * @throws IOException when the album cannot be created or the write fails.
    */
   @Suppress("DEPRECATION")
-  private fun writeToSharedStorage(context: Context, bitmap: Bitmap, name: String, width: Int, height: Int): Uri {
+  private fun writeToSharedStorage(
+    context: Context,
+    bitmap: Bitmap,
+    name: String,
+    width: Int,
+    height: Int,
+    scaler: PixelArtScaler,
+    scaleFactor: Int,
+  ): Uri {
     val pictures = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
     val album = File(pictures, ALBUM)
     if (!album.isDirectory && !album.mkdirs()) {
       throw IOException("Could not create $album")
     }
     val file = File(album, name)
-    val scaled = atSize(bitmap, width, height)
+    val scaled = atSize(bitmap, width, height, scaler, scaleFactor)
     try {
       file.outputStream().use { out ->
         if (!scaled.compress(Bitmap.CompressFormat.PNG, PNG_QUALITY, out)) {
