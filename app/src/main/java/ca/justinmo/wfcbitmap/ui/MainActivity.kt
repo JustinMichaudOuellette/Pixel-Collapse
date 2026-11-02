@@ -51,7 +51,9 @@ import ca.justinmo.wfcbitmap.ImageSaver
 import ca.justinmo.wfcbitmap.LatencyMeter
 import ca.justinmo.wfcbitmap.OutputAspect
 import ca.justinmo.wfcbitmap.OutputScale
+import ca.justinmo.wfcbitmap.KernelSize
 import ca.justinmo.wfcbitmap.OutputSettings
+import ca.justinmo.wfcbitmap.generationPlan
 import ca.justinmo.wfcbitmap.Palette
 import ca.justinmo.wfcbitmap.PatternStore
 import ca.justinmo.wfcbitmap.PixelArtScaler
@@ -294,6 +296,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       scaler = restored?.scalerName?.let { name ->
         PixelArtScaler.entries.firstOrNull { it.name == name }
       } ?: PixelArtScaler.Nearest,
+      kernel = restored?.kernelName?.let { name ->
+        KernelSize.entries.firstOrNull { it.name == name }
+      } ?: KernelSize.Three,
     )
     mutableStateOf(preferences.outputSettings(restoredOutput).withSupportedScale())
   }
@@ -396,6 +401,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       previewName = outputSettings.preview.name,
       scaleName = outputSettings.scale.name,
       scalerName = outputSettings.scaler.name,
+      kernelName = outputSettings.kernel.name,
       wrapEdges = wrapEdges,
       mirrorHorizontal = mirrorHorizontal,
       mirrorVertical = mirrorVertical,
@@ -416,10 +422,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     // The shape of the output is a solving decision: the grid the solver fills is what gives the picture
     // its proportions, and the preview size is the resolution it fills that grid at. Both keep the cost
     // bounded: the coarsest preview solves the fewest cells, and 4x is capped at [WfcGenerator.DEFAULT_CELL_COUNT].
-    val (outputColumns, outputRows) = WfcGenerator.gridForAspect(
-      outputSettings.aspect.ratio,
-      cells = outputSettings.preview.cellCount,
-    )
+    val plan = generationPlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
     generation.job?.cancel()
     /*
      * The newest request owns the busy flag.
@@ -445,12 +448,13 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
             sourceWidth = columns,
             sourceHeight = rows,
             seed = requestedSeed,
-            columns = outputColumns,
-            rows = outputRows,
+            columns = plan.columns,
+            rows = plan.rows,
             wrapEdges = wrapEdges,
             mirrorHorizontal = mirrorHorizontal,
             mirrorVertical = mirrorVertical,
-            pixelsPerCell = outputSettings.preview.pixelsPerCell,
+            pixelsPerCell = plan.pixelsPerCell,
+            cellSize = plan.cellSize,
           )
         } catch (e: CancellationException) {
           // A newer edit replaced this one; let the cancellation through instead of reporting it.
@@ -513,6 +517,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
 
   // A different preview size is the same picture drawn with more or fewer pixels, so it is rebuilt too.
   LaunchedEffect(outputSettings.preview) { requestGeneration() }
+  LaunchedEffect(outputSettings.kernel) { requestGeneration() }
 
   // Wrapping the drawing's edges or not changes what the picture may be made of, so it is rebuilt too.
   LaunchedEffect(wrapEdges) { requestGeneration() }
@@ -808,6 +813,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
               ?: outputSettings.scale,
             scaler = PixelArtScaler.entries.firstOrNull { it.name == snapshot.scalerName }
               ?: outputSettings.scaler,
+            kernel = KernelSize.entries.firstOrNull { it.name == snapshot.kernelName }
+              ?: outputSettings.kernel,
           ).withSupportedScale()
           wrapEdges = snapshot.wrapEdges
           mirrorHorizontal = snapshot.mirrorHorizontal

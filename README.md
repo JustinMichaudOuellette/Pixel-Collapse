@@ -120,18 +120,15 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 | `app/src/androidTest/` | Device tests, including the solver benchmarks |
 | `design/` | The script and candidates used to pick the launcher icon out of generated pictures |
 
-## Roadmap
+## Ideas
 
-- [ ] **Pixel-art scaling algorithm** — a dedicated upscaler (EPX/hqx/xBR family) for the saved file, so a
-  bigger save size is a rounder piece of pixel art rather than a copy of the same blocks.
-- [ ] **GIF output** — export an animated tiling: the same drawing, scrolling one cell at a time, written as a
+- **GIF output** — export an animated tiling: the same drawing, scrolling one cell at a time, written as a
   looping GIF.
-- [ ] **Video output** — record the same kind of motion to MP4 with `MediaCodec`, at a speed and length the
+- **Video output** — record the same kind of motion to MP4 with `MediaCodec`, at a speed and length the
   person picks.
-- [ ] **3D rendering output** — stand the picture up as a solid scene, one block per cell, and export it as a
+- **3D rendering output** — stand the picture up as a solid scene, one block per cell, and export it as a
   rotating shot through the video output above or as a model file another tool can open.
-- [ ] **Input Photo** — input a photo, downscale it, posterize it and use it as a pattern.
-- [ ] **Group Pixels** — allow to group pixels 2x2, 3x3, 4x4, etc. So that it acts like a tilemap.
+- **Input Photo** — input a photo, downscale it, posterize it and use it as a pattern.
 
 ## License
 

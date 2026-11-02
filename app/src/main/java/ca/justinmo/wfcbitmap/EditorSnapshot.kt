@@ -34,6 +34,8 @@ data class EditorSnapshot(
   val scaleName: String,
   /** [PixelArtScaler] by name, for the same reason as [aspectName]. */
   val scalerName: String = PixelArtScaler.Nearest.name,
+  /** [KernelSize] by name: how the drawing is grouped into tiles. */
+  val kernelName: String = KernelSize.Three.name,
   val wrapEdges: Boolean,
   /** Whether every pattern was also offered flipped left to right. */
   val mirrorHorizontal: Boolean,
@@ -68,6 +70,7 @@ data class EditorSnapshot(
       out.writeBoolean(mirrorHorizontal)
       out.writeBoolean(mirrorVertical)
       out.writeUTF(paletteId)
+      out.writeUTF(kernelName)
     }
     return buffer.toByteArray()
   }
@@ -83,9 +86,10 @@ data class EditorSnapshot(
      * whole number cannot describe it. 3 added the preview size, which is what the picture is generated at
      * and so a setting the picture cannot be reproduced without. 4 split the one mirror setting into the two
      * the editor has: either of them changes the tile set, so a session cannot come back without both.
-     * 5 added paletteId for palette selection. 6 added the pixel-art scaler used when saving.
+     * 5 added paletteId for palette selection. 6 added the pixel-art scaler used when saving. 7 added
+     * the tile-grouping kernel, which changes the tile set as much as the mirrors do.
      */
-    private const val VERSION = 6
+    private const val VERSION = 7
 
     private const val HEADER_BYTES = 128
 
@@ -132,6 +136,7 @@ data class EditorSnapshot(
           val mirrorHorizontal = input.readBoolean()
           val mirrorVertical = input.readBoolean()
           val paletteId = if (version >= 5) input.readUTF() else PaletteStore.DEFAULT_PALETTE_ID
+          val kernelName = if (version >= 7) input.readUTF() else KernelSize.Three.name
 
           EditorSnapshot(
             columns = columns,
@@ -143,6 +148,7 @@ data class EditorSnapshot(
             previewName = previewName,
             scaleName = scaleName,
             scalerName = scalerName,
+            kernelName = kernelName,
             wrapEdges = wrapEdges,
             mirrorHorizontal = mirrorHorizontal,
             mirrorVertical = mirrorVertical,
@@ -164,7 +170,8 @@ data class EditorSnapshot(
     return columns == other.columns && rows == other.rows && pixels.contentEquals(other.pixels) &&
       seed == other.seed && colorArgb == other.colorArgb && aspectName == other.aspectName &&
       previewName == other.previewName && scaleName == other.scaleName &&
-      scalerName == other.scalerName && wrapEdges == other.wrapEdges &&
+      scalerName == other.scalerName && kernelName == other.kernelName &&
+      wrapEdges == other.wrapEdges &&
       mirrorHorizontal == other.mirrorHorizontal &&
       mirrorVertical == other.mirrorVertical &&
       paletteId == other.paletteId
@@ -180,6 +187,7 @@ data class EditorSnapshot(
     result = 31 * result + previewName.hashCode()
     result = 31 * result + scaleName.hashCode()
     result = 31 * result + scalerName.hashCode()
+    result = 31 * result + kernelName.hashCode()
     result = 31 * result + wrapEdges.hashCode()
     result = 31 * result + mirrorHorizontal.hashCode()
     result = 31 * result + mirrorVertical.hashCode()

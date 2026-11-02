@@ -302,11 +302,24 @@ object WfcGenerator {
     mirrorHorizontal: Boolean = false,
     mirrorVertical: Boolean = false,
     pixelsPerCell: Int = PIXELS_PER_CELL,
+    cellSize: Int = 1,
   ): Output = withContext(Dispatchers.Default) {
     if (sourceWidth <= 0 || sourceHeight <= 0 || pixels.size < sourceWidth * sourceHeight) {
       throw GenerationException("The drawing is empty - draw a pattern first.")
     }
-    val source = IntArray2D(sourceWidth, sourceHeight, pixels.copyOf())
+    /*
+     * Grouping: a 6x6 pattern is a 3x3 kernel of 2x2 cells, a 9x9 one a 3x3 kernel of 3x3 cells, and so
+     * on. The drawing is reduced to one pixel per cell -- the colour most of the cell's pixels share --
+     * and the ordinary 3x3 model then runs on those grouped pixels. Each solved cell is drawn back at
+     * [cellSize] pixels so the picture keeps the drawing's size.
+     */
+    val cell = cellSize.coerceAtLeast(1)
+    val grouped = if (cell > 1) groupCells(pixels, sourceWidth, sourceHeight, cell) else null
+    val sourceColumns = grouped?.width ?: sourceWidth
+    val sourceRows = grouped?.height ?: sourceHeight
+    val sourcePixels = grouped?.tokens ?: pixels
+    val renderScale = pixelsPerCell
+    val source = IntArray2D(sourceColumns, sourceRows, sourcePixels.copyOf())
     /*
      * Extraction, bordered or wrapped. Bordered, the windows that hang over an edge are blank there, which
      * is what the solver's edge rule needs to keep the drawing's edges on the bitmap's edges; wrapped, they
@@ -337,10 +350,10 @@ object WfcGenerator {
       }
       packed = WfcNative.packTiles(sampled)
       val reusable = cachedOutput
-      if (reusable != null && cachedSeed == seed && columns == reusable.columns &&
+      if (grouped == null && reusable != null && cachedSeed == seed && columns == reusable.columns &&
         rows == reusable.rows && cachedPacked.contentEquals(packed) &&
         cachedWrapEdges == wrapEdges && cachedMirrorHorizontal == mirrorHorizontal &&
-        cachedMirrorVertical == mirrorVertical && cachedPixelsPerCell == pixelsPerCell
+        cachedMirrorVertical == mirrorVertical && cachedPixelsPerCell == renderScale
       ) {
         return@withContext reusable
       }
@@ -412,8 +425,12 @@ object WfcGenerator {
     // kernels), and the compatibility table guarantees every neighbour relation in the result holds in
     // the drawing, under whichever sampling produced the domains.
     val renderStartedAt = System.nanoTime()
-    val target = synchronized(cacheLock) { renderTarget(columns, rows, pixelsPerCell) }
-    val bitmap = target.renderSolved(assignment, tier.sources, tier.centers, columns, rows)
+    val target = synchronized(cacheLock) { renderTarget(columns, rows, renderScale) }
+    val bitmap = target.renderSolved(
+      assignment, tier.sources, tier.centers, columns, rows,
+      blocks = grouped?.blocks,
+      cell = cell,
+    )
     val renderMillis = (System.nanoTime() - renderStartedAt) / 1_000_000
     // What the next solve's budget is measured against: see [lastSolveMillis].
     val solveMillis = tier.result.millis
@@ -431,15 +448,17 @@ object WfcGenerator {
       solveMillis = solveMillis,
       extractMillis = extractNanos / 1_000_000,
     )
-    synchronized(cacheLock) {
-      cachedPacked = packed
-      cachedOutput = output
-      cachedSeed = seed
-      cachedWrapEdges = wrapEdges
-      cachedMirrorHorizontal = mirrorHorizontal
-      cachedMirrorVertical = mirrorVertical
-      cachedPixelsPerCell = pixelsPerCell
-      lastSolveMillis = solveMillis
+    if (grouped == null) {
+      synchronized(cacheLock) {
+        cachedPacked = packed
+        cachedOutput = output
+        cachedSeed = seed
+        cachedWrapEdges = wrapEdges
+        cachedMirrorHorizontal = mirrorHorizontal
+        cachedMirrorVertical = mirrorVertical
+        cachedPixelsPerCell = renderScale
+        lastSolveMillis = solveMillis
+      }
     }
     output
   }
@@ -537,25 +556,22 @@ object WfcGenerator {
       centres: IntArray,
       columns: Int,
       rows: Int,
+      blocks: List<IntArray>? = null,
+      cell: Int = 1,
     ): Bitmap {
-      for (y in 0 until rows) {
-        val rowBase = y * columns
-        for (x in 0 until columns) {
-          val colour = centres[sources[assignment[rowBase + x]]]
-          fill(x, y, colour)
-        }
-      }
+      renderSolvedCells(
+        pixels = pixels,
+        width = width,
+        columns = columns,
+        rows = rows,
+        scale = scale,
+        assignment = assignment,
+        sources = sources,
+        centres = centres,
+        blocks = blocks,
+        cell = cell,
+      )
       return publish()
-    }
-
-    /** Expands one cell to a [scale] square of one colour, keeping every cell edge pixel-aligned. */
-    private fun fill(x: Int, y: Int, colour: Int) {
-      val pixelX = x * scale
-      val rowBase = y * scale * width
-      for (dy in 0 until scale) {
-        val base = rowBase + dy * width + pixelX
-        for (dx in 0 until scale) pixels[base + dx] = colour
-      }
     }
 
     /** Copies the filled buffer into the next bitmap: the one on screen is never written. */
@@ -564,6 +580,135 @@ object WfcGenerator {
       next = (next + 1) % bitmaps.size
       bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
       return bitmap
+    }
+  }
+}
+
+/** The solver grid, the render scale, and the drawing cell size a generation should use. */
+internal data class GenerationPlan(
+  val columns: Int,
+  val rows: Int,
+  val pixelsPerCell: Int,
+  val cellSize: Int,
+)
+
+/**
+ * Works out one generation's shape.
+ *
+ * The output grid and its pixels-per-cell are the preview's, whatever the grouping: grouping changes
+ * how many drawing pixels one cell is made from, not how many cells the picture has. Keeping the grid
+ * fixed is what stops a 6x6 recipe from shrinking the whole picture to a quarter of its resolution.
+ */
+internal fun generationPlan(
+  aspect: OutputAspect,
+  preview: PreviewScale,
+  kernel: KernelSize,
+): GenerationPlan {
+  val (columns, rows) = WfcGenerator.gridForAspect(aspect.ratio, preview.cellCount)
+  return GenerationPlan(
+    columns = columns,
+    rows = rows,
+    pixelsPerCell = preview.pixelsPerCell,
+    cellSize = kernel.cellSize,
+  )
+}
+
+/**
+ * One pixel per [cell]-sized group of the drawing, where the pixel is a token naming the whole block.
+ *
+ * A 6x6 pattern is a 3x3 kernel of 2x2 cells: the drawing's 2x2 blocks become the cells, each block
+ * keeps its four colours under a token, and the ordinary 3x3 model runs on those tokens. Rendering
+ * expands the token back to the block, so the picture keeps the cell's internal detail instead of
+ * averaging it away.
+ *
+ * Only whole cells are used; a leftover strip narrower than [cell] is ignored.
+ *
+ * @throws WfcGenerator.GenerationException when the drawing is smaller than one cell.
+ */
+internal fun groupCells(pixels: IntArray, width: Int, height: Int, cell: Int): GroupedCells {
+  val columns = width / cell
+  val rows = height / cell
+  if (columns < 1 || rows < 1) {
+    throw WfcGenerator.GenerationException(
+      "The drawing is smaller than one ${cell}x$cell cell. Draw a bigger pattern or pick a smaller grouping.",
+    )
+  }
+  val tokens = IntArray(columns * rows)
+  val blocks = ArrayList<IntArray>()
+  val tokenByBlock = HashMap<BlockKey, Int>()
+  for (cy in 0 until rows) {
+    for (cx in 0 until columns) {
+      val block = IntArray(cell * cell) { slot ->
+        val dy = slot / cell
+        val dx = slot % cell
+        pixels[(cy * cell + dy) * width + cx * cell + dx]
+      }
+      val key = BlockKey(block)
+      val token = tokenByBlock.getOrPut(key) {
+        blocks.add(block)
+        blocks.size - 1
+      }
+      tokens[cy * columns + cx] = token
+    }
+  }
+  return GroupedCells(tokens, columns, rows, blocks)
+}
+
+/** The drawing grouped into cells: a token per cell, and the block each token stands for. */
+internal class GroupedCells(
+  val tokens: IntArray,
+  val width: Int,
+  val height: Int,
+  val blocks: List<IntArray>,
+)
+
+/** Content equality for a cell's block of pixels, so equal blocks share one token. */
+private class BlockKey(val pixels: IntArray) {
+  override fun equals(other: Any?): Boolean = other is BlockKey && pixels.contentEquals(other.pixels)
+  override fun hashCode(): Int = pixels.contentHashCode()
+}
+
+/**
+ * Draws a solved grid into [pixels], row-major [width].
+ *
+ * Without [blocks] each cell is one colour. With them, a cell names a whole [cell]-sized block and the
+ * block is expanded to the cell's [scale] square: every source pixel becomes `scale / cell` output
+ * pixels, so a 2x2 cell still shows four colours rather than one average.
+ */
+internal fun renderSolvedCells(
+  pixels: IntArray,
+  width: Int,
+  columns: Int,
+  rows: Int,
+  scale: Int,
+  assignment: IntArray,
+  sources: IntArray,
+  centres: IntArray,
+  blocks: List<IntArray>?,
+  cell: Int,
+) {
+  for (y in 0 until rows) {
+    val rowBase = y * columns
+    val pixelY = y * scale
+    for (x in 0 until columns) {
+      val tile = sources[assignment[rowBase + x]]
+      val pixelX = x * scale
+      if (blocks == null) {
+        val colour = centres[tile]
+        for (dy in 0 until scale) {
+          val base = (pixelY + dy) * width + pixelX
+          for (dx in 0 until scale) pixels[base + dx] = colour
+        }
+      } else {
+        val block = blocks[centres[tile]]
+        for (dy in 0 until scale) {
+          val sourceRow = (dy * cell / scale) * cell
+          val base = (pixelY + dy) * width + pixelX
+          for (dx in 0 until scale) {
+            pixels[base + dx] = block[sourceRow + dx * cell / scale]
+          }
+        }
+      }
     }
   }
 }

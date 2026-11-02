@@ -159,6 +159,13 @@ fun ZoomablePixelCanvas(
   baseCellSizePx: Int,
   minZoom: Float = 0.5f,
   maxZoom: Float = 10f,
+  /**
+   * How many cells apart the grid separators are drawn.
+   *
+   * 1 is the ordinary per-pixel grid. When the recipe groups the drawing into cells this is the cell
+   * side, so the separators show the kernel's cell boundaries instead of cutting every pixel into a cell.
+   */
+  gridStep: Int = 1,
   /** The tag a UI test finds the drawing by; each test passes its own so two canvases never collide. */
   canvasTestTag: String = CANVAS_TEST_TAG,
   /**
@@ -692,8 +699,35 @@ fun ZoomablePixelCanvas(
         separator(vertical, fixed, next, total, isDotted = false)
       }
 
-      for (col in 0..gridState.columns) drawSeparator(vertical = true, lineIndex = col)
-      for (row in 0..gridState.rows) drawSeparator(vertical = false, lineIndex = row)
+      if (gridStep <= 1) {
+        for (col in 0..gridState.columns) drawSeparator(vertical = true, lineIndex = col)
+        for (row in 0..gridState.rows) drawSeparator(vertical = false, lineIndex = row)
+      } else {
+        /*
+         * Grouped mode: one separator per cell, plus the outer edge. The pixels inside a cell are still
+         * separate drawing pixels -- only the lines tell the eye where a kernel cell begins and ends.
+         */
+        fun groupSeparator(vertical: Boolean, lineIndex: Int) {
+          val fixed = lineIndex * cs
+          if (vertical) {
+            drawLine(gridLineColor, Offset(fixed, 0f), Offset(fixed, h), lineWidth)
+          } else {
+            drawLine(gridLineColor, Offset(0f, fixed), Offset(w, fixed), lineWidth)
+          }
+        }
+        var col = 0
+        while (col < gridState.columns) {
+          groupSeparator(vertical = true, lineIndex = col)
+          col += gridStep
+        }
+        groupSeparator(vertical = true, lineIndex = gridState.columns)
+        var row = 0
+        while (row < gridState.rows) {
+          groupSeparator(vertical = false, lineIndex = row)
+          row += gridStep
+        }
+        groupSeparator(vertical = false, lineIndex = gridState.rows)
+      }
 
       drawContext.canvas.restore()
     }

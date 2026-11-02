@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FormatColorFill
+import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.Palette as PaletteIcon
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -90,6 +91,7 @@ import ca.justinmo.wfcbitmap.EditorMessage
 import ca.justinmo.wfcbitmap.OutputAspect
 import ca.justinmo.wfcbitmap.OutputScale
 import ca.justinmo.wfcbitmap.OutputSettings
+import ca.justinmo.wfcbitmap.KernelSize
 import ca.justinmo.wfcbitmap.Palette
 import ca.justinmo.wfcbitmap.PixelArtScaler
 import ca.justinmo.wfcbitmap.PixelGridState
@@ -244,6 +246,7 @@ fun PixelEditorScreen(
   var mode by remember { mutableStateOf(EditorMode.Paint) }
   var selection by remember { mutableStateOf<CellRect?>(null) }
   var outputMenuOpen by remember { mutableStateOf(false) }
+  var kernelMenuOpen by remember { mutableStateOf(false) }
   var scalerMenuOpen by remember { mutableStateOf(false) }
   var paletteMenuOpen by remember { mutableStateOf(false) }
 
@@ -442,6 +445,14 @@ fun PixelEditorScreen(
       contentDescription = "Output shape and preview size",
       explanation = "Chooses the shape of the picture and the resolution it is generated and previewed at.",
     ) { outputMenuOpen = true },
+    // How big one cell of the 3x3 kernel is: one drawing pixel, or a group of 2x2 up to 8x8 pixels.
+    EditorTool(
+      icon = Icons.Default.GridOn,
+      contentDescription = "Choose how many pixels make one tile",
+      explanation = "Groups the drawing into cells for the 3x3 kernel: 3x3 means one pixel per cell, " +
+        "6x6 means 2x2 cells, up to 24x24 means 8x8 cells.",
+      selected = output.kernel.grouped,
+    ) { kernelMenuOpen = true },
     // A saving decision, not a drawing one: EPX only changes the file, never the grid being painted.
     // The save-size multiplier lives here too, because the algorithm is what decides which sizes exist.
     EditorTool(
@@ -591,6 +602,15 @@ fun PixelEditorScreen(
           outputMenuOpen = false
         },
       )
+      KernelMenu(
+        expanded = kernelMenuOpen,
+        current = output.kernel,
+        onDismiss = { kernelMenuOpen = false },
+        onKernelChange = { kernel ->
+          onOutputChange(output.copy(kernel = kernel))
+          kernelMenuOpen = false
+        },
+      )
       ScalerMenu(
         expanded = scalerMenuOpen,
         aspect = output.aspect,
@@ -640,6 +660,7 @@ fun PixelEditorScreen(
             mode = mode,
             selection = selection,
             baseCellSizePx = baseCellSizePx,
+            gridStep = if (output.kernel.grouped) output.kernel.cellSize else 1,
             marksEdgeBand = showsEdgeBand(edgeRuleKept, wrapEdges),
             onSelectionChange = { selection = it },
             onColorPicked = { selectedColor = it },
@@ -765,6 +786,65 @@ private fun OutputMenu(
         colors = itemColors,
         trailingIcon = {
           if (output.preview == preview) {
+            Icon(Icons.Default.Check, contentDescription = "Selected", tint = MENU_TEXT_COLOR)
+          }
+        },
+      )
+    }
+  }
+}
+
+/**
+ * The pattern-size picker: how big one cell of the 3x3 kernel is.
+ *
+ * 3x3 is one drawing pixel per kernel cell. 6x6 is a 3x3 kernel of 2x2 cells, 9x9 is 3x3 cells, and so on
+ * up to 24x24 with 8x8 cells; the drawing is grouped into cells of that side before the ordinary 3x3
+ * model runs.
+ */
+@Composable
+private fun KernelMenu(
+  expanded: Boolean,
+  current: KernelSize,
+  onDismiss: () -> Unit,
+  onKernelChange: (KernelSize) -> Unit,
+) {
+  val itemColors = MenuDefaults.itemColors(
+    textColor = MENU_TEXT_COLOR,
+    leadingIconColor = MENU_TEXT_COLOR,
+    trailingIconColor = MENU_TEXT_COLOR,
+  )
+
+  DropdownMenu(
+    expanded = expanded,
+    onDismissRequest = onDismiss,
+    containerColor = PANEL_BACKGROUND,
+  ) {
+    MenuHeading("Tile grouping")
+    KernelSize.entries.forEach { kernel ->
+      DropdownMenuItem(
+        text = {
+          Column(modifier = Modifier.width(220.dp)) {
+            Text(
+              text = kernel.label,
+              color = MENU_TEXT_COLOR,
+              fontSize = 14.sp,
+            )
+            Text(
+              text = if (kernel.grouped) {
+                "${kernel.cellSize}×${kernel.cellSize} cells in a 3×3 kernel"
+              } else {
+                "One pixel per cell (the classic pattern)"
+              },
+              color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+              fontSize = 11.sp,
+              modifier = Modifier.padding(top = 2.dp),
+            )
+          }
+        },
+        onClick = { onKernelChange(kernel) },
+        colors = itemColors,
+        trailingIcon = {
+          if (kernel == current) {
             Icon(Icons.Default.Check, contentDescription = "Selected", tint = MENU_TEXT_COLOR)
           }
         },

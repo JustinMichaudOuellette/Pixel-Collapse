@@ -26,7 +26,7 @@ import java.util.zip.Inflater
 internal object PatternPng {
 
   private const val MAGIC = 0x57464350 // "WFCP"
-  private const val VERSION = 2
+  private const val VERSION = 3
   private const val KEYWORD = "PixelCollapsePattern"
   private const val COLOR_TYPE_RGBA = 6
   private const val BYTES_PER_PIXEL = 4
@@ -65,6 +65,7 @@ internal object PatternPng {
       previewName = payload.previewName,
       scaleName = payload.scaleName,
       scalerName = payload.scalerName,
+      kernelName = payload.kernelName,
       wrapEdges = payload.wrapEdges,
       mirrorHorizontal = payload.mirrorHorizontal,
       mirrorVertical = payload.mirrorVertical,
@@ -86,6 +87,7 @@ internal object PatternPng {
     val previewName: String,
     val scaleName: String,
     val scalerName: String,
+    val kernelName: String,
     val wrapEdges: Boolean,
     val mirrorHorizontal: Boolean,
     val mirrorVertical: Boolean,
@@ -218,6 +220,11 @@ internal object PatternPng {
         } else {
           PixelArtScaler.Nearest.name
         }
+        val kernelName = if (version >= 3) {
+          input.readUTF()
+        } else {
+          KernelSize.Three.name
+        }
         val wrapEdges = input.readBoolean()
         val mirrorHorizontal = input.readBoolean()
         val mirrorVertical = input.readBoolean()
@@ -238,6 +245,7 @@ internal object PatternPng {
           previewName = previewName,
           scaleName = scaleName,
           scalerName = scalerName,
+          kernelName = kernelName,
           wrapEdges = wrapEdges,
           mirrorHorizontal = mirrorHorizontal,
           mirrorVertical = mirrorVertical,
@@ -367,6 +375,7 @@ internal object PatternPng {
       out.writeUTF(snapshot.previewName)
       out.writeUTF(snapshot.scaleName)
       out.writeUTF(snapshot.scalerName)
+      out.writeUTF(snapshot.kernelName)
       out.writeBoolean(snapshot.wrapEdges)
       out.writeBoolean(snapshot.mirrorHorizontal)
       out.writeBoolean(snapshot.mirrorVertical)

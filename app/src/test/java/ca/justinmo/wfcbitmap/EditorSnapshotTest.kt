@@ -40,6 +40,7 @@ class EditorSnapshotTest {
     previewName = "Two",
     scaleName = "Sixteen",
     scalerName = PixelArtScaler.Epx.name,
+    kernelName = KernelSize.Six.name,
     wrapEdges = true,
     mirrorHorizontal = true,
     mirrorVertical = true,

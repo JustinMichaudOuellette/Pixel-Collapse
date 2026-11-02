@@ -165,6 +165,32 @@ data class EditorMessage(
 )
 
 /**
+ * How big one pattern is, counted in drawing pixels.
+ *
+ * The engine's kernel is always 3x3 cells. [Three] makes each cell one pixel; [Six] makes each cell
+ * 2x2 pixels (a 6x6 pattern), [Nine] makes them 3x3, and so on up to [TwentyFour], whose cells are
+ * 8x8 pixels. Larger cells mean the drawing is grouped into blocks before tiling, and the grid shows
+ * one separator per cell.
+ */
+enum class KernelSize(val pixels: Int, val label: String) {
+  Three(3, "3×3"),
+  Six(6, "6×6"),
+  Nine(9, "9×9"),
+  Twelve(12, "12×12"),
+  Fifteen(15, "15×15"),
+  Eighteen(18, "18×18"),
+  TwentyOne(21, "21×21"),
+  TwentyFour(24, "24×24"),
+  ;
+
+  /** Side of one cell of the 3x3 kernel: a 6x6 pattern is three 2x2 cells across. */
+  val cellSize: Int get() = pixels / Three.pixels
+
+  /** Whether this size groups pixels into cells instead of using one pixel per kernel cell. */
+  val grouped: Boolean get() = cellSize > 1
+}
+
+/**
  * What the generated picture is: its shape, the size it is generated at, and the size it is written at.
  */
 data class OutputSettings(
@@ -172,6 +198,7 @@ data class OutputSettings(
   val preview: PreviewScale = PreviewScale.Half,
   val scale: OutputScale = OutputScale.One,
   val scaler: PixelArtScaler = PixelArtScaler.Nearest,
+  val kernel: KernelSize = KernelSize.Three,
 ) {
   /** The same settings with a save size the chosen scaler can actually make. */
   fun withSupportedScale(): OutputSettings {
