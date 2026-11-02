@@ -45,8 +45,16 @@ drawing (cells) ─► 3x3 window tally ─► packed tile set ─► native sol
 * [`WfcGenerator`](app/src/main/java/ca/justinmo/wfcbitmap/WfcGenerator.kt) owns the whole pipeline, the
   per-drawing caches, and the two-attempt strategy: the edge rule first with a budget of four times the last
   solve, then, if it cannot be held, the same drawing relaxed with a much longer deadline.
-* [`BitmapEditor`](app/src/main/java/ca/justinmo/wfcbitmap/BitmapEditor.kt) is the whole UI: the drawing
-  canvas, the toolbars, the output menu, the snackbars, the grid's edge band.
+* **The editor** is split by what each part is for, so every file can be read on its own:
+  [`PixelEditorScreen`](app/src/main/java/ca/justinmo/wfcbitmap/PixelEditorScreen.kt) holds the screen, the
+  output menu and its size rows; [`PixelCanvas`](app/src/main/java/ca/justinmo/wfcbitmap/PixelCanvas.kt) the
+  drawing surface with its zoom, gestures and the marked edge band;
+  [`EditorTools`](app/src/main/java/ca/justinmo/wfcbitmap/EditorTools.kt) the tool strip and the shapes the
+  drawing tools fill; [`ColorToolbar`](app/src/main/java/ca/justinmo/wfcbitmap/ColorToolbar.kt) the palette and
+  its swatches; [`PixelGridState`](app/src/main/java/ca/justinmo/wfcbitmap/PixelGridState.kt) the drawing and
+  its undo history; [`EditorOutput`](app/src/main/java/ca/justinmo/wfcbitmap/EditorOutput.kt) the shape and the
+  two size settings; [`EditorChrome`](app/src/main/java/ca/justinmo/wfcbitmap/EditorChrome.kt) the measurements
+  and colours they share.
 * [`MainActivity`](app/src/main/java/ca/justinmo/wfcbitmap/MainActivity.kt) wires the two together and owns
   the parts the screen must not: generation, saving, sharing, and the session snapshot.
 
@@ -97,7 +105,7 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 | Path | What is in it |
 | --- | --- |
 | `app/src/main/cpp/` | The wave-function-collapse solver in C and its JNI bridge |
-| `app/src/main/java/ca/justinmo/wfcbitmap/` | The editor, the generator, saving, the session snapshot |
+| `app/src/main/java/ca/justinmo/wfcbitmap/` | The editor: screen, canvas, tools, palette, drawing state, output settings, generator, saving, session snapshot |
 | `app/src/main/java/net/akachaki/...` | The generic WFC engine: cells, tile solvers, the solver portfolio |
 | `app/src/test/` | JVM tests |
 | `app/src/androidTest/` | Device tests, including the solver benchmarks |

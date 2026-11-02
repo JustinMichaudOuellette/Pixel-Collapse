@@ -79,22 +79,22 @@ class EdgeBandUniformTest {
   @Test
   fun theBandRuleItselfIsWhatDecidesIt() {
     // The decision the editor makes, spelled out: only a kept border that is not wrapped is marked.
-    assertTrue(BitmapEditor.showsEdgeBand(edgeRuleKept = true, wrapEdges = false))
-    assertFalse(BitmapEditor.showsEdgeBand(edgeRuleKept = false, wrapEdges = false))
-    assertFalse(BitmapEditor.showsEdgeBand(edgeRuleKept = true, wrapEdges = true))
-    assertFalse(BitmapEditor.showsEdgeBand(edgeRuleKept = false, wrapEdges = true))
+    assertTrue(showsEdgeBand(edgeRuleKept = true, wrapEdges = false))
+    assertFalse(showsEdgeBand(edgeRuleKept = false, wrapEdges = false))
+    assertFalse(showsEdgeBand(edgeRuleKept = true, wrapEdges = true))
+    assertFalse(showsEdgeBand(edgeRuleKept = false, wrapEdges = true))
   }
 
   /** Draws a bare grid and answers whether every vertical separator is the same kind of line. */
   private fun separatorsAreUniform(marksEdgeBand: Boolean): Boolean {
-    val grid = BitmapEditor.PixelGridState(initialColumns = GRID, initialRows = GRID)
+    val grid = PixelGridState(initialColumns = GRID, initialRows = GRID)
     rule.setContent {
       val cellPx = with(LocalDensity.current) { CELL.toPx() }
       Box(Modifier.size(CELL * GRID)) {
-        BitmapEditor.ZoomablePixelCanvas(
+        ZoomablePixelCanvas(
           gridState = grid,
           selectedColor = Color.White,
-          mode = BitmapEditor.EditorMode.Paint,
+          mode = EditorMode.Paint,
           selection = null,
           baseCellSizePx = cellPx.toInt(),
           canvasTestTag = TAG,

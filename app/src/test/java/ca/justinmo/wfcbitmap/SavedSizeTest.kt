@@ -20,16 +20,16 @@ class SavedSizeTest {
   fun theDefaultShapeAtOneTimesIsTheGeneratedBitmap() {
     assertEquals(
       WfcGenerator.BITMAP_WIDTH to WfcGenerator.BITMAP_HEIGHT,
-      BitmapEditor.previewPixelSize(BitmapEditor.OutputAspect.Portrait9x16, BitmapEditor.PreviewScale.One),
+      previewPixelSize(OutputAspect.Portrait9x16, PreviewScale.One),
     )
   }
 
   @Test
   fun thePreviewStepsAreWholePixelsPerCell() {
     // A cell has to be a whole number of pixels: half a pixel is not a size a picture can be generated at.
-    for (preview in BitmapEditor.PreviewScale.entries) {
-      val (width, height) = BitmapEditor.previewPixelSize(
-        BitmapEditor.OutputAspect.Portrait9x16,
+    for (preview in PreviewScale.entries) {
+      val (width, height) = previewPixelSize(
+        OutputAspect.Portrait9x16,
         preview,
       )
       assertEquals("${preview.label} width divides the grid", 0, width % WfcGenerator.DEFAULT_COLUMNS)
@@ -47,12 +47,12 @@ class SavedSizeTest {
     // Two pixels per cell quadrupled: 608x1080, which is a phone's preview column drawn 1:1. The default is
     // the size worth looking at rather than the smallest one that works.
     assertEquals(
-      BitmapEditor.PreviewScale.Two,
-      BitmapEditor.OutputSettings().preview,
+      PreviewScale.Two,
+      OutputSettings().preview,
     )
     assertEquals(
       608 to 1080,
-      BitmapEditor.previewPixelSize(BitmapEditor.OutputAspect.Portrait9x16, BitmapEditor.OutputSettings().preview),
+      previewPixelSize(OutputAspect.Portrait9x16, OutputSettings().preview),
     )
   }
 
@@ -60,10 +60,10 @@ class SavedSizeTest {
   fun theSaveSizeIsItsOwnScaleOfTheGrid() {
     // 1x is the picture the app has always generated, 16x is sixteen times it, and neither of those numbers
     // knows or cares what the preview is set to.
-    val one = BitmapEditor.savedPixelSize(BitmapEditor.OutputAspect.Portrait9x16, BitmapEditor.OutputScale.One)
+    val one = savedPixelSize(OutputAspect.Portrait9x16, OutputScale.One)
     assertEquals(WfcGenerator.BITMAP_WIDTH to WfcGenerator.BITMAP_HEIGHT, one)
-    for (scale in BitmapEditor.OutputScale.entries) {
-      val saved = BitmapEditor.savedPixelSize(BitmapEditor.OutputAspect.Portrait9x16, scale)
+    for (scale in OutputScale.entries) {
+      val saved = savedPixelSize(OutputAspect.Portrait9x16, scale)
       assertEquals("width at ${scale.label}", scale.pixels(one.first), saved.first)
       assertEquals("height at ${scale.label}", scale.pixels(one.second), saved.second)
     }
@@ -72,8 +72,8 @@ class SavedSizeTest {
   @Test
   fun theSmallestSaveSizeIsOneTimes() {
     // A file smaller than the picture would be a file the drawing cannot be seen in, so 1x is the floor.
-    assertEquals("1×", BitmapEditor.OutputScale.entries.first().label)
-    assertEquals(1.0, BitmapEditor.OutputScale.entries.first().factor, 0.0)
+    assertEquals("1×", OutputScale.entries.first().label)
+    assertEquals(1.0, OutputScale.entries.first().factor, 0.0)
   }
 
   @Test
@@ -81,20 +81,20 @@ class SavedSizeTest {
     // Four times the largest the list used to have (4x, 1216x2160): 4864x8640.
     assertEquals(
       4864 to 8640,
-      BitmapEditor.savedPixelSize(BitmapEditor.OutputAspect.Portrait9x16, BitmapEditor.OutputScale.Sixteen),
+      savedPixelSize(OutputAspect.Portrait9x16, OutputScale.Sixteen),
     )
   }
 
   @Test
   fun everySizeIsAWholeNumberOfPixels() {
     // Nothing may round down to nothing: every shape at every size still has to be a picture.
-    for (aspect in BitmapEditor.OutputAspect.entries) {
-      for (preview in BitmapEditor.PreviewScale.entries) {
-        val (shownWidth, shownHeight) = BitmapEditor.previewPixelSize(aspect, preview)
+    for (aspect in OutputAspect.entries) {
+      for (preview in PreviewScale.entries) {
+        val (shownWidth, shownHeight) = previewPixelSize(aspect, preview)
         assertTrue("${aspect.label} at ${preview.label} is ${shownWidth}x$shownHeight", shownWidth > 0 && shownHeight > 0)
       }
-      for (scale in BitmapEditor.OutputScale.entries) {
-        val (width, height) = BitmapEditor.savedPixelSize(aspect, scale)
+      for (scale in OutputScale.entries) {
+        val (width, height) = savedPixelSize(aspect, scale)
         assertTrue("${aspect.label} saved at ${scale.label} is ${width}x$height", width > 0 && height > 0)
       }
     }
@@ -102,11 +102,11 @@ class SavedSizeTest {
 
   @Test
   fun theShapeDecidesTheProportions() {
-    val preview = BitmapEditor.PreviewScale.One
-    val scale = BitmapEditor.OutputScale.One
-    val portrait = BitmapEditor.previewPixelSize(BitmapEditor.OutputAspect.Portrait9x16, preview)
-    val square = BitmapEditor.previewPixelSize(BitmapEditor.OutputAspect.Square, preview)
-    val landscape = BitmapEditor.previewPixelSize(BitmapEditor.OutputAspect.Landscape16x9, preview)
+    val preview = PreviewScale.One
+    val scale = OutputScale.One
+    val portrait = previewPixelSize(OutputAspect.Portrait9x16, preview)
+    val square = previewPixelSize(OutputAspect.Square, preview)
+    val landscape = previewPixelSize(OutputAspect.Landscape16x9, preview)
 
     // Square to within a cell: the grid keeps a fixed cell count, so the sides are whole cells and one of
     // them can round a cell further than the other (203x202 cells for a square).
@@ -120,8 +120,8 @@ class SavedSizeTest {
 
   @Test
   fun everyShapeIsWithinACellOfItsAspectRatio() {
-    for (aspect in BitmapEditor.OutputAspect.entries) {
-      val (width, height) = BitmapEditor.previewPixelSize(aspect, BitmapEditor.PreviewScale.One)
+    for (aspect in OutputAspect.entries) {
+      val (width, height) = previewPixelSize(aspect, PreviewScale.One)
       val ratio = width.toFloat() / height
       assertEquals(
         "${aspect.label} should keep its proportions: ${width}x$height",

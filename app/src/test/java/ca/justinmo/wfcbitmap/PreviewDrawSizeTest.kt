@@ -21,9 +21,9 @@ class PreviewDrawSizeTest {
 
   @Test
   fun everyPreviewSizeFillsTheColumn() {
-    for (preview in BitmapEditor.PreviewScale.entries) {
-      val (bitmapWidth, bitmapHeight) = BitmapEditor.previewPixelSize(
-        BitmapEditor.OutputAspect.Portrait9x16,
+    for (preview in PreviewScale.entries) {
+      val (bitmapWidth, bitmapHeight) = previewPixelSize(
+        OutputAspect.Portrait9x16,
         preview,
       )
       val (width, height) = previewDrawSize(bitmapWidth, bitmapHeight, columnWidth, columnHeight)

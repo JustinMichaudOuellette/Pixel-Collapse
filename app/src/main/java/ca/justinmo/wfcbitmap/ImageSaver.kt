@@ -78,7 +78,7 @@ object ImageSaver {
    * [bitmap], or a copy of it resampled to exactly [width] x [height].
    *
    * A size rather than a multiplier, because the save size is not a multiple of anything on screen: it is
-   * its own size, worked out from the grid by [BitmapEditor.savedPixelSize]. The factors between any preview
+   * its own size, worked out from the grid by [savedPixelSize]. The factors between any preview
    * size and any save size are whole numbers (one, two, four, eight times a cell), so resampling with nearest
    * neighbour is exact: the file is the same picture, with more or fewer pixels each.
    *

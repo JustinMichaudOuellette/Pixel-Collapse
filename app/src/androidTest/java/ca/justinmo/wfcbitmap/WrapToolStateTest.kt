@@ -53,7 +53,7 @@ class WrapToolStateTest {
 
   @Test
   fun theButtonIsLitWhenThePictureCouldNotKeepTheBorder() {
-    rule.setContent { BitmapEditor.PixelEditorScreen(edgeRuleKept = false) }
+    rule.setContent { PixelEditorScreen(edgeRuleKept = false) }
     rule.waitForIdle()
 
     // Wrapping is not on -- it is the picture that dropped the rule -- and the button still has to say that
@@ -63,7 +63,7 @@ class WrapToolStateTest {
 
   @Test
   fun theButtonIsDarkWhileTheBorderIsKept() {
-    rule.setContent { BitmapEditor.PixelEditorScreen(edgeRuleKept = true) }
+    rule.setContent { PixelEditorScreen(edgeRuleKept = true) }
     rule.waitForIdle()
 
     rule.onNodeWithContentDescription(WRAP).assertIsNotSelected()
@@ -73,7 +73,7 @@ class WrapToolStateTest {
   fun tappingItWrapsAndItStaysLit() {
     rule.setContent {
       var wrap by remember { mutableStateOf(false) }
-      BitmapEditor.PixelEditorScreen(
+      PixelEditorScreen(
         wrapEdges = wrap,
         onWrapEdgesChange = { wrap = it },
         edgeRuleKept = true,

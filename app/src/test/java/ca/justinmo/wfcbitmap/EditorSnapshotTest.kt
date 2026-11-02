@@ -142,7 +142,7 @@ class EditorSnapshotTest {
 
   @Test
   fun restoringADrawingReplacesTheGridAndItsHistory() {
-    val grid = BitmapEditor.PixelGridState(initialColumns = 8, initialRows = 7)
+    val grid = PixelGridState(initialColumns = 8, initialRows = 7)
     grid.paintOver(1, 1, Color.Red)
     assertTrue("something to undo first", grid.canUndo())
 
@@ -159,7 +159,7 @@ class EditorSnapshotTest {
 
   @Test
   fun aSnapshotThatDoesNotFitTheGridIsIgnored() {
-    val grid = BitmapEditor.PixelGridState(initialColumns = 8, initialRows = 7)
+    val grid = PixelGridState(initialColumns = 8, initialRows = 7)
     grid.restoreDrawing(columns = 9, rows = 9, pixels = IntArray(10))
     assertEquals("the grid must be left alone", 8, grid.columns)
     assertEquals(7, grid.rows)

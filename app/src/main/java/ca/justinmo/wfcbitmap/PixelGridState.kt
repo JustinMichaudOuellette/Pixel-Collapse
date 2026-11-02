@@ -1,0 +1,775 @@
+/**
+ * The drawing itself: the grid of cells, the history that makes an edit undoable, and the operations that
+ * reshape the grid -- adding and removing rows and columns, moving a rectangle of cells, stamping a block.
+ *
+ * The pixels are the whole document. Everything else about a session is a setting the caller owns; the drawing
+ * is the part the editor must not lose, so it is kept here and nowhere else.
+ */
+
+package ca.justinmo.wfcbitmap
+
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.semantics.selected
+
+/** Smallest grid allowed in either axis, in cells. */
+const val MIN_GRID_SIZE = 7
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Data model
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A rectangle of cells, inclusive at both corners.
+ *
+ * Selections are kept as cell rectangles rather than pixel rectangles: everything the editor does is
+ * cell-shaped, and a rectangle in cells survives zooming.
+ */
+data class CellRect(val left: Int, val top: Int, val right: Int, val bottom: Int) {
+  val width: Int get() = right - left + 1
+  val height: Int get() = bottom - top + 1
+
+  /** True when [col], [row] is inside the rectangle. */
+  operator fun contains(cell: Pair<Int, Int>): Boolean =
+    cell.first in left..right && cell.second in top..bottom
+
+  /** The same rectangle grown to cover both corners, whatever order they came in. */
+  companion object {
+    /** Null when either corner is outside a [columns] x [rows] grid. */
+    fun between(
+      first: Pair<Int, Int>,
+      second: Pair<Int, Int>,
+      columns: Int,
+      rows: Int,
+    ): CellRect? {
+      val (c0, r0) = first
+      val (c1, r1) = second
+      if (c0 !in 0 until columns || c1 !in 0 until columns) return null
+      if (r0 !in 0 until rows || r1 !in 0 until rows) return null
+      return CellRect(minOf(c0, c1), minOf(r0, r1), maxOf(c0, c1), maxOf(r0, r1))
+    }
+  }
+}
+
+/**
+ * Holds the mutable pixel grid state, and the undo history every edit goes through.
+ *
+ * Two things are kept apart deliberately. [revision] is bumped on every change and is what the live
+ * preview watches; [undoDepth] and [redoDepth] only move when a whole action has finished, so the
+ * buttons that show them do not light up in the middle of a drag.
+ */
+class PixelGridState(
+  palette: List<Color> = PaletteStore.defaultPalette.colors,
+  initialColumns: Int = 16,
+  initialRows: Int = 11,
+) {
+  var columns by mutableIntStateOf(initialColumns)
+    private set
+  var rows by mutableIntStateOf(initialRows)
+    private set
+
+  val defaultColor: Color = palette.minBy { it.luminance() }
+
+  /** One colour per cell, row-major. */
+  val pixels = mutableStateListOf<Color>().apply {
+    repeat(columns * rows) { add(defaultColor) }
+  }
+
+  /**
+   * Bumped on every edit. The live preview watches this one value instead of the pixel list: it is
+   * a single snapshot state read, and it cannot miss two edits that cancel out.
+   */
+  var revision by mutableIntStateOf(0)
+    private set
+
+  /** How many steps back the history can go; drives the undo button. */
+  var undoDepth by mutableIntStateOf(0)
+    private set
+
+  /** How many undone steps can be replayed; drives the redo button. */
+  var redoDepth by mutableIntStateOf(0)
+    private set
+
+  /**
+   * The colour each cell had before its last paint, so a second tap can put it back.
+   *
+   * Not part of the history: undoing clears it, because the colours it remembers belong to a drawing
+   * that no longer exists.
+   */
+  private var previousColors = arrayOfNulls<Color>(columns * rows)
+
+  /** The editor state at one moment. Colours are packed ARGB; the app only ever uses opaque palette colours. */
+  private class Snapshot(val columns: Int, val rows: Int, val argb: IntArray)
+
+  private val undoStack = ArrayDeque<Snapshot>()
+  private val redoStack = ArrayDeque<Snapshot>()
+
+  /** True between [beginEdit] and [endEdit]: the outermost pair owns the one history step. */
+  private var editOpen = false
+
+  /** Whether the open edit has changed anything yet, so a no-op edit can give its snapshot back. */
+  private var editChanged = false
+
+  fun canAddColumn(): Boolean = columns < 500
+  fun canRemoveColumn(): Boolean = columns > MIN_GRID_SIZE
+  fun canAddRow(): Boolean = rows < 500
+  fun canRemoveRow(): Boolean = rows > MIN_GRID_SIZE
+
+// ─────────────────────────────────────────────────────────────────────────────
+// History
+// ─────────────────────────────────────────────────────────────────────────────
+
+  fun canUndo(): Boolean = undoDepth > 0
+  fun canRedo(): Boolean = redoDepth > 0
+
+  /**
+   * Starts an edit that the history treats as one step, ended by [endEdit].
+   *
+   * A drag stroke, a fill, a shape or a selection move is one action to the person doing it even though
+   * it touches many cells, so it has to be one step to undo. Nested pairs do nothing: the outermost one
+   * owns the step, which lets a caller group operations without knowing what is inside them.
+   */
+  fun beginEdit() {
+    if (editOpen) return
+    editOpen = true
+    editChanged = false
+    undoStack.addLast(snapshot())
+    trimHistory()
+    // The redo trail is not dropped here but when the session is shown to change something: a gesture
+    // that turns out to do nothing must leave the history exactly as it found it.
+    refreshDepths()
+  }
+
+  /**
+   * Ends the edit started by [beginEdit], dropping its history step when nothing actually changed, so
+   * undo never steps over a gesture that did nothing.
+   */
+  fun endEdit() {
+    if (!editOpen) return
+    editOpen = false
+    if (!editChanged) {
+      undoStack.removeLastOrNull()
+      refreshDepths()
+    }
+    editChanged = false
+  }
+
+  /**
+   * Ends the open edit and takes back everything it wrote, for a gesture that was cancelled.
+   *
+   * A drag that never landed must leave the drawing exactly as it found it *and* leave no step in the
+   * history: an undo that undoes nothing is a trap for the next press of the undo button.
+   */
+  fun cancelEdit() {
+    if (!editOpen) return
+    val step = undoStack.removeLastOrNull()
+    editOpen = false
+    editChanged = false
+    if (step != null) {
+      restore(step)
+    }
+    // restore() puts the grid back but not the counters, and the undo button reads the counters.
+    refreshDepths()
+  }
+
+  /**
+   * Puts [indices] back to the colours they had in [source], the grid as it was before the edit began.
+   *
+   * This is what makes a drag idempotent: each step of a move puts back the cells the previous step
+   * touched and then re-applies the move from scratch, so dragging a block over other cells and back
+   * leaves those cells exactly as they were. Part of an open edit, so it records no history of its own.
+   */
+  fun revertCells(indices: IntArray, source: List<Color>) {
+    if (source.size != pixels.size) return
+    var changed = false
+    for (index in indices) {
+      if (index !in pixels.indices) continue
+      if (pixels[index] != source[index]) {
+        pixels[index] = source[index]
+        changed = true
+      }
+    }
+    if (changed) revision++
+  }
+
+  fun undo() {
+    val step = undoStack.removeLastOrNull() ?: return
+    redoStack.addLast(snapshot())
+    restore(step)
+    refreshDepths()
+  }
+
+  fun redo() {
+    val step = redoStack.removeLastOrNull() ?: return
+    undoStack.addLast(snapshot())
+    restore(step)
+    refreshDepths()
+  }
+
+  /**
+   * Forgets the history.
+   *
+   * Called when the drawing is replaced wholesale by something the history cannot describe: a step
+   * back into a different drawing would be a lie, not an undo.
+   */
+  fun clearHistory() {
+    undoStack.clear()
+    redoStack.clear()
+    editOpen = false
+    editChanged = false
+    refreshDepths()
+  }
+
+  /**
+   * Replaces the drawing with a saved one, with no history behind it.
+   *
+   * The history is cleared rather than continued: the saved drawing was saved when the app was closed,
+   * and there is nothing behind it to undo *to*. A size that disagrees with the pixel count is ignored,
+   * because a half-restored grid is worse than a fresh one.
+   */
+  fun restoreDrawing(columns: Int, rows: Int, pixels: IntArray) {
+    if (columns < MIN_GRID_SIZE || rows < MIN_GRID_SIZE) return
+    if (pixels.size < columns * rows) return
+    clearHistory()
+    this.columns = columns
+    this.rows = rows
+    this.pixels.clear()
+    this.pixels.addAll(List(columns * rows) { Color(pixels[it]) })
+    previousColors = arrayOfNulls(columns * rows)
+    revision++
+  }
+
+  /** Records the state before a change; a no-op inside an open edit, which already recorded it. */
+  private fun pushUndo() {
+    if (editOpen) return
+    undoStack.addLast(snapshot())
+    trimHistory()
+    redoStack.clear()
+    refreshDepths()
+  }
+
+  /**
+   * Notes that a change is about to be made.
+   *
+   * Outside an edit session that is the step itself. Inside one, it is only the first change that
+   * counts: it marks the session as real, which is what keeps the session's single snapshot as an undo
+   * step and what drops the redo trail. A session that never calls this leaves the history untouched.
+   */
+  private fun noteEdit() {
+    if (!editOpen) {
+      pushUndo()
+      return
+    }
+    if (editChanged) return
+    editChanged = true
+    redoStack.clear()
+    refreshDepths()
+  }
+
+  private fun snapshot(): Snapshot =
+    Snapshot(columns, rows, IntArray(pixels.size) { pixels[it].toArgb() })
+
+  private fun restore(step: Snapshot) {
+    columns = step.columns
+    rows = step.rows
+    val restored = step.argb.map { Color(it) }
+    pixels.clear()
+    pixels.addAll(restored)
+    previousColors = arrayOfNulls(columns * rows)
+    editOpen = false
+    editChanged = false
+    revision++
+  }
+
+  private fun refreshDepths() {
+    undoDepth = undoStack.size
+    redoDepth = redoStack.size
+  }
+
+  /**
+   * Drops the oldest steps once the history holds more cells than [MAX_HISTORY_CELLS], so a drawing at
+   * the 500-cell limit cannot keep hundreds of megabytes of snapshots alive.
+   */
+  private fun trimHistory() {
+    var cells = undoStack.sumOf { it.argb.size }
+    while (undoStack.size > 1 && cells > MAX_HISTORY_CELLS) {
+      cells -= undoStack.removeFirst().argb.size
+    }
+  }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Grid size
+// ─────────────────────────────────────────────────────────────────────────────
+
+  fun addColumnLeft() {
+    if (!canAddColumn()) return
+    noteEdit()
+    val newCols = columns + 1
+    val newPixels = mutableListOf<Color>()
+    val newPrevious = arrayOfNulls<Color>(newCols * rows)
+    for (r in 0 until rows) {
+      newPixels.add(defaultColor)
+      newPrevious[r * newCols] = null
+      for (c in 0 until columns) {
+        val oldIdx = r * columns + c
+        newPixels.add(pixels[oldIdx])
+        newPrevious[r * newCols + (c + 1)] = previousColors[oldIdx]
+      }
+    }
+    columns = newCols
+    pixels.clear()
+    pixels.addAll(newPixels)
+    previousColors = newPrevious
+    revision++
+  }
+
+  fun addColumnRight() {
+    if (!canAddColumn()) return
+    noteEdit()
+    val newCols = columns + 1
+    val newPixels = mutableListOf<Color>()
+    val newPrevious = arrayOfNulls<Color>(newCols * rows)
+    for (r in 0 until rows) {
+      for (c in 0 until columns) {
+        val oldIdx = r * columns + c
+        newPixels.add(pixels[oldIdx])
+        newPrevious[r * newCols + c] = previousColors[oldIdx]
+      }
+      newPixels.add(defaultColor)
+      newPrevious[r * newCols + columns] = null
+    }
+    columns = newCols
+    pixels.clear()
+    pixels.addAll(newPixels)
+    previousColors = newPrevious
+    revision++
+  }
+
+  fun removeColumnLeft() {
+    if (!canRemoveColumn()) return
+    noteEdit()
+    val newCols = columns - 1
+    val newPixels = mutableListOf<Color>()
+    val newPrevious = arrayOfNulls<Color>(newCols * rows)
+    for (r in 0 until rows) {
+      for (c in 0 until newCols) {
+        val oldIdx = r * columns + (c + 1)
+        newPixels.add(pixels[oldIdx])
+        newPrevious[r * newCols + c] = previousColors[oldIdx]
+      }
+    }
+    columns = newCols
+    pixels.clear()
+    pixels.addAll(newPixels)
+    previousColors = newPrevious
+    revision++
+  }
+
+  fun removeColumnRight() {
+    if (!canRemoveColumn()) return
+    noteEdit()
+    val newCols = columns - 1
+    val newPixels = mutableListOf<Color>()
+    val newPrevious = arrayOfNulls<Color>(newCols * rows)
+    for (r in 0 until rows) {
+      for (c in 0 until newCols) {
+        val oldIdx = r * columns + c
+        newPixels.add(pixels[oldIdx])
+        newPrevious[r * newCols + c] = previousColors[oldIdx]
+      }
+    }
+    columns = newCols
+    pixels.clear()
+    pixels.addAll(newPixels)
+    previousColors = newPrevious
+    revision++
+  }
+
+  fun addRowTop() {
+    if (!canAddRow()) return
+    noteEdit()
+    val newRows = rows + 1
+    val newPixels = mutableListOf<Color>()
+    val newPrevious = arrayOfNulls<Color>(columns * newRows)
+    for (c in 0 until columns) {
+      newPixels.add(defaultColor)
+      newPrevious[c] = null
+    }
+    for (r in 0 until rows) {
+      for (c in 0 until columns) {
+        val oldIdx = r * columns + c
+        newPixels.add(pixels[oldIdx])
+        newPrevious[(r + 1) * columns + c] = previousColors[oldIdx]
+      }
+    }
+    rows = newRows
+    pixels.clear()
+    pixels.addAll(newPixels)
+    previousColors = newPrevious
+    revision++
+  }
+
+  fun addRowBottom() {
+    if (!canAddRow()) return
+    noteEdit()
+    val newRows = rows + 1
+    val newPixels = mutableListOf<Color>()
+    val newPrevious = arrayOfNulls<Color>(columns * newRows)
+    for (r in 0 until rows) {
+      for (c in 0 until columns) {
+        val oldIdx = r * columns + c
+        newPixels.add(pixels[oldIdx])
+        newPrevious[r * columns + c] = previousColors[oldIdx]
+      }
+    }
+    for (c in 0 until columns) {
+      newPixels.add(defaultColor)
+      newPrevious[rows * columns + c] = null
+    }
+    rows = newRows
+    pixels.clear()
+    pixels.addAll(newPixels)
+    previousColors = newPrevious
+    revision++
+  }
+
+  fun removeRowTop() {
+    if (!canRemoveRow()) return
+    noteEdit()
+    val newRows = rows - 1
+    val newPixels = mutableListOf<Color>()
+    val newPrevious = arrayOfNulls<Color>(columns * newRows)
+    for (r in 0 until newRows) {
+      for (c in 0 until columns) {
+        val oldIdx = (r + 1) * columns + c
+        newPixels.add(pixels[oldIdx])
+        newPrevious[r * columns + c] = previousColors[oldIdx]
+      }
+    }
+    rows = newRows
+    pixels.clear()
+    pixels.addAll(newPixels)
+    previousColors = newPrevious
+    revision++
+  }
+
+  fun removeRowBottom() {
+    if (!canRemoveRow()) return
+    noteEdit()
+    val newRows = rows - 1
+    val newPixels = mutableListOf<Color>()
+    val newPrevious = arrayOfNulls<Color>(columns * newRows)
+    for (r in 0 until newRows) {
+      for (c in 0 until columns) {
+        val oldIdx = r * columns + c
+        newPixels.add(pixels[oldIdx])
+        newPrevious[r * columns + c] = previousColors[oldIdx]
+      }
+    }
+    rows = newRows
+    pixels.clear()
+    pixels.addAll(newPixels)
+    previousColors = newPrevious
+    revision++
+  }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Painting
+// ─────────────────────────────────────────────────────────────────────────────
+
+  fun getPixel(col: Int, row: Int): Color = pixels[row * columns + col]
+
+  fun setPixel(col: Int, row: Int, color: Color) {
+    val index = row * columns + col
+    if (pixels[index] == color) {
+      // Painting the same colour again is not an edit; regenerating for it would just repeat work.
+      return
+    }
+    noteEdit()
+    pixels[index] = color
+    revision++
+  }
+
+  /**
+   * Handles a tap on a cell: paints it with [color], or puts back the colour it had before, when the
+   * tap lands on a cell that already shows [color].
+   *
+   * A cell therefore toggles: one tap paints, the next restores what was there, the next paints again.
+   * The revert is keyed on the cell's own state, not on which cell was tapped last, so tapping B in
+   * between does not cost A a second tap -- tapping A once puts A back, which is what a tap on a cell
+   * that already has the selected colour has to mean. (It did require A to be the previous tap, so
+   * editing B in between swallowed the first tap on A and it took two.)
+   */
+  fun paint(col: Int, row: Int, color: Color) {
+    if (col !in 0 until columns || row !in 0 until rows) return
+    val index = row * columns + col
+    val current = pixels[index]
+    val previous = previousColors[index]
+    if (previous != null && current == color) {
+      noteEdit()
+      pixels[index] = previous
+      previousColors[index] = null
+      revision++
+      return
+    }
+    if (current != color) {
+      noteEdit()
+      previousColors[index] = current
+      pixels[index] = color
+      revision++
+    }
+  }
+
+  /**
+   * Sets a cell to [color] without the toggle in [paint].
+   *
+   * A stroke paints what it crosses, so dragging back over a cell that already shows the colour has to
+   * leave it alone. It also leaves [previousColors] alone, like [fill]: the revert-on-second-tap rule
+   * belongs to a deliberate tap on one cell, not to a gesture that swept across the drawing.
+   */
+  fun paintOver(col: Int, row: Int, color: Color) {
+    if (col !in 0 until columns || row !in 0 until rows) return
+    val index = row * columns + col
+    if (pixels[index] == color) return
+    noteEdit()
+    pixels[index] = color
+    revision++
+  }
+
+  /**
+   * Paints every cell in [indices] that is not already [color], as one edit, and reports how many
+   * changed. This is what a shape commits: a line, a rectangle or an ellipse arrives all at once.
+   */
+  fun paintCells(indices: Collection<Int>, color: Color): Int {
+    val changing = indices.filter { it in pixels.indices && pixels[it] != color }
+    if (changing.isEmpty()) return 0
+    noteEdit()
+    for (index in changing) pixels[index] = color
+    revision++
+    return changing.size
+  }
+
+  fun clear() {
+    previousColors = arrayOfNulls(columns * rows)
+    if (pixels.all { it == defaultColor }) {
+      return
+    }
+    noteEdit()
+    for (i in pixels.indices) pixels[i] = defaultColor
+    revision++
+  }
+
+  /**
+   * Fills the region of cells around ([col], [row]) that all show the same colour as that cell, and
+   * reports whether anything changed.
+   *
+   * A region is cells reachable by steps up, down, left and right -- not diagonally -- so a diagonal
+   * line is a wall. The whole flood is one edit: [revision] is bumped once, however many cells change.
+   * [previousColors] is left alone because the per-cell revert in [paint] is a single-cell gesture and
+   * has no meaning for a flood.
+   */
+  fun fill(col: Int, row: Int, color: Color): Boolean {
+    if (col !in 0 until columns || row !in 0 until rows) return false
+    val target = pixels[row * columns + col]
+    // Nothing to do when the region already has the requested colour; callers reguard against this
+    // because a no-op fill must not ask for a regeneration.
+    if (target == color) return false
+
+    // Work out the region first and paint it afterwards: the history step has to be taken while the
+    // drawing still looks like it did, not once the flood has already changed it.
+    val region = ArrayList<Int>()
+    val seen = BooleanArray(columns * rows)
+    val pending = ArrayDeque<Int>()
+    pending.addLast(row * columns + col)
+    while (pending.isNotEmpty()) {
+      val index = pending.removeLast()
+      if (seen[index] || pixels[index] != target) continue
+      seen[index] = true
+      region.add(index)
+      val c = index % columns
+      val r = index / columns
+      if (c > 0) pending.addLast(index - 1)
+      if (c < columns - 1) pending.addLast(index + 1)
+      if (r > 0) pending.addLast(index - columns)
+      if (r < rows - 1) pending.addLast(index + columns)
+    }
+
+    noteEdit()
+    for (index in region) pixels[index] = color
+    revision++
+    return true
+  }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Whole-drawing edits
+// ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Replaces every cell showing [from] with [to] and reports how many changed.
+   *
+   * The per-cell revert colours are dropped: after a replace the drawing has no single-cell history that
+   * a tap could meaningfully put back.
+   */
+  fun replaceColor(from: Color, to: Color): Int {
+    if (from == to) return 0
+    val targets = pixels.indices.filter { pixels[it] == from }
+    if (targets.isEmpty()) return 0
+    noteEdit()
+    for (index in targets) pixels[index] = to
+    previousColors = arrayOfNulls(columns * rows)
+    revision++
+    return targets.size
+  }
+
+  fun flipHorizontal() {
+    if (columns < 2) return
+    noteEdit()
+    for (row in 0 until rows) {
+      val start = row * columns
+      for (col in 0 until columns / 2) {
+        val left = start + col
+        val right = start + columns - 1 - col
+        val swapped = pixels[left]
+        pixels[left] = pixels[right]
+        pixels[right] = swapped
+      }
+    }
+    previousColors = arrayOfNulls(columns * rows)
+    revision++
+  }
+
+  fun flipVertical() {
+    if (rows < 2) return
+    noteEdit()
+    for (row in 0 until rows / 2) {
+      val top = row * columns
+      val bottom = (rows - 1 - row) * columns
+      for (col in 0 until columns) {
+        val swapped = pixels[top + col]
+        pixels[top + col] = pixels[bottom + col]
+        pixels[bottom + col] = swapped
+      }
+    }
+    previousColors = arrayOfNulls(columns * rows)
+    revision++
+  }
+
+  /**
+   * Turns the drawing a quarter turn clockwise, which swaps [columns] and [rows].
+   *
+   * A tap's remembered colours are dropped: the cells they described have moved, and a tap should not
+   * put a colour back into a cell that is now somewhere else.
+   */
+  fun rotateClockwise() {
+    noteEdit()
+    val old = pixels.toList()
+    val newColumns = rows
+    val newRows = columns
+    val turned = MutableList(newColumns * newRows) { defaultColor }
+    for (row in 0 until rows) {
+      for (col in 0 until columns) {
+        val newCol = rows - 1 - row
+        val newRow = col
+        turned[newRow * newColumns + newCol] = old[row * columns + col]
+      }
+    }
+    columns = newColumns
+    rows = newRows
+    pixels.clear()
+    pixels.addAll(turned)
+    previousColors = arrayOfNulls(columns * rows)
+    revision++
+  }
+
+  /**
+   * Moves what is inside [rect] by [dCol], [dRow] cells and reports whether anything moved.
+   *
+   * The cells the selection leaves behind go back to [defaultColor], like [clear]: the drawing has no
+   * transparency, so a hole has to be filled with something. The destination is clamped so the whole
+   * selection stays inside the grid, and the source is read into a buffer first so a move that overlaps
+   * its own starting place does not smear.
+   */
+  fun moveCells(rect: CellRect, dCol: Int, dRow: Int): Boolean {
+    if (rect.width <= 0 || rect.height <= 0) return false
+    if (rect.right >= columns || rect.bottom >= rows || rect.left < 0 || rect.top < 0) return false
+    val newLeft = (rect.left + dCol).coerceIn(0, columns - rect.width)
+    val newTop = (rect.top + dRow).coerceIn(0, rows - rect.height)
+    if (newLeft == rect.left && newTop == rect.top) return false
+
+    val lifted = Array(rect.width * rect.height) { pixels[rect.top * columns + rect.left + it % rect.width + (it / rect.width) * columns] }
+    noteEdit()
+    for (row in rect.top..rect.bottom) {
+      for (col in rect.left..rect.right) pixels[row * columns + col] = defaultColor
+    }
+    for (row in 0 until rect.height) {
+      for (col in 0 until rect.width) {
+        pixels[(newTop + row) * columns + newLeft + col] = lifted[row * rect.width + col]
+      }
+    }
+    previousColors = arrayOfNulls(columns * rows)
+    revision++
+    return true
+  }
+
+  /** The rectangle [rect] would occupy after a move by [dCol], [dRow], clamped the same way [moveCells] clamps. */
+  fun movedRect(rect: CellRect, dCol: Int, dRow: Int): CellRect {
+    val newLeft = (rect.left + dCol).coerceIn(0, (columns - rect.width).coerceAtLeast(0))
+    val newTop = (rect.top + dRow).coerceIn(0, (rows - rect.height).coerceAtLeast(0))
+    return CellRect(newLeft, newTop, newLeft + rect.width - 1, newTop + rect.height - 1)
+  }
+
+  /** The cell indices inside [rect], row-major. Used to snapshot a selection for a move preview. */
+  fun indicesOf(rect: CellRect): List<Int> {
+    val indices = ArrayList<Int>(rect.width * rect.height)
+    for (row in rect.top..rect.bottom) {
+      for (col in rect.left..rect.right) {
+        if (col in 0 until columns && row in 0 until rows) indices.add(row * columns + col)
+      }
+    }
+    return indices
+  }
+
+  /**
+   * Writes a lifted block of colours back into [rect], row-major, and reports whether anything changed.
+   *
+   * This is how a selection move is applied while it is being dragged: the caller keeps the block, clears
+   * where it was, and stamps it where it is now. Stamping from the held block rather than from the grid
+   * is what stops a move that passes over its own starting place from smearing the pixels.
+   */
+  fun stamp(rect: CellRect, block: List<Color>): Boolean {
+    if (block.size < rect.width * rect.height) return false
+    val changes = ArrayList<Pair<Int, Color>>(rect.width * rect.height)
+    for (row in 0 until rect.height) {
+      for (col in 0 until rect.width) {
+        val targetCol = rect.left + col
+        val targetRow = rect.top + row
+        if (targetCol !in 0 until columns || targetRow !in 0 until rows) continue
+        val index = targetRow * columns + targetCol
+        val color = block[row * rect.width + col]
+        if (pixels[index] != color) changes.add(index to color)
+      }
+    }
+    if (changes.isEmpty()) return false
+    noteEdit()
+    for ((index, color) in changes) pixels[index] = color
+    revision++
+    return true
+  }
+
+
+}
+
+/**
+ * How many cells of history are kept before the oldest steps are dropped: a few of the largest possible
+ * drawings, and thousands of ordinary ones.
+ */
+private const val MAX_HISTORY_CELLS = 8_000_000

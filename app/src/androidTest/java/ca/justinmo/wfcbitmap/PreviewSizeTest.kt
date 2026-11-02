@@ -20,7 +20,7 @@ class PreviewSizeTest {
 
   @Test
   fun theGeneratedBitmapIsTheGridTimesThePixelsPerCell() = runBlocking {
-    for (preview in BitmapEditor.PreviewScale.entries) {
+    for (preview in PreviewScale.entries) {
       val output = generate(preview)
       assertEquals("${preview.label} width", COLUMNS * preview.pixelsPerCell, output.bitmap.width)
       assertEquals("${preview.label} height", ROWS * preview.pixelsPerCell, output.bitmap.height)
@@ -38,10 +38,10 @@ class PreviewSizeTest {
   fun aBiggerPreviewDoesNotChangeThePicture() = runBlocking {
     // The same drawing and seed at two preview sizes: every cell has to hold the colour the small picture
     // gives it, because the grid the solver filled is the same one in both.
-    val small = generate(BitmapEditor.PreviewScale.Half)
-    val large = generate(BitmapEditor.PreviewScale.Two)
-    val smallScale = BitmapEditor.PreviewScale.Half.pixelsPerCell
-    val largeScale = BitmapEditor.PreviewScale.Two.pixelsPerCell
+    val small = generate(PreviewScale.Half)
+    val large = generate(PreviewScale.Two)
+    val smallScale = PreviewScale.Half.pixelsPerCell
+    val largeScale = PreviewScale.Two.pixelsPerCell
     for (y in 0 until ROWS) {
       for (x in 0 until COLUMNS) {
         val atSmall = small.bitmap.getPixel(x * smallScale, y * smallScale)
@@ -54,7 +54,7 @@ class PreviewSizeTest {
         for (dy in 0 until largeScale) {
           for (dx in 0 until largeScale) {
             assertEquals(
-              "cell ($x, $y) is solid at ${BitmapEditor.PreviewScale.Two.label}",
+              "cell ($x, $y) is solid at ${PreviewScale.Two.label}",
               atSmall,
               large.bitmap.getPixel(x * largeScale + dx, y * largeScale + dy),
             )
@@ -64,7 +64,7 @@ class PreviewSizeTest {
     }
   }
 
-  private suspend fun generate(preview: BitmapEditor.PreviewScale) = WfcGenerator.generate(
+  private suspend fun generate(preview: PreviewScale) = WfcGenerator.generate(
     pixels = drawing(),
     sourceWidth = SIDE,
     sourceHeight = SIDE,

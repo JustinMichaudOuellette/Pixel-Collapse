@@ -12,7 +12,7 @@ import org.junit.runner.RunWith
 /**
  * The save size, as bitmaps rather than as arithmetic.
  *
- * The menu's numbers come from [BitmapEditor.savedPixelSize]; this checks the thing those numbers are
+ * The menu's numbers come from [savedPixelSize]; this checks the thing those numbers are
  * promises about -- that [ImageSaver.atSize] actually makes a picture that size, whatever the preview was
  * generated at. The factors between any preview size and any save size are whole numbers, so the file is the
  * same picture with more or fewer pixels each, and not a smeared one.
@@ -37,9 +37,9 @@ class OutputScaleScalingTest {
   fun everySizeTheMenuShowsIsTheSizeTheFileComesOut() {
     val source = pattern()
     try {
-      for (aspect in BitmapEditor.OutputAspect.entries) {
-        for (scale in BitmapEditor.OutputScale.entries) {
-          val (width, height) = BitmapEditor.savedPixelSize(aspect, scale)
+      for (aspect in OutputAspect.entries) {
+        for (scale in OutputScale.entries) {
+          val (width, height) = savedPixelSize(aspect, scale)
           if (width.toLong() * height > MAX_TEST_PIXELS) continue
           val written = ImageSaver.atSize(source, width, height)
           try {
@@ -68,9 +68,9 @@ class OutputScaleScalingTest {
   @Test
   fun theSixteenIsEnlargedOrReportedAsTooBig() {
     val source = pattern()
-    val (width, height) = BitmapEditor.savedPixelSize(
-      BitmapEditor.OutputAspect.Portrait9x16,
-      BitmapEditor.OutputScale.Sixteen,
+    val (width, height) = savedPixelSize(
+      OutputAspect.Portrait9x16,
+      OutputScale.Sixteen,
     )
     val outcome = runCatching { ImageSaver.atSize(source, width, height) }
     outcome.onSuccess { big ->

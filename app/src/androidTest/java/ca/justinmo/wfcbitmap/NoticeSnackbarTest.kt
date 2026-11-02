@@ -48,7 +48,7 @@ class NoticeSnackbarTest {
   @Test
   fun theNoticeIsShownInASnackbar() {
     rule.setContent {
-      BitmapEditor.PixelEditorScreen(notice = MESSAGE)
+      PixelEditorScreen(notice = MESSAGE)
     }
     rule.waitForIdle()
     rule.onNodeWithText(MESSAGE, substring = true).assertExists("the notice has to reach the screen")
@@ -57,7 +57,7 @@ class NoticeSnackbarTest {
   @Test
   fun noNoticeMeansNoSnackbar() {
     rule.setContent {
-      BitmapEditor.PixelEditorScreen(notice = null)
+      PixelEditorScreen(notice = null)
     }
     rule.waitForIdle()
     assertTrue(

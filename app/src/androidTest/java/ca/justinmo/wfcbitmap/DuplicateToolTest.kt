@@ -62,16 +62,16 @@ class DuplicateToolTest {
 
   @Test
   fun draggingASelectionCopiesItAndLeavesTheOriginal() {
-    val grid = BitmapEditor.PixelGridState(initialColumns = GRID, initialRows = GRID)
+    val grid = PixelGridState(initialColumns = GRID, initialRows = GRID)
     // A 2x2 block to copy.
     for (row in 2..3) for (col in 2..3) grid.paintOver(col, row, ink)
 
-    val mode = mutableStateOf(BitmapEditor.EditorMode.Paint)
-    val selection = mutableStateOf<BitmapEditor.CellRect?>(null)
+    val mode = mutableStateOf(EditorMode.Paint)
+    val selection = mutableStateOf<CellRect?>(null)
     rule.setContent {
       val cellPx = with(LocalDensity.current) { CELL.toPx() }
       Box(Modifier.size(CELL * GRID)) {
-        BitmapEditor.ZoomablePixelCanvas(
+        ZoomablePixelCanvas(
           gridState = grid,
           selectedColor = Color.White,
           mode = mode.value,
@@ -79,14 +79,14 @@ class DuplicateToolTest {
           baseCellSizePx = cellPx.toInt(),
           canvasTestTag = TAG,
           onSelectionChange = { selection.value = it },
-          onModeConsumed = { mode.value = BitmapEditor.EditorMode.Paint },
+          onModeConsumed = { mode.value = EditorMode.Paint },
           onTap = {},
           onResize = {},
         )
       }
     }
     rule.waitForIdle()
-    rule.runOnUiThread { mode.value = BitmapEditor.EditorMode.Duplicate }
+    rule.runOnUiThread { mode.value = EditorMode.Duplicate }
     rule.waitForIdle()
 
     // First gesture: drag out the area to copy.
@@ -97,7 +97,7 @@ class DuplicateToolTest {
     assertNotNull("the drag chose an area to copy", selection.value)
     assertEquals(
       "choosing the area does not spend the tool: the next drag copies it",
-      BitmapEditor.EditorMode.Duplicate,
+      EditorMode.Duplicate,
       mode.value,
     )
 
@@ -118,7 +118,7 @@ class DuplicateToolTest {
     assertEquals("all of it", ink, grid.getPixel(3, 3))
     assertEquals("nothing was eaten on the way", grid.defaultColor, grid.getPixel(5, 7))
     assertNull("putting the copy down releases the selection", selection.value)
-    assertEquals("and spends the tool", BitmapEditor.EditorMode.Paint, mode.value)
+    assertEquals("and spends the tool", EditorMode.Paint, mode.value)
   }
 
   private fun cellCentre(col: Int, row: Int): Offset = with(rule.density) {

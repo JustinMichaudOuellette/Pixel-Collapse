@@ -53,7 +53,7 @@ class OutputMenuStyleTest {
 
   @Test
   fun theMenuIsADarkPanelWithLightLabels() {
-    rule.setContent { BitmapEditor.PixelEditorScreen() }
+    rule.setContent { PixelEditorScreen() }
     rule.waitForIdle()
     rule.onNodeWithContentDescription("Output shape and size").performClick()
     rule.waitForIdle()
@@ -82,7 +82,7 @@ class OutputMenuStyleTest {
    */
   @Test
   fun theSizeListShowsThePixelsItWrites() {
-    rule.setContent { BitmapEditor.PixelEditorScreen() }
+    rule.setContent { PixelEditorScreen() }
     rule.waitForIdle()
     rule.onNodeWithContentDescription("Output shape and size").performClick()
     rule.waitForIdle()

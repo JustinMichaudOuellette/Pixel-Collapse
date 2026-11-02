@@ -40,7 +40,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import ca.justinmo.wfcbitmap.BitmapEditor.PixelEditorScreen
+import ca.justinmo.wfcbitmap.PixelEditorScreen
 import ca.justinmo.wfcbitmap.ui.theme.WFCBitmapTheme
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -177,7 +177,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   }
 
   val gridState = remember {
-    BitmapEditor.PixelGridState().apply {
+    PixelGridState().apply {
       restored?.let { restoreDrawing(it.columns, it.rows, it.pixels) }
     }
   }
@@ -221,16 +221,16 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    */
   var outputSettings by remember {
     mutableStateOf(
-      BitmapEditor.OutputSettings(
+      OutputSettings(
         aspect = restored?.aspectName?.let { name ->
-          BitmapEditor.OutputAspect.entries.firstOrNull { it.name == name }
-        } ?: BitmapEditor.OutputAspect.Portrait9x16,
+          OutputAspect.entries.firstOrNull { it.name == name }
+        } ?: OutputAspect.Portrait9x16,
         preview = restored?.previewName?.let { name ->
-          BitmapEditor.PreviewScale.entries.firstOrNull { it.name == name }
-        } ?: BitmapEditor.PreviewScale.Two,
+          PreviewScale.entries.firstOrNull { it.name == name }
+        } ?: PreviewScale.Two,
         scale = restored?.scaleName?.let { name ->
-          BitmapEditor.OutputScale.entries.firstOrNull { it.name == name }
-        } ?: BitmapEditor.OutputScale.One,
+          OutputScale.entries.firstOrNull { it.name == name }
+        } ?: OutputScale.One,
       ),
     )
   }
@@ -482,7 +482,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * button that opens the very row that was written. It is cleared as soon as the snackbar has it, so the
    * same outcome showing twice is two saves, not one message refused the second time.
    */
-  var message by remember { mutableStateOf<BitmapEditor.EditorMessage?>(null) }
+  var message by remember { mutableStateOf<EditorMessage?>(null) }
 
   /** Opens a picture that was just saved, in whatever the device shows pictures with. */
   fun viewPicture(picture: Uri) {
@@ -498,7 +498,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * multiple of whatever the preview happens to be showing.
    */
   fun savedSize(): Pair<Int, Int> =
-    BitmapEditor.savedPixelSize(outputSettings.aspect, outputSettings.scale)
+    savedPixelSize(outputSettings.aspect, outputSettings.scale)
 
   fun writePicture(picture: Bitmap) {
     scope.launch {
@@ -514,7 +514,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       }
       outcome.fold(
         onSuccess = { saved ->
-          message = BitmapEditor.EditorMessage(
+          message = EditorMessage(
             text = "Saved to the gallery",
             actionLabel = "View",
             onAction = { viewPicture(saved) },
@@ -523,7 +523,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         onFailure = { error ->
           Log.w(TAG, "Could not save the picture", error)
           // No button: the reason is the whole of the news, and there is nothing to open.
-          message = BitmapEditor.EditorMessage(tooBigMessage(error) ?: "Could not save the picture")
+          message = EditorMessage(tooBigMessage(error) ?: "Could not save the picture")
         },
       )
     }

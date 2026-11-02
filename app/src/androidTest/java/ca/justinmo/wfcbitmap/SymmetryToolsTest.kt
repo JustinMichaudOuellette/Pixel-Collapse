@@ -56,7 +56,7 @@ class SymmetryToolsTest {
     rule.setContent {
       var horizontal by remember { mutableStateOf(false) }
       var vertical by remember { mutableStateOf(false) }
-      BitmapEditor.PixelEditorScreen(
+      PixelEditorScreen(
         mirrorHorizontal = horizontal,
         onMirrorHorizontalChange = { horizontal = it },
         mirrorVertical = vertical,

@@ -15,7 +15,7 @@ class StrokeSamplingTest {
 
   private fun samples(from: Offset, to: Offset, step: Float): List<Offset> {
     val points = mutableListOf<Offset>()
-    BitmapEditor.sampleSegment(from, to, step) { points.add(it) }
+    sampleSegment(from, to, step) { points.add(it) }
     return points
   }
 
@@ -81,7 +81,7 @@ class StrokeSamplingTest {
 
   @Test(expected = IllegalArgumentException::class)
   fun aNonPositiveStepIsRejected() {
-    BitmapEditor.sampleSegment(Offset.Zero, Offset(1f, 1f), step = 0f) { }
+    sampleSegment(Offset.Zero, Offset(1f, 1f), step = 0f) { }
   }
 
   @Test

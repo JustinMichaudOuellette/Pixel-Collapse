@@ -20,7 +20,7 @@ class PixelGridEditsTest {
   private val green = Color(0xFF63C74D)
 
   private fun grid(columns: Int = 4, rows: Int = 3) =
-    BitmapEditor.PixelGridState(initialColumns = columns, initialRows = rows)
+    PixelGridState(initialColumns = columns, initialRows = rows)
 
   // ───────────────────────────────────────────────────────────────────────────
   // Undo and redo
@@ -272,7 +272,7 @@ class PixelGridEditsTest {
     grid.paintOver(0, 0, red)
     grid.paintOver(1, 0, blue)
 
-    val moved = grid.moveCells(BitmapEditor.CellRect(0, 0, 1, 0), dCol = 2, dRow = 0)
+    val moved = grid.moveCells(CellRect(0, 0, 1, 0), dCol = 2, dRow = 0)
 
     assertTrue(moved)
     assertEquals(grid.defaultColor, grid.getPixel(0, 0))
@@ -286,7 +286,7 @@ class PixelGridEditsTest {
     val grid = grid(columns = 4, rows = 2)
     grid.paintOver(0, 0, red)
 
-    grid.moveCells(BitmapEditor.CellRect(0, 0, 0, 0), dCol = 99, dRow = 0)
+    grid.moveCells(CellRect(0, 0, 0, 0), dCol = 99, dRow = 0)
 
     assertEquals("the selection stops at the last column", red, grid.getPixel(3, 0))
   }
@@ -296,14 +296,14 @@ class PixelGridEditsTest {
     val grid = grid()
     grid.paintOver(1, 1, red)
 
-    assertFalse(grid.moveCells(BitmapEditor.CellRect(1, 1, 1, 1), dCol = 0, dRow = 0))
+    assertFalse(grid.moveCells(CellRect(1, 1, 1, 1), dCol = 0, dRow = 0))
   }
 
   @Test
   fun movedRectFollowsTheSameClampingAsTheMove() {
     val grid = grid(columns = 4, rows = 2)
 
-    val target = grid.movedRect(BitmapEditor.CellRect(0, 0, 1, 0), dCol = 99, dRow = 0)
+    val target = grid.movedRect(CellRect(0, 0, 1, 0), dCol = 99, dRow = 0)
 
     assertEquals(2, target.left)
     assertEquals(3, target.right)
@@ -315,7 +315,7 @@ class PixelGridEditsTest {
     grid.paintOver(0, 0, red)
     val stepsBefore = grid.undoDepth
 
-    grid.moveCells(BitmapEditor.CellRect(0, 0, 0, 0), dCol = 1, dRow = 1)
+    grid.moveCells(CellRect(0, 0, 0, 0), dCol = 1, dRow = 1)
     assertEquals(stepsBefore + 1, grid.undoDepth)
 
     grid.undo()
@@ -327,10 +327,10 @@ class PixelGridEditsTest {
     val grid = grid(columns = 3, rows = 1)
     grid.paintOver(0, 0, red)
     grid.paintOver(1, 0, blue)
-    val lifted = grid.indicesOf(BitmapEditor.CellRect(0, 0, 1, 0)).map { grid.pixels[it] }
+    val lifted = grid.indicesOf(CellRect(0, 0, 1, 0)).map { grid.pixels[it] }
 
-    grid.paintCells(grid.indicesOf(BitmapEditor.CellRect(0, 0, 1, 0)), grid.defaultColor)
-    assertTrue(grid.stamp(BitmapEditor.CellRect(1, 0, 2, 0), lifted))
+    grid.paintCells(grid.indicesOf(CellRect(0, 0, 1, 0)), grid.defaultColor)
+    assertTrue(grid.stamp(CellRect(1, 0, 2, 0), lifted))
 
     assertEquals("the block moved a column right", red, grid.getPixel(1, 0))
     assertEquals(blue, grid.getPixel(2, 0))
@@ -338,20 +338,20 @@ class PixelGridEditsTest {
 
   @Test
   fun aSelectionRectangleNormalisesItsCorners() {
-    val rect = BitmapEditor.CellRect.between(3 to 2, 1 to 0, columns = 4, rows = 3)
+    val rect = CellRect.between(3 to 2, 1 to 0, columns = 4, rows = 3)
 
-    assertEquals(BitmapEditor.CellRect(1, 0, 3, 2), rect)
+    assertEquals(CellRect(1, 0, 3, 2), rect)
   }
 
   @Test
   fun aSelectionRectangleOutsideTheGridIsDropped() {
-    assertFalse(BitmapEditor.CellRect.between(0 to 0, 9 to 0, columns = 4, rows = 3) != null)
-    assertFalse(BitmapEditor.CellRect.between(-1 to 0, 1 to 0, columns = 4, rows = 3) != null)
+    assertFalse(CellRect.between(0 to 0, 9 to 0, columns = 4, rows = 3) != null)
+    assertFalse(CellRect.between(-1 to 0, 1 to 0, columns = 4, rows = 3) != null)
   }
 
   @Test
   fun aSelectionKnowsWhichCellsAreInsideIt() {
-    val rect = BitmapEditor.CellRect(1, 1, 2, 2)
+    val rect = CellRect(1, 1, 2, 2)
 
     assertTrue(1 to 1 in rect)
     assertTrue(2 to 2 in rect)
@@ -392,8 +392,8 @@ class PixelGridEditsTest {
     // Each case prepares a drawing, snapshots it, makes one edit, undoes it, and expects the snapshot back.
     data class Case(
       val name: String,
-      val prepare: (BitmapEditor.PixelGridState) -> Unit = {},
-      val edit: (BitmapEditor.PixelGridState) -> Unit,
+      val prepare: (PixelGridState) -> Unit = {},
+      val edit: (PixelGridState) -> Unit,
     )
 
     val cases = listOf(
@@ -409,8 +409,8 @@ class PixelGridEditsTest {
       Case("rotateClockwise") { g -> g.rotateClockwise() },
       Case("addColumn") { g -> g.addColumnRight() },
       Case("removeRow") { g -> g.removeRowBottom() },
-      Case("moveCells") { g -> g.moveCells(BitmapEditor.CellRect(0, 0, 1, 1), dCol = 1, dRow = 1) },
-      Case("stamp") { g -> g.stamp(BitmapEditor.CellRect(0, 0, 1, 1), listOf(red, red, blue, blue)) },
+      Case("moveCells") { g -> g.moveCells(CellRect(0, 0, 1, 1), dCol = 1, dRow = 1) },
+      Case("stamp") { g -> g.stamp(CellRect(0, 0, 1, 1), listOf(red, red, blue, blue)) },
     )
 
     for (case in cases) {

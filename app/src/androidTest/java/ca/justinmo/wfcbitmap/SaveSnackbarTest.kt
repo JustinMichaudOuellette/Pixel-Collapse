@@ -54,15 +54,15 @@ class SaveSnackbarTest {
     var viewed = 0
     rule.setContent {
       var message by remember {
-        mutableStateOf<BitmapEditor.EditorMessage?>(
-          BitmapEditor.EditorMessage(
+        mutableStateOf<EditorMessage?>(
+          EditorMessage(
             text = "Saved to the gallery",
             actionLabel = "View",
             onAction = { viewed++ },
           ),
         )
       }
-      BitmapEditor.PixelEditorScreen(
+      PixelEditorScreen(
         message = message,
         onMessageShown = { message = null },
       )
@@ -81,8 +81,8 @@ class SaveSnackbarTest {
     // The reason is the whole of the news and there is nothing to open, so it is a line with no action --
     // still a snackbar, so a save never answers in two different kinds of transient popup.
     rule.setContent {
-      BitmapEditor.PixelEditorScreen(
-        message = BitmapEditor.EditorMessage("Not enough memory for that size"),
+      PixelEditorScreen(
+        message = EditorMessage("Not enough memory for that size"),
       )
     }
     rule.waitForIdle()

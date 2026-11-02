@@ -75,20 +75,20 @@ class SelectionToolTest {
   private val underMark = Color(0xFF0000FF)
 
   private class Harness(
-    val grid: BitmapEditor.PixelGridState,
-    val mode: androidx.compose.runtime.MutableState<BitmapEditor.EditorMode>,
-    val selection: androidx.compose.runtime.MutableState<BitmapEditor.CellRect?>,
+    val grid: PixelGridState,
+    val mode: androidx.compose.runtime.MutableState<EditorMode>,
+    val selection: androidx.compose.runtime.MutableState<CellRect?>,
   )
 
   private fun harness(marks: List<Triple<Int, Int, Color>>): Harness {
-    val grid = BitmapEditor.PixelGridState(initialColumns = GRID, initialRows = GRID)
+    val grid = PixelGridState(initialColumns = GRID, initialRows = GRID)
     for ((col, row, colour) in marks) grid.paintOver(col, row, colour)
-    val mode = mutableStateOf(BitmapEditor.EditorMode.Paint)
-    val selection = mutableStateOf<BitmapEditor.CellRect?>(null)
+    val mode = mutableStateOf(EditorMode.Paint)
+    val selection = mutableStateOf<CellRect?>(null)
     rule.setContent {
       val cellPx = with(LocalDensity.current) { CELL.toPx() }
       Box(Modifier.size(CELL * GRID)) {
-        BitmapEditor.ZoomablePixelCanvas(
+        ZoomablePixelCanvas(
           gridState = grid,
           selectedColor = Color.White,
           mode = mode.value,
@@ -96,14 +96,14 @@ class SelectionToolTest {
           baseCellSizePx = cellPx.toInt(),
           canvasTestTag = TAG,
           onSelectionChange = { selection.value = it },
-          onModeConsumed = { mode.value = BitmapEditor.EditorMode.Paint },
+          onModeConsumed = { mode.value = EditorMode.Paint },
           onTap = {},
           onResize = {},
         )
       }
     }
     rule.waitForIdle()
-    rule.runOnUiThread { mode.value = BitmapEditor.EditorMode.Select }
+    rule.runOnUiThread { mode.value = EditorMode.Select }
     rule.waitForIdle()
     return Harness(grid, mode, selection)
   }
@@ -121,7 +121,7 @@ class SelectionToolTest {
     assertNotNull("drawing a marquee must produce a selection", drawn)
     assertEquals(
       "drawing the marquee must not spend the tool, or the next drag paints",
-      BitmapEditor.EditorMode.Select,
+      EditorMode.Select,
       h.mode.value,
     )
 
@@ -198,7 +198,7 @@ class SelectionToolTest {
     assertEquals("and a move that changed nothing leaves no undo step", depthBefore, h.grid.undoDepth)
   }
 
-  private fun cells(grid: BitmapEditor.PixelGridState) =
+  private fun cells(grid: PixelGridState) =
     (0 until GRID).flatMap { row -> (0 until GRID).map { col -> col to row } }
 
   /** Centre of a cell, in the pixels touch injection works in. */

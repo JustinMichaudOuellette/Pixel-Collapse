@@ -26,11 +26,11 @@ data class EditorSnapshot(
   val seed: Int,
   /** The colour the paint tools are drawing with, ARGB. */
   val colorArgb: Int,
-  /** [BitmapEditor.OutputAspect] by name, so a reordered enum cannot silently change a saved session. */
+  /** [OutputAspect] by name, so a reordered enum cannot silently change a saved session. */
   val aspectName: String,
-  /** [BitmapEditor.PreviewScale] by name, for the same reason as [aspectName]. */
+  /** [PreviewScale] by name, for the same reason as [aspectName]. */
   val previewName: String,
-  /** [BitmapEditor.OutputScale] by name, for the same reason as [aspectName]. */
+  /** [OutputScale] by name, for the same reason as [aspectName]. */
   val scaleName: String,
   val wrapEdges: Boolean,
   /** Whether every pattern was also offered flipped left to right. */
@@ -87,7 +87,7 @@ data class EditorSnapshot(
     private const val HEADER_BYTES = 128
 
     /** The editor's own limits on a grid side, so a corrupt file cannot ask for a gigabyte of pixels. */
-    const val MIN_SIDE = BitmapEditor.MIN_GRID_SIZE
+    const val MIN_SIDE = MIN_GRID_SIZE
     const val MAX_SIDE = 500
 
     /** The most a snapshot can be: a header plus a maximum-size grid of ARGB ints. */

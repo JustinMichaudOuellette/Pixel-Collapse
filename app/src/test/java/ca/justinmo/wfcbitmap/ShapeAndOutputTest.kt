@@ -13,13 +13,13 @@ import kotlin.math.abs
 class ShapeAndOutputTest {
 
   private fun line(from: Pair<Int, Int>, to: Pair<Int, Int>, columns: Int = 5, rows: Int = 5) =
-    BitmapEditor.shapeCells(BitmapEditor.EditorMode.Line, from, to, columns, rows).toSet()
+    shapeCells(EditorMode.Line, from, to, columns, rows).toSet()
 
   private fun rectangle(from: Pair<Int, Int>, to: Pair<Int, Int>, columns: Int = 5, rows: Int = 5) =
-    BitmapEditor.shapeCells(BitmapEditor.EditorMode.Rectangle, from, to, columns, rows).toSet()
+    shapeCells(EditorMode.Rectangle, from, to, columns, rows).toSet()
 
   private fun ellipse(from: Pair<Int, Int>, to: Pair<Int, Int>, columns: Int = 5, rows: Int = 5) =
-    BitmapEditor.shapeCells(BitmapEditor.EditorMode.Ellipse, from, to, columns, rows).toSet()
+    shapeCells(EditorMode.Ellipse, from, to, columns, rows).toSet()
 
   private fun index(col: Int, row: Int, columns: Int = 5) = row * columns + col
 

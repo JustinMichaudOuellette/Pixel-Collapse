@@ -24,7 +24,7 @@ class PixelGridStateTest {
 
   @Test
   fun aTapPaintsTheSelectedColour() {
-    val grid = BitmapEditor.PixelGridState()
+    val grid = PixelGridState()
     val before = grid.getPixel(3, 2)
     grid.paint(3, 2, red)
     assertEquals(red, grid.getPixel(3, 2))
@@ -34,7 +34,7 @@ class PixelGridStateTest {
 
   @Test
   fun tappingTheSameCellAgainPutsThePreviousColourBack() {
-    val grid = BitmapEditor.PixelGridState()
+    val grid = PixelGridState()
     val original = grid.getPixel(3, 2)
 
     grid.paint(3, 2, red)
@@ -46,7 +46,7 @@ class PixelGridStateTest {
 
   @Test
   fun theThirdTapPaintsAgain() {
-    val grid = BitmapEditor.PixelGridState()
+    val grid = PixelGridState()
     val original = grid.getPixel(3, 2)
 
     grid.paint(3, 2, red)
@@ -59,7 +59,7 @@ class PixelGridStateTest {
 
   @Test
   fun revertingGoesToTheColourFromBeforeThatPaintNotToTheDefault() {
-    val grid = BitmapEditor.PixelGridState()
+    val grid = PixelGridState()
     grid.paint(1, 1, red)
 
     grid.paint(1, 1, blue)
@@ -71,7 +71,7 @@ class PixelGridStateTest {
 
   @Test
   fun tappingAnotherCellInBetweenDoesNotCostTheFirstCellATap() {
-    val grid = BitmapEditor.PixelGridState()
+    val grid = PixelGridState()
     val original = grid.getPixel(0, 0)
 
     grid.paint(0, 0, red)
@@ -87,7 +87,7 @@ class PixelGridStateTest {
 
   @Test
   fun eachCellKeepsItsOwnPreviousColour() {
-    val grid = BitmapEditor.PixelGridState()
+    val grid = PixelGridState()
     val original = grid.getPixel(0, 0)
 
     grid.paint(0, 0, red)
@@ -102,7 +102,7 @@ class PixelGridStateTest {
 
   @Test
   fun clearingResetsTheRevertState() {
-    val grid = BitmapEditor.PixelGridState()
+    val grid = PixelGridState()
     val original = grid.getPixel(2, 2)
     grid.paint(2, 2, red)
     grid.clear()
@@ -115,7 +115,7 @@ class PixelGridStateTest {
 
   @Test
   fun paintingTheSelectedColourOnACellThatAlreadyHasItIsNotAnEdit() {
-    val grid = BitmapEditor.PixelGridState()
+    val grid = PixelGridState()
     val original = grid.getPixel(4, 4)
 
     // The cell already shows the colour being painted and has no earlier colour remembered, so there is
@@ -127,8 +127,8 @@ class PixelGridStateTest {
 
   @Test
   fun gridSizeMinConstraint() {
-    val min = BitmapEditor.MIN_GRID_SIZE
-    val grid = BitmapEditor.PixelGridState(initialColumns = min, initialRows = min)
+    val min = MIN_GRID_SIZE
+    val grid = PixelGridState(initialColumns = min, initialRows = min)
     assertEquals(min, grid.columns)
     assertEquals(min, grid.rows)
 
@@ -142,7 +142,7 @@ class PixelGridStateTest {
     assertEquals(min, grid.rows)
 
     // One cell above the minimum, shrinking is allowed.
-    val larger = BitmapEditor.PixelGridState(initialColumns = min + 1, initialRows = min + 1)
+    val larger = PixelGridState(initialColumns = min + 1, initialRows = min + 1)
     larger.removeColumnLeft()
     assertEquals(min, larger.columns)
     larger.removeRowTop()
@@ -151,7 +151,7 @@ class PixelGridStateTest {
 
   @Test
   fun resizingGridPreservesPixels() {
-    val grid = BitmapEditor.PixelGridState(initialColumns = 4, initialRows = 4)
+    val grid = PixelGridState(initialColumns = 4, initialRows = 4)
     grid.paint(1, 1, red)
     assertEquals(red, grid.getPixel(1, 1))
 
@@ -174,7 +174,7 @@ class PixelGridStateTest {
 
   @Test
   fun fillFloodsTheConnectedRegionAndStopsAtAWall() {
-    val grid = BitmapEditor.PixelGridState(initialColumns = 4, initialRows = 4)
+    val grid = PixelGridState(initialColumns = 4, initialRows = 4)
     // A full-height wall in column 1 splits the grid in two.
     for (row in 0 until 4) grid.paint(1, row, red)
     val revisionsBefore = grid.revision
@@ -190,7 +190,7 @@ class PixelGridStateTest {
 
   @Test
   fun fillDoesNotLeakThroughAMereDiagonalContact() {
-    val grid = BitmapEditor.PixelGridState(initialColumns = 2, initialRows = 2)
+    val grid = PixelGridState(initialColumns = 2, initialRows = 2)
     grid.paint(1, 0, red)
     grid.paint(0, 1, red)
 
@@ -202,7 +202,7 @@ class PixelGridStateTest {
 
   @Test
   fun fillWithTheColourTheRegionAlreadyHasIsNotAnEdit() {
-    val grid = BitmapEditor.PixelGridState(initialColumns = 3, initialRows = 3)
+    val grid = PixelGridState(initialColumns = 3, initialRows = 3)
     val revisionsBefore = grid.revision
 
     assertFalse(grid.fill(1, 1, grid.defaultColor))
@@ -212,7 +212,7 @@ class PixelGridStateTest {
 
   @Test
   fun fillOutsideTheGridIsNotAnEdit() {
-    val grid = BitmapEditor.PixelGridState(initialColumns = 3, initialRows = 3)
+    val grid = PixelGridState(initialColumns = 3, initialRows = 3)
     val revisionsBefore = grid.revision
 
     assertFalse(grid.fill(-1, 0, red))
@@ -224,7 +224,7 @@ class PixelGridStateTest {
 
   @Test
   fun fillReachesEveryCellWhenTheWholeGridIsOneRegion() {
-    val grid = BitmapEditor.PixelGridState(initialColumns = 5, initialRows = 4)
+    val grid = PixelGridState(initialColumns = 5, initialRows = 4)
 
     assertTrue(grid.fill(2, 2, red))
 
@@ -237,7 +237,7 @@ class PixelGridStateTest {
 
   @Test
   fun aStrokePaintsACellWithoutTheTapToggle() {
-    val grid = BitmapEditor.PixelGridState(initialColumns = 4, initialRows = 1)
+    val grid = PixelGridState(initialColumns = 4, initialRows = 1)
 
     // A stroke crosses cells 0, 1 and 2 and then comes back over cell 1.
     for (col in listOf(0, 1, 2, 1)) grid.paintOver(col, 0, red)
@@ -249,7 +249,7 @@ class PixelGridStateTest {
 
   @Test
   fun aStrokeLeavesACellThatAlreadyHasTheColourAlone() {
-    val grid = BitmapEditor.PixelGridState(initialColumns = 3, initialRows = 1)
+    val grid = PixelGridState(initialColumns = 3, initialRows = 1)
     // One tap, so the cell remembers its previous colour and would revert on a second tap.
     grid.paint(1, 0, red)
     val revisionsBefore = grid.revision
@@ -263,7 +263,7 @@ class PixelGridStateTest {
 
   @Test
   fun aStrokeIsPaintOnlyAndDoesNotMakeTheNextTapRevert() {
-    val grid = BitmapEditor.PixelGridState(initialColumns = 2, initialRows = 1)
+    val grid = PixelGridState(initialColumns = 2, initialRows = 1)
     grid.paintOver(0, 0, red)
     val revisionsBefore = grid.revision
 
