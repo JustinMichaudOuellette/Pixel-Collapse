@@ -1,5 +1,6 @@
 package ca.justinmo.wfcbitmap
 
+import ca.justinmo.wfcbitmap.ui.previewDrawSize
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

@@ -7,25 +7,24 @@
  * behind it.
  */
 
-package ca.justinmo.wfcbitmap
+package ca.justinmo.wfcbitmap.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Colorize
@@ -36,8 +35,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FormatColorFill
+import androidx.compose.material.icons.filled.Palette as PaletteIcon
 import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Redo
 import androidx.compose.material.icons.filled.Repeat
@@ -48,6 +47,7 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material.icons.Icons
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -60,18 +60,18 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -79,6 +79,17 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ca.justinmo.wfcbitmap.CellRect
+import ca.justinmo.wfcbitmap.EditorMessage
+import ca.justinmo.wfcbitmap.OutputAspect
+import ca.justinmo.wfcbitmap.OutputScale
+import ca.justinmo.wfcbitmap.OutputSettings
+import ca.justinmo.wfcbitmap.Palette
+import ca.justinmo.wfcbitmap.PaletteStore
+import ca.justinmo.wfcbitmap.PixelGridState
+import ca.justinmo.wfcbitmap.previewPixelSize
+import ca.justinmo.wfcbitmap.PreviewScale
+import ca.justinmo.wfcbitmap.savedPixelSize
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -389,7 +400,7 @@ fun PixelEditorScreen(
     },
 
     EditorTool(
-      icon = Icons.Default.Palette,
+      icon = Icons.Default.PaletteIcon,
       contentDescription = "Select color palette",
       explanation = "Chooses the color palette to draw with.",
       startsGroup = true,

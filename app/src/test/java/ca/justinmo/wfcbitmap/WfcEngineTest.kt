@@ -4,7 +4,6 @@ import net.akachaki.processing.engine.array.IntArray2D
 import net.akachaki.processing.engine.enum.Direction2d8
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.BitmapWaveFunctionCell
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test

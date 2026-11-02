@@ -5,7 +5,7 @@
  * Kept together so that the strip, the canvas, the preview and the menus are cut from the same cloth.
  */
 
-package ca.justinmo.wfcbitmap
+package ca.justinmo.wfcbitmap.ui
 
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text

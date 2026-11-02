@@ -1,5 +1,9 @@
 package ca.justinmo.wfcbitmap
 
+import ca.justinmo.wfcbitmap.ui.EDGE_BAND_CELLS
+import ca.justinmo.wfcbitmap.ui.edgeBandSpans
+import ca.justinmo.wfcbitmap.ui.isEdgeBandLine
+import ca.justinmo.wfcbitmap.ui.showsEdgeBand
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

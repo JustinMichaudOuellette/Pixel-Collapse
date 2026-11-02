@@ -13,11 +13,12 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import ca.justinmo.wfcbitmap.ui.PixelEditorScreen
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
-import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.Test
 
 /**
  * Two mirrors, two buttons, and neither of them turns the other on.

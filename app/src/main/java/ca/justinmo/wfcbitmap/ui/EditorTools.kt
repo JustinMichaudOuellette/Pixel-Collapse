@@ -6,7 +6,7 @@
  * exactly what the strip, the canvas and the screen have to agree about.
  */
 
-package ca.justinmo.wfcbitmap
+package ca.justinmo.wfcbitmap.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border

@@ -1,6 +1,7 @@
 package ca.justinmo.wfcbitmap
 
 import androidx.compose.ui.geometry.Offset
+import ca.justinmo.wfcbitmap.ui.sampleSegment
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

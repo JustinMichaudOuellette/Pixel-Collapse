@@ -13,11 +13,12 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import ca.justinmo.wfcbitmap.ui.PixelEditorScreen
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
-import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.Test
 
 /**
  * The wrap button tells the truth about the picture that is up, including when the picture relaxed its edges.

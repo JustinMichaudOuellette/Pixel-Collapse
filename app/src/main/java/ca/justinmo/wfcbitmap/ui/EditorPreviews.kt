@@ -2,7 +2,7 @@
  * Compose previews of the editor's parts, for the IDE's layout editor.
  */
 
-package ca.justinmo.wfcbitmap
+package ca.justinmo.wfcbitmap.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color

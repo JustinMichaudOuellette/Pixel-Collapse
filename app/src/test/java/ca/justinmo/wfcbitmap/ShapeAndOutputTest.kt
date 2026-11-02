@@ -1,5 +1,7 @@
 package ca.justinmo.wfcbitmap
 
+import ca.justinmo.wfcbitmap.ui.EditorMode
+import ca.justinmo.wfcbitmap.ui.shapeCells
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

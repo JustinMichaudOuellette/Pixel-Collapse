@@ -45,17 +45,19 @@ drawing (cells) ─► 3x3 window tally ─► packed tile set ─► native sol
 * [`WfcGenerator`](app/src/main/java/ca/justinmo/wfcbitmap/WfcGenerator.kt) owns the whole pipeline, the
   per-drawing caches, and the two-attempt strategy: the edge rule first with a budget of four times the last
   solve, then, if it cannot be held, the same drawing relaxed with a much longer deadline.
-* **The editor** is split by what each part is for, so every file can be read on its own:
-  [`PixelEditorScreen`](app/src/main/java/ca/justinmo/wfcbitmap/PixelEditorScreen.kt) holds the screen, the
-  output menu and its size rows; [`PixelCanvas`](app/src/main/java/ca/justinmo/wfcbitmap/PixelCanvas.kt) the
+* **The editor** is split by what each part is for, so every file can be read on its own. The Compose code
+  lives in the `ui` package:
+  [`PixelEditorScreen`](app/src/main/java/ca/justinmo/wfcbitmap/ui/PixelEditorScreen.kt) holds the screen, the
+  output menu and its size rows; [`PixelCanvas`](app/src/main/java/ca/justinmo/wfcbitmap/ui/PixelCanvas.kt) the
   drawing surface with its zoom, gestures and the marked edge band;
-  [`EditorTools`](app/src/main/java/ca/justinmo/wfcbitmap/EditorTools.kt) the tool strip and the shapes the
-  drawing tools fill; [`ColorToolbar`](app/src/main/java/ca/justinmo/wfcbitmap/ColorToolbar.kt) the palette and
-  its swatches; [`PixelGridState`](app/src/main/java/ca/justinmo/wfcbitmap/PixelGridState.kt) the drawing and
-  its undo history; [`EditorOutput`](app/src/main/java/ca/justinmo/wfcbitmap/EditorOutput.kt) the shape and the
-  two size settings; [`EditorChrome`](app/src/main/java/ca/justinmo/wfcbitmap/EditorChrome.kt) the measurements
-  and colours they share.
-* [`MainActivity`](app/src/main/java/ca/justinmo/wfcbitmap/MainActivity.kt) wires the two together and owns
+  [`EditorTools`](app/src/main/java/ca/justinmo/wfcbitmap/ui/EditorTools.kt) the tool strip and the shapes the
+  drawing tools fill; [`ColorToolbar`](app/src/main/java/ca/justinmo/wfcbitmap/ui/ColorToolbar.kt) the palette
+  and its swatches; [`WfcPreview`](app/src/main/java/ca/justinmo/wfcbitmap/ui/WfcPreview.kt) the live preview and
+  its loading bar; [`EditorChrome`](app/src/main/java/ca/justinmo/wfcbitmap/ui/EditorChrome.kt) the measurements
+  and colours they share. What the UI acts on stays outside it:
+  [`PixelGridState`](app/src/main/java/ca/justinmo/wfcbitmap/PixelGridState.kt) the drawing and its undo history,
+  [`EditorOutput`](app/src/main/java/ca/justinmo/wfcbitmap/EditorOutput.kt) the shape and the two size settings.
+* [`MainActivity`](app/src/main/java/ca/justinmo/wfcbitmap/ui/MainActivity.kt) wires the two together and owns
   the parts the screen must not: generation, saving, sharing, and the session snapshot.
 
 A generation is a *seeded* collapse, so the same drawing on the same grid always produces the same picture —
@@ -105,7 +107,8 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 | Path | What is in it |
 | --- | --- |
 | `app/src/main/cpp/` | The wave-function-collapse solver in C and its JNI bridge |
-| `app/src/main/java/ca/justinmo/wfcbitmap/` | The editor: screen, canvas, tools, palette, drawing state, output settings, generator, saving, session snapshot |
+| `app/src/main/java/ca/justinmo/wfcbitmap/` | The editor's logic: drawing state, output settings, generator, saving, session snapshot |
+| `app/src/main/java/ca/justinmo/wfcbitmap/ui/` | Everything Compose: the screen, canvas, tools, palette, preview, the activity |
 | `app/src/main/java/net/akachaki/...` | The generic WFC engine: cells, tile solvers, the solver portfolio |
 | `app/src/test/` | JVM tests |
 | `app/src/androidTest/` | Device tests, including the solver benchmarks |

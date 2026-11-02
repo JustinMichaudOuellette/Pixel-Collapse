@@ -11,12 +11,13 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import ca.justinmo.wfcbitmap.ui.PixelEditorScreen
 import org.junit.After
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
-import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.Test
 
 /**
  * A save says what it did over the drawing, with a way to go and look at the file.
