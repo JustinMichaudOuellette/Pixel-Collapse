@@ -122,14 +122,22 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 
 ## Ideas
 
-- **GIF output** — export an animated tiling: the same drawing, scrolling one cell at a time, written as a
-  looping GIF.
-- **Video output** — record the same kind of motion to MP4 with `MediaCodec`, at a speed and length the
-  person picks.
 - **3D rendering output** — stand the picture up as a solid scene, one block per cell, and export it as a
   rotating shot through the video output above or as a model file another tool can open.
 - **Input Photo** — input a photo, downscale it, posterize it and use it as a pattern.
 
+## TODOs
+
+- **Info screen** info screen as a tool, point to the git repo
+- **Settings** increase button size
+- **Improve MP4 output** make it look high res
+- **Improve GIF output** make it look, make it smooth
+- **Improve launcher icon** make it full bleed, improve pattern
+
 ## License
 
-No licence has been chosen yet. Until one is added, all rights are reserved by the author.
+This project is licensed under the **GNU General Public License v3.0 (GPL-3.0-only)** - see the [LICENSE](LICENSE) file for details.
+
+## Author
+
+**Justin Michaud-Ouellette** - [justinmo.ca](https://justinmo.ca)
