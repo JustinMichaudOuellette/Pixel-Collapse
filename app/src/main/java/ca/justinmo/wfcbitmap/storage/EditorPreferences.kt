@@ -1,4 +1,10 @@
-package ca.justinmo.wfcbitmap
+package ca.justinmo.wfcbitmap.storage
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import android.content.Context
 
@@ -78,6 +84,13 @@ class EditorPreferences(context: Context) {
     preferences.edit().putInt(KEY_VIDEO_FPS, value).apply()
   }
 
+  fun videoPixelsPerFrame(fallback: Int): Int =
+    preferences.getInt(KEY_VIDEO_PIXELS_PER_FRAME, fallback).coerceIn(1, 16)
+
+  fun setVideoPixelsPerFrame(value: Int) {
+    preferences.edit().putInt(KEY_VIDEO_PIXELS_PER_FRAME, value).apply()
+  }
+
   fun videoFormat(fallback: VideoFormat): VideoFormat =
     enumByName(preferences.getString(KEY_VIDEO_FORMAT, null), VideoFormat.entries)
       ?: fallback
@@ -136,6 +149,7 @@ class EditorPreferences(context: Context) {
     const val KEY_OUTPUT_KERNEL = "output_kernel"
     const val KEY_VIDEO_SCREENS = "video_screens"
     const val KEY_VIDEO_FPS = "video_fps"
+    const val KEY_VIDEO_PIXELS_PER_FRAME = "video_pixels_per_frame"
     const val KEY_VIDEO_FORMAT = "video_format"
   }
 }

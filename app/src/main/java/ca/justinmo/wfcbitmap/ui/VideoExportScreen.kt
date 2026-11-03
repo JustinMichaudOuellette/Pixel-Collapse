@@ -1,4 +1,10 @@
 package ca.justinmo.wfcbitmap.ui
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -36,17 +42,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import ca.justinmo.wfcbitmap.MAX_LOOP_SCREENS
-import ca.justinmo.wfcbitmap.MAX_GIF_DELAY_CENTISECONDS
-import ca.justinmo.wfcbitmap.MAX_MP4_FPS
-import ca.justinmo.wfcbitmap.MAX_VIDEO_FPS
-import ca.justinmo.wfcbitmap.MIN_GIF_DELAY_CENTISECONDS
-import ca.justinmo.wfcbitmap.MIN_LOOP_SCREENS
-import ca.justinmo.wfcbitmap.MIN_VIDEO_FPS
-import ca.justinmo.wfcbitmap.VideoFormat
-import ca.justinmo.wfcbitmap.estimatedVideoBytes
-import ca.justinmo.wfcbitmap.formatByteSize
-import ca.justinmo.wfcbitmap.videoPlan
 import kotlin.math.roundToInt
 
 /**
@@ -69,6 +64,7 @@ fun VideoExportScreen(
   format: VideoFormat,
   screens: Int,
   fps: Int,
+  pixelsPerFrame: Int = 2,
   frameColumns: Int,
   frameRows: Int,
   pixelsPerCell: Int,
@@ -78,6 +74,7 @@ fun VideoExportScreen(
   exporting: Boolean,
   onScreensChange: (Int) -> Unit,
   onFpsChange: (Int) -> Unit,
+  onPixelsPerFrameChange: (Int) -> Unit = {},
   onFormatChange: (VideoFormat) -> Unit,
   onDismiss: () -> Unit,
   onExport: () -> Unit,
@@ -85,6 +82,7 @@ fun VideoExportScreen(
   if (!open) return
   val plan = videoPlan(
     frameColumns, frameRows, pixelsPerCell, cellSize, screens, fps,
+    pixelsPerFrame = pixelsPerFrame,
     outputWidth = outputWidth, outputHeight = outputHeight,
   )
 
@@ -195,11 +193,24 @@ fun VideoExportScreen(
               ),
             )
           }
+          Spacer(Modifier.height(10.dp))
+          SettingLabel("Pixels per frame", "$pixelsPerFrame")
+          Slider(
+            value = pixelsPerFrame.toFloat(),
+            onValueChange = { onPixelsPerFrameChange(it.roundToInt().coerceIn(1, 16)) },
+            valueRange = 1f..16f,
+            steps = 14,
+            colors = SliderDefaults.colors(
+              thumbColor = MENU_TEXT_COLOR,
+              activeTrackColor = MENU_TEXT_COLOR,
+              inactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.25f),
+            ),
+          )
 
           Spacer(Modifier.height(12.dp))
           Text(
             "${plan.outputWidth}×${plan.outputHeight} · ${plan.frameCount} frames · " +
-              "${formatOneDecimal(plan.loopSeconds)} s per loop · 1 px per frame",
+              "${formatOneDecimal(plan.loopSeconds)} s per loop · ${plan.pixelsPerFrame} px per frame",
             color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
             fontSize = 11.sp,
             lineHeight = 15.sp,

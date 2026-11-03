@@ -1,4 +1,10 @@
-package ca.justinmo.wfcbitmap
+package ca.justinmo.wfcbitmap.video
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import kotlin.math.roundToInt
 
@@ -26,13 +32,14 @@ internal data class VideoPlan(
   val pixelsPerCell: Int,
   val cellSize: Int,
   /**
-   * Frames in one loop: one per pixel of panorama width.
+   * Frames in one loop: the panorama width divided by [pixelsPerFrame].
    *
-   * One pixel per frame is what makes the pan smooth: the window never skips a column, so the picture
-   * moves by exactly one pixel each time it is shown. A whole turn of the panorama is therefore
-   * [panoramaWidth] frames, and the frame after the last one is the first one again.
+   * The window advances [pixelsPerFrame] panorama pixels between frames, so the picture moves that many
+   * pixels each time it is shown.
    */
   val frameCount: Int,
+  /** How many panorama pixels the window advances between frames (1–16). */
+  val pixelsPerFrame: Int,
   /** GIF frame delay in whole centiseconds; a GIF cannot express anything finer than that. */
   val frameDelayCentiseconds: Int,
   /** The frame rate that delay actually produces, which is what the clip plays at. */
@@ -139,6 +146,7 @@ internal fun videoPlan(
   cellSize: Int,
   screens: Int,
   fps: Int,
+  pixelsPerFrame: Int = 1,
   outputWidth: Int = 0,
   outputHeight: Int = 0,
 ): VideoPlan {
@@ -156,6 +164,8 @@ internal fun videoPlan(
   val panoramaWidth = panoramaColumns * pixelsPerCell
   val delay = (100f / fps.coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS)).roundToInt().coerceIn(1, 100)
   val effectiveFps = 100f / delay
+  val step = pixelsPerFrame.coerceIn(1, 16)
+  val frameCount = ((panoramaWidth + step - 1) / step).coerceAtLeast(1)
   return VideoPlan(
     panoramaWidth = panoramaWidth,
     panoramaHeight = frameRows * pixelsPerCell,
@@ -167,10 +177,11 @@ internal fun videoPlan(
     panoramaRows = frameRows,
     pixelsPerCell = pixelsPerCell,
     cellSize = cellSize,
-    frameCount = panoramaWidth,
+    frameCount = frameCount,
+    pixelsPerFrame = step,
     frameDelayCentiseconds = delay,
     effectiveFps = effectiveFps,
-    loopSeconds = panoramaWidth / effectiveFps,
+    loopSeconds = frameCount * step / effectiveFps,
     screenCount = screenCount,
     overlapColumns = overlap,
   )
@@ -249,7 +260,11 @@ internal fun cropFrame(
   index: Int,
 ): IntArray {
   val frame = IntArray(plan.frameWidth * plan.frameHeight)
-  val x = if (plan.frameCount <= 1) 0 else index % plan.frameCount
+  val x = if (plan.frameCount <= 1) {
+    0
+  } else {
+    (index * plan.pixelsPerFrame) % panoramaWidth
+  }
   val head = minOf(plan.frameWidth, panoramaWidth - x).coerceAtLeast(0)
   for (y in 0 until plan.frameHeight) {
     val source = y * panoramaWidth + x

@@ -14,7 +14,8 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # ships gold -- linking then fails with "invalid linker name". lld is the linker it wants.
 add_library(wfc SHARED
     wfc.c
-    wfc_jni.c)
+    wfc_jni.c
+    gif_lzw.c)
 
 # Auto-vectorisation is already on at -O3, but asking for it explicitly costs nothing and makes the
 # intent reviewable. What it does here was checked rather than assumed: see the note below.

@@ -1,4 +1,10 @@
 package ca.justinmo.wfcbitmap.ui
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
@@ -60,9 +66,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import ca.justinmo.wfcbitmap.EditorSnapshot
-import ca.justinmo.wfcbitmap.PatternMetadata
-import ca.justinmo.wfcbitmap.SavedPattern
 
 /** Asks for a name and saves the current drawing as a pattern. */
 @OptIn(ExperimentalComposeUiApi::class)

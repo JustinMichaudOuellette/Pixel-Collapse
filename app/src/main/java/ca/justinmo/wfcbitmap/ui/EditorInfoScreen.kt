@@ -1,4 +1,10 @@
 package ca.justinmo.wfcbitmap.ui
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,7 +36,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import ca.justinmo.wfcbitmap.KernelSize
 
 /**
  * The app explaining itself: what the picture is, what each control changes about it, and where the files go.

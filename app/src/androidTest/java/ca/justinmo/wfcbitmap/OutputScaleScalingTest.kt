@@ -1,4 +1,10 @@
 package ca.justinmo.wfcbitmap
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -39,7 +45,7 @@ class OutputScaleScalingTest {
     try {
       for (aspect in OutputAspect.entries) {
         for (scale in OutputScale.entries) {
-          val (width, height) = savedPixelSize(aspect, scale)
+          val (width, height) = savedPixelSize(aspect, scale, PreviewScale.One)
           if (width.toLong() * height > MAX_TEST_PIXELS) continue
           val written = ImageSaver.atSize(source, width, height)
           try {
@@ -71,13 +77,14 @@ class OutputScaleScalingTest {
     val (width, height) = savedPixelSize(
       OutputAspect.Portrait9x16,
       OutputScale.Sixteen,
+      PreviewScale.One,
     )
     val outcome = runCatching { ImageSaver.atSize(source, width, height) }
     outcome.onSuccess { big ->
       try {
         println("SIXTEEN fits: ${big.width}x${big.height} ${big.byteCount} bytes")
-        assertEquals(4864, big.width)
-        assertEquals(8640, big.height)
+        assertEquals(8640, big.width)
+        assertEquals(15360, big.height)
       } finally {
         big.recycle()
       }

@@ -1,4 +1,11 @@
 package ca.justinmo.wfcbitmap.ui
+import ca.justinmo.wfcbitmap.PixelCollapseApplication
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import android.app.Activity
 import android.content.Context
@@ -42,50 +49,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import ca.justinmo.wfcbitmap.DebugTestPattern
-import ca.justinmo.wfcbitmap.DrawingStore
-import ca.justinmo.wfcbitmap.edgeRuleNotice
-import ca.justinmo.wfcbitmap.EditorMessage
-import ca.justinmo.wfcbitmap.EditorSnapshot
-import ca.justinmo.wfcbitmap.EditorStateHolder
-import ca.justinmo.wfcbitmap.ImageSaver
-import ca.justinmo.wfcbitmap.LatencyMeter
-import ca.justinmo.wfcbitmap.OutputAspect
-import ca.justinmo.wfcbitmap.OutputScale
-import ca.justinmo.wfcbitmap.GifEncoder
-import ca.justinmo.wfcbitmap.GifSaver
-import ca.justinmo.wfcbitmap.KernelSize
-import ca.justinmo.wfcbitmap.Mp4Encoder
-import ca.justinmo.wfcbitmap.Mp4Saver
-import ca.justinmo.wfcbitmap.OutputSettings
-import ca.justinmo.wfcbitmap.MAX_MP4_FPS
-import ca.justinmo.wfcbitmap.MAX_PANORAMA_CELLS
-import ca.justinmo.wfcbitmap.MAX_VIDEO_FPS
-import ca.justinmo.wfcbitmap.MIN_VIDEO_FPS
-import ca.justinmo.wfcbitmap.VideoFormat
-import ca.justinmo.wfcbitmap.cropFrame
-import ca.justinmo.wfcbitmap.generationPlan
-import ca.justinmo.wfcbitmap.previewPixelSize
-import ca.justinmo.wfcbitmap.scaleFrame
-import ca.justinmo.wfcbitmap.stitchScreen
-import ca.justinmo.wfcbitmap.LOOP_SEAM_CELLS
-import ca.justinmo.wfcbitmap.PANORAMA_TIMEOUT_MILLIS
-import ca.justinmo.wfcbitmap.startupPreview
-import ca.justinmo.wfcbitmap.videoFramePlan
-import ca.justinmo.wfcbitmap.videoPlan
-import ca.justinmo.wfcbitmap.Palette
-import ca.justinmo.wfcbitmap.PatternStore
-import ca.justinmo.wfcbitmap.PixelArtScaler
-import ca.justinmo.wfcbitmap.PixelCollapseApplication
-import ca.justinmo.wfcbitmap.PixelGridState
-import ca.justinmo.wfcbitmap.PreviewScale
-import ca.justinmo.wfcbitmap.SavedPattern
-import ca.justinmo.wfcbitmap.savedPixelSize
 import ca.justinmo.wfcbitmap.ui.theme.WFCBitmapTheme
-import ca.justinmo.wfcbitmap.WfcGenerator
 import kotlin.math.roundToInt
 import java.io.File
 import kotlinx.coroutines.CancellationException
@@ -292,6 +260,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   // sets how long the clip lasts.
   var videoScreens by remember { mutableIntStateOf(preferences.videoScreens(fallback = 2)) }
   var videoFps by remember { mutableIntStateOf(preferences.videoFps(fallback = 100)) }
+  var videoPixelsPerFrame by remember {
+    mutableIntStateOf(preferences.videoPixelsPerFrame(fallback = 2))
+  }
   // The container the export writes. A setting of the export rather than a second button: the dialog picks
   // one, and the one Export button writes it.
   var videoFormat by remember { mutableStateOf(preferences.videoFormat(fallback = VideoFormat.Gif)) }
@@ -452,6 +423,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(autoMigrateColors) { preferences.setAutoMigrateColors(autoMigrateColors) }
   LaunchedEffect(videoScreens) { preferences.setVideoScreens(videoScreens) }
   LaunchedEffect(videoFps) { preferences.setVideoFps(videoFps) }
+  LaunchedEffect(videoPixelsPerFrame) { preferences.setVideoPixelsPerFrame(videoPixelsPerFrame) }
   LaunchedEffect(videoFormat) { preferences.setVideoFormat(videoFormat) }
 
   /*
@@ -686,6 +658,50 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   }
 
   /**
+   * A FileProvider copy for the View action.
+   *
+   * Google Photos sometimes opens a just-published MediaStore row and immediately returns to its own
+   * last item. A cache copy behind our FileProvider is an ordinary readable image to any viewer, so the
+   * View action opens what was just saved even while the gallery is still indexing the row.
+   */
+  fun viewCopy(source: File, suffix: String): Uri? = runCatching {
+    val dir = File(context.cacheDir, ImageSaver.SHARE_FOLDER)
+    if (!dir.isDirectory && !dir.mkdirs()) return@runCatching null
+    val target = File(dir, "view-${System.currentTimeMillis()}$suffix")
+    source.inputStream().use { input -> target.outputStream().use { input.copyTo(it) } }
+    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", target)
+  }.getOrNull()
+
+  fun viewCopy(bytes: ByteArray, suffix: String): Uri? = runCatching {
+    val dir = File(context.cacheDir, ImageSaver.SHARE_FOLDER)
+    if (!dir.isDirectory && !dir.mkdirs()) return@runCatching null
+    val target = File(dir, "view-${System.currentTimeMillis()}$suffix")
+    target.outputStream().use { it.write(bytes) }
+    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", target)
+  }.getOrNull()
+
+  /**
+   * One solved frame at exactly the selected upscaler's multiple of its size.
+   *
+   * The frame is never resampled to an arbitrary target: an integer factor keeps every pixel block
+   * exact, and the chosen pixel-art scaler (Eagle, EPX, etc.) shapes the corners as it does for a saved
+   * photo. Nearest simply copies blocks.
+   */
+  fun scaleVideoFrame(
+    frame: IntArray,
+    width: Int,
+    height: Int,
+    scaler: PixelArtScaler,
+    factor: Int,
+  ): IntArray {
+    if (factor <= 1) return frame
+    if (scaler == PixelArtScaler.Nearest) {
+      return scaleFrame(frame, width, height, width * factor, height * factor)
+    }
+    return PixelScaler.scale(frame, width, height, scaler, factor).pixels
+  }
+
+  /**
    * Makes the panning GIF: generate a wide panorama, cut frame-sized windows out of it left to right,
    * and encode them into the gallery.
    *
@@ -696,7 +712,11 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     if (exportingVideo) return
     videoExportOpen = false
     val frame = videoFramePlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
-    val previewSize = previewPixelSize(outputSettings.aspect, outputSettings.preview)
+    val scaleFactor = outputSettings.scale.factor.toInt()
+    val previewSize = (
+      frame.columns * frame.pixelsPerCell * scaleFactor to
+        frame.rows * frame.pixelsPerCell * scaleFactor
+      )
     val video = videoPlan(
       frameColumns = frame.columns,
       frameRows = frame.rows,
@@ -704,6 +724,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       cellSize = frame.cellSize,
       screens = videoScreens,
       fps = videoFps,
+      pixelsPerFrame = videoPixelsPerFrame,
       outputWidth = previewSize.first,
       outputHeight = previewSize.second,
     )
@@ -968,7 +989,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
             }
           }
         }
-        val uri = if (format == VideoFormat.Mp4) {
+        val (uri, viewUri) = if (format == VideoFormat.Mp4) {
           val bytes = withContext(Dispatchers.Default) {
             Mp4Encoder.encode(
               context = context,
@@ -980,17 +1001,18 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
               fps = videoFps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS),
             ) { index ->
               reportFrame(index)
-              scaleFrame(
+              scaleVideoFrame(
                 cropFrame(panorama, video.panoramaWidth, video, index),
                 video.frameWidth,
                 video.frameHeight,
-                video.outputWidth,
-                video.outputHeight,
+                outputSettings.scaler,
+                scaleFactor,
               )
             }
           }
           videoExportProgress = maxOf(videoExportProgress ?: 0f, 0.99f)
-          Mp4Saver.save(context, bytes)
+          val saved = Mp4Saver.save(context, bytes)
+          saved to viewCopy(bytes, ".mp4")
         } else {
           val palette = GifEncoder.paletteFor(panorama)
           // Stream the GIF to a cache file: a full-resolution clip's bytes do not fit in a
@@ -1008,25 +1030,27 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
                   delayForFrame = { video.frameDelayCentiseconds },
                 ) { index ->
                   reportFrame(index)
-                  scaleFrame(
+                  scaleVideoFrame(
                     cropFrame(panorama, video.panoramaWidth, video, index),
                     video.frameWidth,
                     video.frameHeight,
-                    video.outputWidth,
-                    video.outputHeight,
+                    outputSettings.scaler,
+                    scaleFactor,
                   )
                 }
               }
             }
             videoExportProgress = maxOf(videoExportProgress ?: 0f, 0.99f)
-            GifSaver.save(context, temp)
+            val saved = GifSaver.save(context, temp)
+            saved to viewCopy(temp, ".gif")
           } finally {
             temp.delete()
           }
         }
         videoExportProgress = 1f
         message = EditorMessage("$noun saved", "View") {
-          if (format == VideoFormat.Mp4) viewMp4(uri) else viewVideo(uri)
+          val target = viewUri ?: uri
+          if (format == VideoFormat.Mp4) viewMp4(target) else viewVideo(target)
         }
       } catch (e: CancellationException) {
         if (videoExportCancelled.get()) {
@@ -1080,10 +1104,20 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       }
       outcome.fold(
         onSuccess = { saved ->
+          val viewUri = runCatching {
+            ImageSaver.prepareShare(
+              context = context,
+              bitmap = picture,
+              width = width,
+              height = height,
+              scaler = outputSettings.scaler,
+              scaleFactor = outputSettings.scale.factor.toInt(),
+            )
+          }.getOrNull()
           message = EditorMessage(
             text = "Saved to the gallery",
             actionLabel = "View",
-            onAction = { viewPicture(saved) },
+            onAction = { viewPicture(viewUri ?: saved) },
           )
         },
         onFailure = { error ->
@@ -1243,12 +1277,16 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   )
 
   val videoFrame = videoFramePlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
-  val videoOutput = previewPixelSize(outputSettings.aspect, outputSettings.preview)
+  val videoOutput = (
+    videoFrame.columns * videoFrame.pixelsPerCell * outputSettings.scale.factor.toInt() to
+      videoFrame.rows * videoFrame.pixelsPerCell * outputSettings.scale.factor.toInt()
+    )
   VideoExportScreen(
     open = videoExportOpen,
     format = videoFormat,
     screens = videoScreens,
     fps = videoFps,
+    pixelsPerFrame = videoPixelsPerFrame,
     frameColumns = videoFrame.columns,
     frameRows = videoFrame.rows,
     pixelsPerCell = videoFrame.pixelsPerCell,
@@ -1258,6 +1296,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     exporting = exportingVideo,
     onScreensChange = { videoScreens = it },
     onFpsChange = { videoFps = it },
+    onPixelsPerFrameChange = { videoPixelsPerFrame = it },
     onFormatChange = { videoFormat = it },
     onDismiss = { videoExportOpen = false },
     onExport = { exportVideo(videoFormat) },

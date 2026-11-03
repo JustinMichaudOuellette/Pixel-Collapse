@@ -3,6 +3,12 @@
  */
 
 package ca.justinmo.wfcbitmap.ui
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
@@ -47,7 +53,7 @@ fun VideoExportPreview() {
   WFCBitmapTheme {
     VideoExportScreen(
       open = true,
-      format = ca.justinmo.wfcbitmap.VideoFormat.Gif,
+      format = VideoFormat.Gif,
       screens = 3,
       fps = 25,
       frameColumns = 76,

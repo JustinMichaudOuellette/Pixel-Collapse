@@ -1,4 +1,10 @@
-package ca.justinmo.wfcbitmap
+package ca.justinmo.wfcbitmap.generation
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import net.akachaki.processing.engine.array.IntArray2D
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.BitmapWaveFunctionCell

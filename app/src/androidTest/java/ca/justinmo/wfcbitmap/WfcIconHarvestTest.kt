@@ -1,4 +1,10 @@
 package ca.justinmo.wfcbitmap
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.runBlocking

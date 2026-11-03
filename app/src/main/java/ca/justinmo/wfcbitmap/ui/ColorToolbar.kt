@@ -7,6 +7,12 @@
  */
 
 package ca.justinmo.wfcbitmap.ui
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import android.text.Html
 import androidx.compose.foundation.Canvas
@@ -57,7 +63,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
-import ca.justinmo.wfcbitmap.Palette
 import kotlinx.coroutines.launch
 
 @Composable

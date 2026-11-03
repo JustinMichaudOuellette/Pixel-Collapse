@@ -1,5 +1,26 @@
 # Agent notes
 
+## Package layout
+
+Sources under `ca.justinmo.wfcbitmap` are grouped by responsibility:
+
+| Package | Contents |
+|---|---|
+| `ca.justinmo.wfcbitmap` | `PixelCollapseApplication` (process entry point) |
+| `...generation` | `WfcGenerator`, native bridge (`WfcNative`, solver pool/adapters), `WindowTally` |
+| `...output` | `EditorOutput` (preview sizes, save sizes, kernels), pixel-art upscalers, `ImageSaver` |
+| `...video` | `VideoPlan`, GIF/MP4 encoders and gallery savers |
+| `...storage` | SharedPreferences, editor snapshot, `DrawingStore`, `PatternStore`, `PatternPng` |
+| `...palette` | Palette model and repository |
+| `...editor` | `PixelGridState`, latency meter, debug test pattern |
+| `...ui` | Compose editor, preview, menus, dialogs, export screens |
+| `...ui.theme` | Compose theme/typography |
+| `net.akachaki...` | Upstream WFC engine pieces used by `generation` |
+
+Files import sibling packages with wildcard imports (`generation.*`, `output.*`, `video.*`,
+`storage.*`, `palette.*`, `editor.*`). Keep new code in the package that matches its responsibility
+rather than adding another root-level file.
+
 ## Test pattern
 
 Use this **9×9** drawing as the canonical test pattern for generation, kernel grouping, and

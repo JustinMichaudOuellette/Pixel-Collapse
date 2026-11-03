@@ -1,4 +1,10 @@
-package ca.justinmo.wfcbitmap
+package ca.justinmo.wfcbitmap.output
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 /**
  * HQ2x: the classic high-quality 2x filter, from the public-domain clean reimplementation by byuu and

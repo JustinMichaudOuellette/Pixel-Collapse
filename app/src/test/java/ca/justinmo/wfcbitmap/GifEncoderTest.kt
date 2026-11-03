@@ -1,9 +1,16 @@
 package ca.justinmo.wfcbitmap
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import java.io.ByteArrayInputStream
 import javax.imageio.ImageIO
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assume
 import org.junit.Test
 import org.w3c.dom.Element
 
@@ -17,6 +24,7 @@ class GifEncoderTest {
 
   @Test
   fun aGifComesBackWithItsFramesAndPixels() {
+    assumeNativeGif()
     val frames = listOf(
       intArrayOf(red, green, blue, white),
       intArrayOf(white, blue, green, red),
@@ -45,6 +53,7 @@ class GifEncoderTest {
 
   @Test
   fun theFrameDelayIsWrittenIntoTheGraphicControlExtension() {
+    assumeNativeGif()
     val bytes = GifEncoder.encode(
       1, 1, intArrayOf(red), frameCount = 1, delayForFrame = { 7 },
     ) { intArrayOf(red) }
@@ -62,6 +71,7 @@ class GifEncoderTest {
 
   @Test
   fun anOffPaletteColourTakesTheNearestPaletteEntry() {
+    assumeNativeGif()
     // Green is not in the table; the nearest entry is still one of the two supplied colours.
     val bytes = GifEncoder.encode(
       1, 1, intArrayOf(red, blue), frameCount = 1, delayForFrame = { 5 },
@@ -79,6 +89,7 @@ class GifEncoderTest {
 
   @Test
   fun aBusyFrameSurvivesTheLzwCodeSizeChanges() {
+    assumeNativeGif()
     // Enough random pixels to grow the LZW dictionary through several code sizes (and near a reset),
     // which is where an off-by-one in the code-size bump would show up as a decode failure.
     val palette = IntArray(256) { 0xFF000000.toInt() or (it * 0x010101) }
@@ -269,5 +280,16 @@ class GifEncoderTest {
     assertTrue(last.contentEquals(intArrayOf(width - 1, 0)))
     // And the frame after it is the first one again, which is what makes the clip loop.
     assertTrue(cropFrame(panorama, width, plan, width).contentEquals(first))
+  }
+
+  /**
+   * The GIF encoder is native now, so the encode-and-decode cases belong on a device. On the JVM there
+   * is no libwfc; skip rather than report a missing library as a broken encoder.
+   */
+  private fun assumeNativeGif() {
+    Assume.assumeFalse(
+      "native GIF encoding needs Android",
+      System.getProperty("java.vm.name")?.contains("OpenJDK") == true,
+    )
   }
 }

@@ -18,7 +18,7 @@ static jlong to_handle(const void *pointer) { return (jlong)(intptr_t)pointer; }
 static void *from_handle(jlong handle) { return (void *)(intptr_t)handle; }
 
 JNIEXPORT jlong JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_modelCreate(JNIEnv *env, jobject thiz, jintArray tiles,
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_modelCreate(JNIEnv *env, jobject thiz, jintArray tiles,
                                                  jint tile_count, jint columns, jint rows,
                                                  jboolean relaxed_edges) {
   (void)thiz;
@@ -37,14 +37,14 @@ Java_ca_justinmo_wfcbitmap_WfcNative_modelCreate(JNIEnv *env, jobject thiz, jint
 }
 
 JNIEXPORT jint JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_modelTileCount(JNIEnv *env, jobject thiz, jlong model) {
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_modelTileCount(JNIEnv *env, jobject thiz, jlong model) {
   (void)env;
   (void)thiz;
   return (jint)wfc_model_tile_count((const wfc_model *)from_handle(model));
 }
 
 JNIEXPORT jint JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_modelTileSource(JNIEnv *env, jobject thiz, jlong model,
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_modelTileSource(JNIEnv *env, jobject thiz, jlong model,
                                                      jint tile) {
   (void)env;
   (void)thiz;
@@ -52,7 +52,7 @@ Java_ca_justinmo_wfcbitmap_WfcNative_modelTileSource(JNIEnv *env, jobject thiz, 
 }
 
 JNIEXPORT jint JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_modelTileCenter(JNIEnv *env, jobject thiz, jlong model,
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_modelTileCenter(JNIEnv *env, jobject thiz, jlong model,
                                                      jint tile) {
   (void)env;
   (void)thiz;
@@ -60,35 +60,35 @@ Java_ca_justinmo_wfcbitmap_WfcNative_modelTileCenter(JNIEnv *env, jobject thiz, 
 }
 
 JNIEXPORT void JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_modelDestroy(JNIEnv *env, jobject thiz, jlong model) {
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_modelDestroy(JNIEnv *env, jobject thiz, jlong model) {
   (void)env;
   (void)thiz;
   wfc_model_destroy((wfc_model *)from_handle(model));
 }
 
 JNIEXPORT jlong JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverCreate(JNIEnv *env, jobject thiz) {
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverCreate(JNIEnv *env, jobject thiz) {
   (void)env;
   (void)thiz;
   return to_handle(wfc_solver_create());
 }
 
 JNIEXPORT void JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverDestroy(JNIEnv *env, jobject thiz, jlong solver) {
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverDestroy(JNIEnv *env, jobject thiz, jlong solver) {
   (void)env;
   (void)thiz;
   wfc_solver_destroy((wfc_solver *)from_handle(solver));
 }
 
 JNIEXPORT void JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverAbort(JNIEnv *env, jobject thiz, jlong solver) {
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverAbort(JNIEnv *env, jobject thiz, jlong solver) {
   (void)env;
   (void)thiz;
   wfc_solver_abort((wfc_solver *)from_handle(solver));
 }
 
 JNIEXPORT jint JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverSolve(JNIEnv *env, jobject thiz, jlong solver, jlong model,
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverSolve(JNIEnv *env, jobject thiz, jlong solver, jlong model,
                                                  jint seed, jlong deadline_nanos, jint max_decisions,
                                                  jintArray out) {
   (void)thiz;
@@ -126,7 +126,7 @@ static int32_t *copy_pins(JNIEnv *env, jintArray pins, int variable_count) {
 }
 
 JNIEXPORT jint JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverSolveFixed(JNIEnv *env, jobject thiz, jlong solver,
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverSolveFixed(JNIEnv *env, jobject thiz, jlong solver,
                                                       jlong model, jint seed, jlong deadline_nanos,
                                                       jint max_decisions, jintArray fixed_centers,
                                                       jintArray fixed_patterns, jintArray out) {
@@ -154,7 +154,7 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverSolveFixed(JNIEnv *env, jobject thiz,
 }
 
 JNIEXPORT jint JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverDecisions(JNIEnv *env, jobject thiz, jlong solver) {
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverDecisions(JNIEnv *env, jobject thiz, jlong solver) {
   (void)env;
   (void)thiz;
   const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
@@ -162,7 +162,7 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverDecisions(JNIEnv *env, jobject thiz, 
 }
 
 JNIEXPORT void JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverSetFineProfiling(JNIEnv *env, jobject thiz, jlong solver,
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverSetFineProfiling(JNIEnv *env, jobject thiz, jlong solver,
                                                           jboolean enabled) {
   (void)env;
   (void)thiz;
@@ -170,7 +170,7 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverSetFineProfiling(JNIEnv *env, jobject
 }
 
 JNIEXPORT jlong JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverPhaseNanos(JNIEnv *env, jobject thiz, jlong solver,
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverPhaseNanos(JNIEnv *env, jobject thiz, jlong solver,
                                                       jint phase) {
   (void)env;
   (void)thiz;
@@ -179,7 +179,7 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverPhaseNanos(JNIEnv *env, jobject thiz,
 }
 
 JNIEXPORT jlong JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverRevises(JNIEnv *env, jobject thiz, jlong solver) {
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverRevises(JNIEnv *env, jobject thiz, jlong solver) {
   (void)env;
   (void)thiz;
   const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
@@ -187,7 +187,7 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverRevises(JNIEnv *env, jobject thiz, jl
 }
 
 JNIEXPORT jlong JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverDeadEnds(JNIEnv *env, jobject thiz, jlong solver) {
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverDeadEnds(JNIEnv *env, jobject thiz, jlong solver) {
   (void)env;
   (void)thiz;
   const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
@@ -195,7 +195,7 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverDeadEnds(JNIEnv *env, jobject thiz, j
 }
 
 JNIEXPORT jlong JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverShrinks(JNIEnv *env, jobject thiz, jlong solver) {
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverShrinks(JNIEnv *env, jobject thiz, jlong solver) {
   (void)env;
   (void)thiz;
   const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
@@ -203,7 +203,7 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverShrinks(JNIEnv *env, jobject thiz, jl
 }
 
 JNIEXPORT void JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverSetOrder(JNIEnv *env, jobject thiz, jlong solver,
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverSetOrder(JNIEnv *env, jobject thiz, jlong solver,
                                                     jint mode) {
   (void)env;
   (void)thiz;
@@ -211,7 +211,7 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverSetOrder(JNIEnv *env, jobject thiz, j
 }
 
 JNIEXPORT void JNICALL
-Java_ca_justinmo_wfcbitmap_WfcNative_solverSetWorklist(JNIEnv *env, jobject thiz, jlong solver,
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverSetWorklist(JNIEnv *env, jobject thiz, jlong solver,
                                                        jint mode) {
   (void)env;
   (void)thiz;

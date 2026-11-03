@@ -1,4 +1,10 @@
-package ca.justinmo.wfcbitmap
+package ca.justinmo.wfcbitmap.editor
+import ca.justinmo.wfcbitmap.generation.*
+import ca.justinmo.wfcbitmap.output.*
+import ca.justinmo.wfcbitmap.video.*
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.palette.*
+import ca.justinmo.wfcbitmap.editor.*
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
