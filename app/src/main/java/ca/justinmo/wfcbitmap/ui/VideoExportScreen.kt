@@ -62,6 +62,7 @@ import kotlin.math.roundToInt
 fun VideoExportScreen(
   open: Boolean,
   format: VideoFormat,
+  mode: VideoMode = VideoMode.Panorama,
   screens: Int,
   fps: Int,
   pixelsPerFrame: Int = 2,
@@ -73,9 +74,11 @@ fun VideoExportScreen(
   outputHeight: Int,
   exporting: Boolean,
   onScreensChange: (Int) -> Unit,
+  onModeChange: (VideoMode) -> Unit = {},
   onFpsChange: (Int) -> Unit,
   onPixelsPerFrameChange: (Int) -> Unit = {},
   onFormatChange: (VideoFormat) -> Unit,
+  onPreview: () -> Unit = {},
   onDismiss: () -> Unit,
   onExport: () -> Unit,
 ) {
@@ -122,6 +125,27 @@ fun VideoExportScreen(
           }
         }
 
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          VideoMode.entries.forEach { option ->
+            val chosen = option == mode
+            Button(
+              onClick = { onModeChange(option) },
+              modifier = Modifier.weight(1f),
+              colors = ButtonDefaults.buttonColors(
+                containerColor = if (chosen) MENU_TEXT_COLOR else MENU_TEXT_COLOR.copy(alpha = 0.12f),
+                contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
+              ),
+            ) {
+              Text(option.label, fontSize = 13.sp)
+            }
+          }
+        }
+
         Column(
           modifier = Modifier
             .fillMaxWidth()
@@ -130,28 +154,35 @@ fun VideoExportScreen(
             .padding(horizontal = 16.dp),
         ) {
           Text(
-            "A wide picture pans left to right and loops back to its start. Every frame moves the window " +
-              "one pixel, so the loop is smooth by construction.",
+            if (mode == VideoMode.Panorama) {
+              "A wide picture pans left to right and loops back to its start. Every frame moves the window " +
+                "one pixel, so the loop is smooth by construction."
+            } else {
+              "The solved picture is revealed cell by cell from the blank paper. A GIF runs the reveal " +
+                "backwards so it loops; an MP4 stops on the finished picture."
+            },
             color = MENU_TEXT_COLOR.copy(alpha = 0.6f),
             fontSize = 12.sp,
             lineHeight = 17.sp,
           )
 
           Spacer(Modifier.height(22.dp))
-          SettingLabel("Loop", "$screens screens")
-          Slider(
-            value = screens.toFloat(),
-            onValueChange = { onScreensChange(it.roundToInt().coerceIn(MIN_LOOP_SCREENS, MAX_LOOP_SCREENS)) },
-            valueRange = MIN_LOOP_SCREENS.toFloat()..MAX_LOOP_SCREENS.toFloat(),
-            steps = MAX_LOOP_SCREENS - MIN_LOOP_SCREENS - 1,
-            colors = SliderDefaults.colors(
-              thumbColor = MENU_TEXT_COLOR,
-              activeTrackColor = MENU_TEXT_COLOR,
-              inactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.25f),
-            ),
-          )
+          if (mode == VideoMode.Panorama) {
+            SettingLabel("Loop", "$screens screens")
+            Slider(
+              value = screens.toFloat(),
+              onValueChange = { onScreensChange(it.roundToInt().coerceIn(MIN_LOOP_SCREENS, MAX_LOOP_SCREENS)) },
+              valueRange = MIN_LOOP_SCREENS.toFloat()..MAX_LOOP_SCREENS.toFloat(),
+              steps = MAX_LOOP_SCREENS - MIN_LOOP_SCREENS - 1,
+              colors = SliderDefaults.colors(
+                thumbColor = MENU_TEXT_COLOR,
+                activeTrackColor = MENU_TEXT_COLOR,
+                inactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.25f),
+              ),
+            )
 
-          Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(10.dp))
+          }
           SettingLabel(
             "Frame rate",
             if (format == VideoFormat.Gif) {
@@ -194,18 +225,20 @@ fun VideoExportScreen(
             )
           }
           Spacer(Modifier.height(10.dp))
-          SettingLabel("Pixels per frame", "$pixelsPerFrame")
-          Slider(
-            value = pixelsPerFrame.toFloat(),
-            onValueChange = { onPixelsPerFrameChange(it.roundToInt().coerceIn(1, 16)) },
-            valueRange = 1f..16f,
-            steps = 14,
-            colors = SliderDefaults.colors(
-              thumbColor = MENU_TEXT_COLOR,
-              activeTrackColor = MENU_TEXT_COLOR,
-              inactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.25f),
-            ),
-          )
+          if (mode == VideoMode.Panorama) {
+            SettingLabel("Pixels per frame", "$pixelsPerFrame")
+            Slider(
+              value = pixelsPerFrame.toFloat(),
+              onValueChange = { onPixelsPerFrameChange(it.roundToInt().coerceIn(1, 16)) },
+              valueRange = 1f..16f,
+              steps = 14,
+              colors = SliderDefaults.colors(
+                thumbColor = MENU_TEXT_COLOR,
+                activeTrackColor = MENU_TEXT_COLOR,
+                inactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.25f),
+              ),
+            )
+          }
 
           Spacer(Modifier.height(12.dp))
           Text(
@@ -222,7 +255,24 @@ fun VideoExportScreen(
             lineHeight = 15.sp,
           )
 
-          Spacer(Modifier.height(24.dp))
+          if (mode == VideoMode.Panorama) {
+            Spacer(Modifier.height(16.dp))
+            Button(
+              onClick = onPreview,
+              enabled = !exporting,
+              modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp),
+              colors = ButtonDefaults.buttonColors(
+                containerColor = MENU_TEXT_COLOR.copy(alpha = 0.16f),
+                contentColor = MENU_TEXT_COLOR,
+              ),
+            ) {
+              Text("Preview motion", fontSize = 13.sp)
+            }
+          }
+
+          Spacer(Modifier.height(16.dp))
           FormatToggle(
             format = format,
             enabled = !exporting,
@@ -290,10 +340,9 @@ private fun FormatToggle(
           )
           Spacer(Modifier.height(3.dp))
           Text(
-            text = if (option == VideoFormat.Gif) {
-              "Loops anywhere"
-            } else {
-              "Smaller, plays in a video app"
+            text = when (option) {
+              VideoFormat.Gif -> "Loops anywhere"
+              VideoFormat.Mp4 -> "Smaller, plays in a video app"
             },
             color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
             fontSize = 11.sp,

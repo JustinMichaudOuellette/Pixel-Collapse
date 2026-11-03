@@ -255,6 +255,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   var savePatternDialogOpen by remember { mutableStateOf(false) }
   var loadPatternDialogOpen by remember { mutableStateOf(false) }
   var videoExportOpen by remember { mutableStateOf(false) }
+  var videoPreviewOpen by remember { mutableStateOf(false) }
   // The loop's two knobs: how many frame widths it covers, and how many frames a second it plays at.
   // One pixel per frame means the frame count follows from the loop's width, so the frame rate is what
   // sets how long the clip lasts.
@@ -266,6 +267,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   // The container the export writes. A setting of the export rather than a second button: the dialog picks
   // one, and the one Export button writes it.
   var videoFormat by remember { mutableStateOf(preferences.videoFormat(fallback = VideoFormat.Gif)) }
+  var videoMode by remember { mutableStateOf(preferences.videoMode(fallback = VideoMode.Panorama)) }
   var exportingVideo by remember { mutableStateOf(false) }
   var videoExportProgress by remember { mutableStateOf<Float?>(null) }
   var videoExportLabel by remember { mutableStateOf("") }
@@ -425,6 +427,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(videoFps) { preferences.setVideoFps(videoFps) }
   LaunchedEffect(videoPixelsPerFrame) { preferences.setVideoPixelsPerFrame(videoPixelsPerFrame) }
   LaunchedEffect(videoFormat) { preferences.setVideoFormat(videoFormat) }
+  LaunchedEffect(videoMode) { preferences.setVideoMode(videoMode) }
 
   /*
    * The colour the paint tools are using. It lives in the screen, because the toolbar that picks it does;
@@ -708,7 +711,142 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * The panorama is a second generation, much wider than the preview, so it waits on [generationMutex]
    * and the preview job is cancelled first. The preview is rebuilt in the `finally` whatever happens.
    */
+  /**
+   * A solve animation: start from the blank paper and reveal the finished picture in the shuffled order
+   * a search would settle it. GIF adds the reverse run so the last frame is the first one again; MP4
+   * stops on the finished picture.
+   */
+  fun exportSolveAnimation(format: VideoFormat) {
+    if (exportingVideo) return
+    val finished = output?.bitmap
+    if (finished == null) {
+      Toast.makeText(context, "There is no solved picture to animate yet", Toast.LENGTH_SHORT).show()
+      return
+    }
+    videoExportOpen = false
+    message = null
+    generation.job?.cancel()
+    val plan = generationPlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
+    val width = finished.width
+    val height = finished.height
+    val columns = plan.columns
+    val rows = plan.rows
+    val cellWidth = (width / columns).coerceAtLeast(1)
+    val cellHeight = (height / rows).coerceAtLeast(1)
+    val solvedPixels = IntArray(width * height)
+    finished.getPixels(solvedPixels, 0, width, 0, 0, width, height)
+    val background = gridState.defaultColor.toArgb()
+    val order = IntArray(columns * rows) { it }
+    java.util.Random(seed.toLong()).let { random ->
+      for (i in order.indices.reversed()) {
+        val j = random.nextInt(i + 1)
+        val tmp = order[i]
+        order[i] = order[j]
+        order[j] = tmp
+      }
+    }
+    val steps = (videoFps * 2).coerceIn(24, 90)
+    val total = if (format == VideoFormat.Gif) steps * 2 - 1 else steps
+
+    fun frameAt(index: Int): IntArray {
+      if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
+      val forward = if (index < steps) index else total - 1 - index
+      val progress = forward.toFloat() / (steps - 1).coerceAtLeast(1)
+      val frame = IntArray(width * height) { background }
+      val revealed = (progress * order.size).roundToInt()
+      for (k in 0 until revealed) {
+        val cell = order[k]
+        val cellColumn = cell % columns
+        val cellRow = cell / columns
+        val sourceX = cellColumn * cellWidth
+        val sourceY = cellRow * cellHeight
+        for (y in 0 until cellHeight) {
+          val target = (sourceY + y) * width + sourceX
+          val source = (sourceY + y) * width + sourceX
+          solvedPixels.copyInto(frame, target, source, source + cellWidth)
+        }
+      }
+      return frame
+    }
+
+    exportingVideo = true
+    videoExportLabel = "Capturing the solve…"
+    videoExportProgress = 0f
+    videoExportCancelled.set(false)
+    videoExportJob = application.exportScope.launch {
+      try {
+        val noun = format.label
+        val (uri, viewUri) = if (format == VideoFormat.Mp4) {
+          val bytes = withContext(Dispatchers.Default) {
+            Mp4Encoder.encode(
+              context = context,
+              width = width,
+              height = height,
+              frameCount = total,
+              fps = videoFps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS),
+            ) { index ->
+              mainHandler.post { videoExportProgress = 0.01f + 0.97f * index / total }
+              frameAt(index)
+            }
+          }
+          val saved = Mp4Saver.save(context, bytes)
+          saved to viewCopy(bytes, ".mp4")
+        } else {
+          val palette = GifEncoder.paletteFor(solvedPixels)
+          val gifDelay = (100f / videoFps.coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS))
+            .roundToInt()
+            .coerceIn(1, 100)
+          val temp = File.createTempFile("wfc-solve-", ".gif", context.cacheDir)
+          try {
+            withContext(Dispatchers.Default) {
+              temp.outputStream().buffered().use { out ->
+                GifEncoder.encodeTo(
+                  out = out,
+                  width = width,
+                  height = height,
+                  palette = palette,
+                  frameCount = total,
+                  delayForFrame = { gifDelay },
+                ) { index ->
+                  mainHandler.post { videoExportProgress = 0.01f + 0.97f * index / total }
+                  frameAt(index)
+                }
+              }
+            }
+            val saved = GifSaver.save(context, temp)
+            saved to viewCopy(temp, ".gif")
+          } finally {
+            temp.delete()
+          }
+        }
+        videoExportProgress = 1f
+        message = EditorMessage("$noun saved", "View") {
+          val target = viewUri ?: uri
+          if (format == VideoFormat.Mp4) viewMp4(target) else viewVideo(target)
+        }
+      } catch (e: CancellationException) {
+        if (videoExportCancelled.get()) {
+          message = EditorMessage("Export cancelled")
+        }
+        throw e
+      } catch (e: Exception) {
+        Log.w(TAG, "Could not make the solve animation", e)
+        message = EditorMessage("Could not make the solve animation")
+      } finally {
+        exportingVideo = false
+        videoExportProgress = null
+        videoExportJob = null
+        videoExportCancelled.set(false)
+        requestGeneration()
+      }
+    }
+  }
+
   fun exportVideo(format: VideoFormat) {
+    if (videoMode == VideoMode.Solve) {
+      exportSolveAnimation(format)
+      return
+    }
     if (exportingVideo) return
     videoExportOpen = false
     val frame = videoFramePlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
@@ -1284,6 +1422,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   VideoExportScreen(
     open = videoExportOpen,
     format = videoFormat,
+    mode = videoMode,
     screens = videoScreens,
     fps = videoFps,
     pixelsPerFrame = videoPixelsPerFrame,
@@ -1295,11 +1434,31 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     outputHeight = videoOutput.second,
     exporting = exportingVideo,
     onScreensChange = { videoScreens = it },
+    onModeChange = { videoMode = it },
     onFpsChange = { videoFps = it },
     onPixelsPerFrameChange = { videoPixelsPerFrame = it },
     onFormatChange = { videoFormat = it },
+    onPreview = { videoPreviewOpen = true },
     onDismiss = { videoExportOpen = false },
     onExport = { exportVideo(videoFormat) },
+  )
+  val previewFps = if (videoFormat == VideoFormat.Gif) {
+    val delay = (100f / videoFps.coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS))
+      .roundToInt()
+      .coerceIn(1, 100)
+    // Google Photos -- the viewer this app hands GIFs to -- clamps short GIF delays (1 cs and often
+    // anything under 10 cs) to roughly 10 frames per second. Preview at that floor so the motion
+    // matches what the viewer will show, not the nominal delay written in the file.
+    (100f / maxOf(delay, 10)).roundToInt()
+  } else {
+    videoFps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS)
+  }
+  VideoPreviewDialog(
+    open = videoPreviewOpen,
+    image = output?.image,
+    fps = previewFps,
+    pixelsPerFrame = videoPixelsPerFrame,
+    onDismiss = { videoPreviewOpen = false },
   )
 
   if (savePatternDialogOpen) {

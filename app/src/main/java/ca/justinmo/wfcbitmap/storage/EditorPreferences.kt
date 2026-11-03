@@ -99,6 +99,14 @@ class EditorPreferences(context: Context) {
     preferences.edit().putString(KEY_VIDEO_FORMAT, value.name).apply()
   }
 
+  fun videoMode(fallback: VideoMode): VideoMode =
+    enumByName(preferences.getString(KEY_VIDEO_MODE, null), VideoMode.entries)
+      ?: fallback
+
+  fun setVideoMode(value: VideoMode) {
+    preferences.edit().putString(KEY_VIDEO_MODE, value.name).apply()
+  }
+
   /**
    * The output settings, falling back per field.
    *
@@ -151,5 +159,6 @@ class EditorPreferences(context: Context) {
     const val KEY_VIDEO_FPS = "video_fps"
     const val KEY_VIDEO_PIXELS_PER_FRAME = "video_pixels_per_frame"
     const val KEY_VIDEO_FORMAT = "video_format"
+    const val KEY_VIDEO_MODE = "video_mode"
   }
 }

@@ -58,6 +58,12 @@ enum class VideoFormat(val label: String) {
   Mp4("MP4"),
 }
 
+/** What the video shows: a pan across a stitched panorama, or the solve revealing the picture. */
+enum class VideoMode(val label: String) {
+  Panorama("Panorama"),
+  Solve("Solve"),
+}
+
 /** Smallest and largest loop the export offers, in frame widths. */
 internal const val MIN_LOOP_SCREENS = 2
 internal const val MAX_LOOP_SCREENS = 6
