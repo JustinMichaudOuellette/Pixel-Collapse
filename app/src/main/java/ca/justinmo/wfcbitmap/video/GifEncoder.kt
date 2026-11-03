@@ -56,15 +56,31 @@ internal object GifEncoder {
    *
    * Pixel-art output normally has fewer than 256 colours, so this is the whole palette; a busier
    * picture keeps its most frequent colours and the native encoder maps the rest to the nearest one.
+   *
+   * [extraColors] are reserved even when the picture itself is busier than the palette: the solve
+   * animation's uncertainty shades are not in the finished picture, and without reserved slots the GIF
+   * would map them to whichever solved colour happened to be nearest.
    */
-  fun paletteFor(pixels: IntArray, maxColors: Int = 256): IntArray {
+  fun paletteFor(
+    pixels: IntArray,
+    maxColors: Int = 256,
+    extraColors: IntArray = IntArray(0),
+  ): IntArray {
+    val extras = extraColors
+      .map { it and 0xFFFFFF }
+      .distinct()
+      .take(maxColors)
+    val reserved = extras.toHashSet()
     val counts = HashMap<Int, Int>()
     for (pixel in pixels) {
       val rgb = pixel and 0xFFFFFF
+      if (rgb in reserved) continue
       counts[rgb] = (counts[rgb] ?: 0) + 1
     }
     val ordered = counts.entries.sortedByDescending { it.value }
-    if (ordered.isEmpty()) return intArrayOf(0xFF000000.toInt())
-    return ordered.take(maxColors).map { 0xFF000000.toInt() or it.key }.toIntArray()
+    val room = (maxColors - extras.size).coerceAtLeast(0)
+    val palette = (extras.map { 0xFF000000.toInt() or it } +
+      ordered.take(room).map { 0xFF000000.toInt() or it.key }).toIntArray()
+    return if (palette.isEmpty()) intArrayOf(0xFF000000.toInt()) else palette
   }
 }

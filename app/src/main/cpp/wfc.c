@@ -54,6 +54,23 @@ static const int DY[WFC_DIRS] = {0, -1, -1, -1, 0, 1, 1, 1};
 /* Check the clock every this many revisions: a syscall per arc would dominate short revisions. */
 #define CLOCK_EVERY 512
 
+/*
+ * Trace packing: 20 bits hold the variable index (a 1024x1024 grid is exactly 2^20 cells) and 10 bits
+ * hold the domain size. The size saturates at 1023; only the distinction between 0, 1 and "many" is
+ * visible, and 1023 already means "very undecided" for every tile set this app allows.
+ */
+#define TRACE_VAR_BITS 20
+#define TRACE_VAR_MASK ((1u << TRACE_VAR_BITS) - 1u)
+#define TRACE_SIZE_BITS 10
+#define TRACE_SIZE_MASK ((1u << TRACE_SIZE_BITS) - 1u)
+#define TRACE_SIZE_MAX TRACE_SIZE_MASK
+#define TRACE_COLOR_SHIFT (TRACE_VAR_BITS + TRACE_SIZE_BITS)
+#define TRACE_COLOR_MASK 0x00FFFFFFu
+
+/* 4M eight-byte events is 32 MB: enough for a 270x480 trace with several million shrinks, and the
+ * Java side copies the same amount again. */
+#define TRACE_MAX_EVENTS (4 * 1024 * 1024)
+
 
 
 typedef struct {
@@ -175,6 +192,22 @@ struct wfc_solver {
   /** Solution buffer, so the JNI layer does not allocate one per solve. */
   int32_t *assignment;
 
+  /*
+   * Optional trace of domain-size changes, written only while trace_enabled is set. The initial sizes
+   * are a snapshot taken after the optional pins and before propagation, so a replay starts from the
+   * actual first wave function rather than from all-unknown cells.
+   */
+  int trace_enabled;
+  int trace_capture;
+  int trace_overflow;
+  uint64_t *trace_events;
+  int trace_event_count;
+  int trace_event_cap;
+  int32_t *trace_initial_sizes;
+  uint32_t *trace_initial_colors;
+  int trace_initial_cap;
+  int trace_initial_count;
+
   uint32_t rng;
   int decisions;
   int64_t revises;
@@ -242,6 +275,9 @@ struct wfc_solver {
   int64_t selection_nanos;
   int64_t ordering_nanos;
 };
+
+static int trace_push(wfc_solver *s, int v, int size, uint32_t colour);
+static uint32_t trace_average_color(const wfc_solver *s, int v);
 
 /* --- small helpers ------------------------------------------------------------------------- */
 
@@ -639,7 +675,144 @@ void wfc_solver_destroy(wfc_solver *solver) {
   free(solver->assignment);
   free(solver->sweep_order);
   free(solver->sweep_rank);
+  free(solver->trace_events);
+  free(solver->trace_initial_sizes);
+  free(solver->trace_initial_colors);
   free(solver);
+}
+
+/* --- solve trace ------------------------------------------------------------------------------ */
+
+static void trace_reset(wfc_solver *s) {
+  s->trace_event_count = 0;
+  s->trace_overflow = 0;
+  s->trace_capture = 0;
+  s->trace_initial_count = 0;
+}
+
+/*
+ * The average centre colour of the tiles still in [v]'s domain. The result is opaque; alpha is not a
+ * useful part of a domain average because every tile centre is opaque.
+ *
+ * This is only called while tracing, so the extra scan is paid by the one replay a solve-video export
+ * runs, not by the editor's live solves.
+ */
+static uint32_t trace_average_color(const wfc_solver *s, int v) {
+  const wfc_model *m = s->model;
+  if (m == NULL || v < 0 || v >= m->variable_count) return 0xFF000000u;
+  const int words = m->word_count;
+  const int base = v * words;
+  uint64_t red = 0, green = 0, blue = 0;
+  int count = 0;
+  for (int word = 0; word < words; word++) {
+    uint64_t bits = s->domains[base + word];
+    while (bits != 0) {
+      int tile = (word << 6) + ctz(bits);
+      bits &= bits - 1;
+      uint32_t centre = (uint32_t)m->tiles[tile].centre;
+      red += (centre >> 16) & 0xFFu;
+      green += (centre >> 8) & 0xFFu;
+      blue += centre & 0xFFu;
+      count++;
+    }
+  }
+  if (count == 0) return 0xFF000000u;
+  uint32_t r = (uint32_t)(red / (uint64_t)count);
+  uint32_t g = (uint32_t)(green / (uint64_t)count);
+  uint32_t b = (uint32_t)(blue / (uint64_t)count);
+  return 0xFF000000u | (r << 16) | (g << 8) | b;
+}
+
+/* Appends one domain-size/colour change. Returns 0 and marks the trace incomplete when it cannot grow. */
+static int trace_push(wfc_solver *s, int v, int size, uint32_t colour) {
+  if (!s->trace_enabled || !s->trace_capture || s->trace_overflow) return 1;
+  if ((unsigned)v > TRACE_VAR_MASK) {
+    s->trace_overflow = 1;
+    return 0;
+  }
+  if (s->trace_event_count >= TRACE_MAX_EVENTS) {
+    s->trace_overflow = 1;
+    return 0;
+  }
+  if (s->trace_event_count == s->trace_event_cap) {
+    int grown = s->trace_event_cap < 4096 ? 4096 : s->trace_event_cap * 2;
+    if (grown > TRACE_MAX_EVENTS) grown = TRACE_MAX_EVENTS;
+    uint64_t *events = realloc(s->trace_events, (size_t)grown * sizeof(uint64_t));
+    if (events == NULL) {
+      s->trace_overflow = 1;
+      return 0;
+    }
+    s->trace_events = events;
+    s->trace_event_cap = grown;
+  }
+  uint64_t packed_size = (uint64_t)size;
+  if (packed_size > TRACE_SIZE_MAX) packed_size = TRACE_SIZE_MAX;
+  s->trace_events[s->trace_event_count++] =
+    ((uint64_t)v & TRACE_VAR_MASK) |
+    (packed_size << TRACE_VAR_BITS) |
+    (((uint64_t)colour & TRACE_COLOR_MASK) << TRACE_COLOR_SHIFT);
+  return 1;
+}
+
+/*
+ * Snapshot the domain sizes the search actually starts from. Called after pins (which narrow domains
+ * directly) and before the initial propagation, so a replay can show the pinned/free starting state.
+ */
+static int trace_capture_initial(wfc_solver *s) {
+  if (!s->trace_enabled) return 1;
+  if (s->trace_initial_cap < s->bound_variables) {
+    int32_t *sizes = realloc(s->trace_initial_sizes,
+                             (size_t)s->bound_variables * sizeof(int32_t));
+    if (sizes == NULL) {
+      s->trace_overflow = 1;
+      return 0;
+    }
+    s->trace_initial_sizes = sizes;
+    uint32_t *colours = realloc(s->trace_initial_colors,
+                                (size_t)s->bound_variables * sizeof(uint32_t));
+    if (colours == NULL) {
+      s->trace_overflow = 1;
+      return 0;
+    }
+    s->trace_initial_colors = colours;
+    s->trace_initial_cap = s->bound_variables;
+  }
+  for (int v = 0; v < s->bound_variables; v++) {
+    s->trace_initial_sizes[v] = s->size[v];
+    s->trace_initial_colors[v] = trace_average_color(s, v);
+  }
+  s->trace_initial_count = s->bound_variables;
+  return 1;
+}
+
+void wfc_solver_set_trace(wfc_solver *solver, int enabled) {
+  if (solver == NULL) return;
+  solver->trace_enabled = enabled != 0;
+  trace_reset(solver);
+}
+
+const int32_t *wfc_solver_trace_initial_sizes(const wfc_solver *solver) {
+  return solver == NULL ? NULL : solver->trace_initial_sizes;
+}
+
+const uint32_t *wfc_solver_trace_initial_colors(const wfc_solver *solver) {
+  return solver == NULL ? NULL : solver->trace_initial_colors;
+}
+
+int wfc_solver_trace_initial_count(const wfc_solver *solver) {
+  return solver == NULL ? 0 : solver->trace_initial_count;
+}
+
+int wfc_solver_trace_event_count(const wfc_solver *solver) {
+  return solver == NULL ? 0 : solver->trace_event_count;
+}
+
+const uint64_t *wfc_solver_trace_events(const wfc_solver *solver) {
+  return solver == NULL ? NULL : solver->trace_events;
+}
+
+int wfc_solver_trace_overflow(const wfc_solver *solver) {
+  return solver == NULL ? 0 : solver->trace_overflow;
 }
 
 const int32_t *wfc_solver_assignment(const wfc_solver *solver) {
@@ -729,6 +902,9 @@ static void adjust_size(wfc_solver *s, int v, int new_size) {
   set_size_bit(s, v, old, 0);
   s->size[v] = new_size;
   set_size_bit(s, v, new_size, 1);
+  if (s->trace_enabled && s->trace_capture && !s->trace_overflow) {
+    trace_push(s, v, new_size, trace_average_color(s, v));
+  }
 }
 
 /*
@@ -776,8 +952,13 @@ static void undo(wfc_solver *s, int mark) {
     int word = key & PACK_MASK;
     int index = v * words + word;
     uint64_t old = s->trail_value[s->trail_size];
-    adjust_size(s, v, s->size[v] + popcount(old) - popcount(s->domains[index]));
+    /*
+     * Restore the domain first: adjust_size records a trace event whose average colour is computed
+     * from the domain, and that average has to be the restored one, not the value being undone.
+     */
+    int restored_size = s->size[v] + popcount(old) - popcount(s->domains[index]);
     s->domains[index] = old;
+    adjust_size(s, v, restored_size);
   }
 }
 
@@ -1402,6 +1583,7 @@ void wfc_solver_finish(wfc_solver *s) {
   s->trail_size = 0;
   s->queue_head = 0;
   s->queue_size = 0;
+  s->trace_capture = 0;
   s->model = NULL;
 }
 
@@ -1413,6 +1595,7 @@ int wfc_solver_solve(wfc_solver *s, const wfc_model *model, uint32_t seed, int64
   const wfc_model *m = model;
   /* A previous solve that ended with frames still open (every solution does) must not leak them. */
   free_frames(s);
+  if (s->trace_enabled) trace_reset(s);
   s->rng = seed == 0 ? 0x9E3779B9u : seed;
   s->decisions = 0;
   s->revises = 0;
@@ -1489,6 +1672,18 @@ int wfc_solver_solve(wfc_solver *s, const wfc_model *model, uint32_t seed, int64
     }
     if (smallest <= m->tile_count) s->smallest = smallest;
     else s->smallest = m->tile_count + 1;
+  }
+  /*
+   * Start the trace from the state pins left behind, then let propagation and search append to it.
+   * Pins narrow domains through adjust_size directly, so recording them would make the first visible
+   * frame a half-applied pin rather than the real starting wave.
+   */
+  if (s->trace_enabled) {
+    if (trace_capture_initial(s)) {
+      s->trace_capture = 1;
+    } else {
+      s->trace_overflow = 1;
+    }
   }
   enqueue_seed_arcs(s);
   s->setup_nanos = now_nanos() - phase_started;

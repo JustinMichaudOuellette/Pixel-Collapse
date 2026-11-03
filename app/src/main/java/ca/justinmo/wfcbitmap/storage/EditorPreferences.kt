@@ -107,6 +107,14 @@ class EditorPreferences(context: Context) {
     preferences.edit().putString(KEY_VIDEO_MODE, value.name).apply()
   }
 
+  fun solveAnimation(fallback: SolveAnimation): SolveAnimation =
+    enumByName(preferences.getString(KEY_SOLVE_ANIMATION, null), SolveAnimation.entries)
+      ?: fallback
+
+  fun setSolveAnimation(value: SolveAnimation) {
+    preferences.edit().putString(KEY_SOLVE_ANIMATION, value.name).apply()
+  }
+
   /**
    * The output settings, falling back per field.
    *
@@ -160,5 +168,6 @@ class EditorPreferences(context: Context) {
     const val KEY_VIDEO_PIXELS_PER_FRAME = "video_pixels_per_frame"
     const val KEY_VIDEO_FORMAT = "video_format"
     const val KEY_VIDEO_MODE = "video_mode"
+    const val KEY_SOLVE_ANIMATION = "solve_animation"
   }
 }

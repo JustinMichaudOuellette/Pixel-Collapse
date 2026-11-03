@@ -109,8 +109,47 @@ internal object WfcNative {
   /** Asks a running solve to stop; safe to call from another thread. */
   external fun solverAbort(solver: Long)
 
+  /**
+   * Enables the optional solve trace for the next [solverSolveTraced]. Off by default: recording every
+   * domain-size transition costs memory and a store per shrink, which only a solve animation needs.
+   */
+  external fun solverSetTrace(solver: Long, enabled: Boolean)
+
   /** @return 1 when [out] was filled with a tiling, 0 otherwise. */
   external fun solverSolve(solver: Long, model: Long, seed: Int, deadlineNanos: Long, maxDecisions: Int, out: IntArray): Int
+
+  /**
+   * Like [solverSolve], but leaves the solver open so the trace can be read before [solverFinish].
+   *
+   * The caller must always call [solverFinish] afterwards, whether this returns 1 or 0.
+   */
+  external fun solverSolveTraced(
+    solver: Long,
+    model: Long,
+    seed: Int,
+    deadlineNanos: Long,
+    maxDecisions: Int,
+    out: IntArray,
+  ): Int
+
+  /** Domain sizes the traced solve started from, one per cell. */
+  external fun solverTraceInitial(solver: Long): IntArray
+
+  /** Average ARGB of the candidate tile centres each cell started from, one per cell. */
+  external fun solverTraceInitialColors(solver: Long): IntArray
+
+  /**
+   * The traced domain transitions, in order. Each long packs the variable in the low 20 bits, the new
+   * size in the next 10 bits, and the average RGB of the remaining candidates in the next 24. A size of
+   * 1 means the cell became decided; 0 is a contradiction that a later event undoes.
+   */
+  external fun solverTraceEvents(solver: Long): LongArray
+
+  /** True when the event buffer filled up, in which case the trace is incomplete. */
+  external fun solverTraceOverflow(solver: Long): Boolean
+
+  /** Releases the result and search state after [solverSolveTraced]. */
+  external fun solverFinish(solver: Long)
 
   /**
    * Like [solverSolve], with optional per-cell pins.

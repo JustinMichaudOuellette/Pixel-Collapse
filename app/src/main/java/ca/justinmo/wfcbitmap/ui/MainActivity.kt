@@ -1,11 +1,4 @@
 package ca.justinmo.wfcbitmap.ui
-import ca.justinmo.wfcbitmap.PixelCollapseApplication
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import android.app.Activity
 import android.content.Context
@@ -22,30 +15,30 @@ import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.SystemBarStyle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.content.ContextCompat
@@ -53,18 +46,60 @@ import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import ca.justinmo.wfcbitmap.PixelCollapseApplication
+import ca.justinmo.wfcbitmap.editor.DebugTestPattern
+import ca.justinmo.wfcbitmap.editor.LatencyMeter
+import ca.justinmo.wfcbitmap.editor.PixelGridState
+import ca.justinmo.wfcbitmap.generation.WfcGenerator
+import ca.justinmo.wfcbitmap.generation.edgeRuleNotice
+import ca.justinmo.wfcbitmap.generation.generationPlan
+import ca.justinmo.wfcbitmap.output.EditorMessage
+import ca.justinmo.wfcbitmap.output.ImageSaver
+import ca.justinmo.wfcbitmap.output.KernelSize
+import ca.justinmo.wfcbitmap.output.OutputAspect
+import ca.justinmo.wfcbitmap.output.OutputScale
+import ca.justinmo.wfcbitmap.output.OutputSettings
+import ca.justinmo.wfcbitmap.output.PixelArtScaler
+import ca.justinmo.wfcbitmap.output.PixelScaler
+import ca.justinmo.wfcbitmap.output.PreviewScale
+import ca.justinmo.wfcbitmap.output.savedPixelSize
+import ca.justinmo.wfcbitmap.output.startupPreview
+import ca.justinmo.wfcbitmap.palette.Palette
+import ca.justinmo.wfcbitmap.storage.DrawingStore
+import ca.justinmo.wfcbitmap.storage.EditorSnapshot
+import ca.justinmo.wfcbitmap.storage.EditorStateHolder
+import ca.justinmo.wfcbitmap.storage.PatternStore
+import ca.justinmo.wfcbitmap.storage.SavedPattern
 import ca.justinmo.wfcbitmap.ui.theme.WFCBitmapTheme
-import kotlin.math.roundToInt
-import java.io.File
+import ca.justinmo.wfcbitmap.video.GifEncoder
+import ca.justinmo.wfcbitmap.video.GifSaver
+import ca.justinmo.wfcbitmap.video.LOOP_SEAM_CELLS
+import ca.justinmo.wfcbitmap.video.MAX_MP4_FPS
+import ca.justinmo.wfcbitmap.video.MAX_PANORAMA_CELLS
+import ca.justinmo.wfcbitmap.video.MAX_VIDEO_FPS
+import ca.justinmo.wfcbitmap.video.MIN_VIDEO_FPS
+import ca.justinmo.wfcbitmap.video.Mp4Encoder
+import ca.justinmo.wfcbitmap.video.Mp4Saver
+import ca.justinmo.wfcbitmap.video.PANORAMA_TIMEOUT_MILLIS
+import ca.justinmo.wfcbitmap.video.SolveAnimation
+import ca.justinmo.wfcbitmap.video.SolveAnimationFrames
+import ca.justinmo.wfcbitmap.video.VideoFormat
+import ca.justinmo.wfcbitmap.video.VideoMode
+import ca.justinmo.wfcbitmap.video.cropFrame
+import ca.justinmo.wfcbitmap.video.scaleFrame
+import ca.justinmo.wfcbitmap.video.stitchScreen
+import ca.justinmo.wfcbitmap.video.videoFramePlan
+import ca.justinmo.wfcbitmap.video.videoPlan
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
 
@@ -268,6 +303,10 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   // one, and the one Export button writes it.
   var videoFormat by remember { mutableStateOf(preferences.videoFormat(fallback = VideoFormat.Gif)) }
   var videoMode by remember { mutableStateOf(preferences.videoMode(fallback = VideoMode.Panorama)) }
+  // How a solve video depicts the search: the real decision order, or the real domain/entropy state.
+  var solveAnimation by remember {
+    mutableStateOf(preferences.solveAnimation(fallback = SolveAnimation.Collapse))
+  }
   var exportingVideo by remember { mutableStateOf(false) }
   var videoExportProgress by remember { mutableStateOf<Float?>(null) }
   var videoExportLabel by remember { mutableStateOf("") }
@@ -428,6 +467,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(videoPixelsPerFrame) { preferences.setVideoPixelsPerFrame(videoPixelsPerFrame) }
   LaunchedEffect(videoFormat) { preferences.setVideoFormat(videoFormat) }
   LaunchedEffect(videoMode) { preferences.setVideoMode(videoMode) }
+  LaunchedEffect(solveAnimation) { preferences.setSolveAnimation(solveAnimation) }
 
   /*
    * The colour the paint tools are using. It lives in the screen, because the toolbar that picks it does;
@@ -712,69 +752,67 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * and the preview job is cancelled first. The preview is rebuilt in the `finally` whatever happens.
    */
   /**
-   * A solve animation: start from the blank paper and reveal the finished picture in the shuffled order
-   * a search would settle it. GIF adds the reverse run so the last frame is the first one again; MP4
-   * stops on the finished picture.
+   * A solve animation built from a replay of the real search.
+   *
+   * The replay records every domain-size change, then [SolveAnimationFrames] samples it into video
+   * frames. [SolveAnimation.Collapse] paints only cells the solver actually decided; [SolveAnimation.Wave]
+   * paints the domain size of every cell. GIF adds the reverse run so the last frame is the first one
+   * again; MP4 stops on the finished picture.
    */
-  fun exportSolveAnimation(format: VideoFormat) {
+  fun exportSolveAnimation(format: VideoFormat, animation: SolveAnimation) {
     if (exportingVideo) return
-    val finished = output?.bitmap
-    if (finished == null) {
+    val solved = output
+    if (solved == null) {
       Toast.makeText(context, "There is no solved picture to animate yet", Toast.LENGTH_SHORT).show()
       return
     }
+    val finished = solved.bitmap
     videoExportOpen = false
     message = null
     generation.job?.cancel()
-    val plan = generationPlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
     val width = finished.width
     val height = finished.height
-    val columns = plan.columns
-    val rows = plan.rows
-    val cellWidth = (width / columns).coerceAtLeast(1)
-    val cellHeight = (height / rows).coerceAtLeast(1)
     val solvedPixels = IntArray(width * height)
     finished.getPixels(solvedPixels, 0, width, 0, 0, width, height)
     val background = gridState.defaultColor.toArgb()
-    val order = IntArray(columns * rows) { it }
-    java.util.Random(seed.toLong()).let { random ->
-      for (i in order.indices.reversed()) {
-        val j = random.nextInt(i + 1)
-        val tmp = order[i]
-        order[i] = order[j]
-        order[j] = tmp
-      }
-    }
-    val steps = (videoFps * 2).coerceIn(24, 90)
-    val total = if (format == VideoFormat.Gif) steps * 2 - 1 else steps
-
-    fun frameAt(index: Int): IntArray {
-      if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
-      val forward = if (index < steps) index else total - 1 - index
-      val progress = forward.toFloat() / (steps - 1).coerceAtLeast(1)
-      val frame = IntArray(width * height) { background }
-      val revealed = (progress * order.size).roundToInt()
-      for (k in 0 until revealed) {
-        val cell = order[k]
-        val cellColumn = cell % columns
-        val cellRow = cell / columns
-        val sourceX = cellColumn * cellWidth
-        val sourceY = cellRow * cellHeight
-        for (y in 0 until cellHeight) {
-          val target = (sourceY + y) * width + sourceX
-          val source = (sourceY + y) * width + sourceX
-          solvedPixels.copyInto(frame, target, source, source + cellWidth)
-        }
-      }
-      return frame
-    }
+    val requestedSteps = (videoFps * 2).coerceIn(24, 90)
 
     exportingVideo = true
-    videoExportLabel = "Capturing the solve…"
+    videoExportLabel = "Replaying the solve…"
     videoExportProgress = 0f
     videoExportCancelled.set(false)
     videoExportJob = application.exportScope.launch {
       try {
+        val trace = WfcGenerator.traceSolve(solved)
+        if (trace == null) {
+          message = EditorMessage("Could not replay this solve for a video")
+          return@launch
+        }
+        if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
+        val frames = SolveAnimationFrames(
+          trace = trace,
+          solvedPixels = solvedPixels,
+          width = width,
+          height = height,
+          background = background,
+          style = animation,
+          requestedSteps = requestedSteps,
+        )
+        val steps = frames.steps
+        val total = if (format == VideoFormat.Gif) steps * 2 - 1 else steps
+        videoExportLabel = "Encoding ${format.label}…"
+        videoExportProgress = 0.01f
+
+        fun frameAt(index: Int): IntArray {
+          if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
+          val forward = if (format == VideoFormat.Gif && index >= steps) {
+            total - 1 - index
+          } else {
+            index
+          }
+          return frames.frameAt(forward)
+        }
+
         val noun = format.label
         val (uri, viewUri) = if (format == VideoFormat.Mp4) {
           val bytes = withContext(Dispatchers.Default) {
@@ -792,7 +830,10 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           val saved = Mp4Saver.save(context, bytes)
           saved to viewCopy(bytes, ".mp4")
         } else {
-          val palette = GifEncoder.paletteFor(solvedPixels)
+          val palette = GifEncoder.paletteFor(
+            solvedPixels,
+            extraColors = frames.paletteExtras,
+          )
           val gifDelay = (100f / videoFps.coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS))
             .roundToInt()
             .coerceIn(1, 100)
@@ -844,7 +885,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
 
   fun exportVideo(format: VideoFormat) {
     if (videoMode == VideoMode.Solve) {
-      exportSolveAnimation(format)
+      exportSolveAnimation(format, solveAnimation)
       return
     }
     if (exportingVideo) return
@@ -1423,6 +1464,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     open = videoExportOpen,
     format = videoFormat,
     mode = videoMode,
+    solveAnimation = solveAnimation,
     screens = videoScreens,
     fps = videoFps,
     pixelsPerFrame = videoPixelsPerFrame,
@@ -1435,6 +1477,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     exporting = exportingVideo,
     onScreensChange = { videoScreens = it },
     onModeChange = { videoMode = it },
+    onSolveAnimationChange = { solveAnimation = it },
     onFpsChange = { videoFps = it },
     onPixelsPerFrameChange = { videoPixelsPerFrame = it },
     onFormatChange = { videoFormat = it },

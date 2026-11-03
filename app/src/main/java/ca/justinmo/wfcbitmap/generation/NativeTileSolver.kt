@@ -25,14 +25,51 @@ internal class NativeTileSolver(
   private val seed: Int,
   private val fixedCenters: IntArray? = null,
   private val fixedPatterns: IntArray? = null,
+  private val traceEnabled: Boolean = false,
 ) : TileSolver {
 
   private val handle: Long = if (model == 0L) 0L else NativeSolverPool.acquire()
   private val assignment = IntArray(columns * rows)
   private var closed = false
 
+  /** The traced solve's starting domain sizes, or null when tracing was off or the solve failed. */
+  internal var traceInitial: IntArray? = null
+    private set
+
+  /** The traced solve's starting average candidate colours, one per cell. */
+  internal var traceInitialColors: IntArray? = null
+    private set
+
+  /** The traced domain-size/colour transitions, or null when tracing was off or the solve failed. */
+  internal var traceEvents: LongArray? = null
+    private set
+
+  /** True when the trace buffer filled up; the trace must not be used as a complete animation. */
+  internal var traceOverflow: Boolean = false
+    private set
+
   override fun solve(deadlineNanos: Long, maxDecisions: Int): IntArray? {
     if (handle == 0L) return null
+    // A pooled handle may have been used for a traced solve before; set the mode on every run.
+    WfcNative.solverSetTrace(handle, traceEnabled)
+    if (traceEnabled) {
+      var solved = 0
+      try {
+        solved = WfcNative.solverSolveTraced(
+          handle, model, seed, deadlineNanos, maxDecisions, assignment,
+        )
+        if (solved == 1) {
+          traceInitial = WfcNative.solverTraceInitial(handle)
+          traceInitialColors = WfcNative.solverTraceInitialColors(handle)
+          traceEvents = WfcNative.solverTraceEvents(handle)
+          traceOverflow = WfcNative.solverTraceOverflow(handle)
+        }
+      } finally {
+        // solveTraced deliberately leaves the solver open so the trace can be read first.
+        WfcNative.solverFinish(handle)
+      }
+      return if (solved == 1) assignment else null
+    }
     val solved = if (fixedCenters != null || fixedPatterns != null) {
       WfcNative.solverSolveFixed(
         handle, model, seed, deadlineNanos, maxDecisions, fixedCenters, fixedPatterns, assignment,

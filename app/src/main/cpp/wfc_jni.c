@@ -125,6 +125,101 @@ static int32_t *copy_pins(JNIEnv *env, jintArray pins, int variable_count) {
   return copy;
 }
 
+JNIEXPORT void JNICALL
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverSetTrace(JNIEnv *env, jobject thiz, jlong solver,
+                                                    jboolean enabled) {
+  (void)env;
+  (void)thiz;
+  wfc_solver_set_trace((wfc_solver *)from_handle(solver), enabled ? 1 : 0);
+}
+
+/*
+ * The traced variant of solverSolve. It deliberately does not call wfc_solver_finish: the trace and
+ * initial sizes have to be copied out first, and the caller does that through solverTraceInitial /
+ * solverTraceEvents before calling solverFinish. Every other caller keeps using solverSolve, which
+ * finishes immediately as before.
+ */
+JNIEXPORT jint JNICALL
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverSolveTraced(JNIEnv *env, jobject thiz, jlong solver,
+                                                       jlong model, jint seed, jlong deadline_nanos,
+                                                       jint max_decisions, jintArray out) {
+  (void)thiz;
+  wfc_solver *native_solver = (wfc_solver *)from_handle(solver);
+  const wfc_model *native_model = (const wfc_model *)from_handle(model);
+  if (native_solver == NULL || native_model == NULL || out == NULL) return 0;
+  int variable_count = wfc_model_variable_count(native_model);
+  if ((*env)->GetArrayLength(env, out) < variable_count) return 0;
+
+  int solved = wfc_solver_solve(native_solver, native_model, (uint32_t)seed, (int64_t)deadline_nanos,
+                                (int)max_decisions, NULL, NULL);
+  if (solved) {
+    const int32_t *assignment = wfc_solver_assignment(native_solver);
+    if (assignment == NULL) return 0;
+    (*env)->SetIntArrayRegion(env, out, 0, variable_count, (const jint *)assignment);
+  }
+  return solved ? 1 : 0;
+}
+
+JNIEXPORT jintArray JNICALL
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverTraceInitial(JNIEnv *env, jobject thiz,
+                                                        jlong solver) {
+  (void)thiz;
+  const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
+  int count = wfc_solver_trace_initial_count(native_solver);
+  const int32_t *sizes = wfc_solver_trace_initial_sizes(native_solver);
+  jintArray out = (*env)->NewIntArray(env, count);
+  if (out == NULL) return NULL;
+  if (count > 0 && sizes != NULL) {
+    (*env)->SetIntArrayRegion(env, out, 0, count, (const jint *)sizes);
+  }
+  return out;
+}
+
+JNIEXPORT jintArray JNICALL
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverTraceInitialColors(JNIEnv *env, jobject thiz,
+                                                              jlong solver) {
+  (void)thiz;
+  const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
+  int count = wfc_solver_trace_initial_count(native_solver);
+  const uint32_t *colours = wfc_solver_trace_initial_colors(native_solver);
+  jintArray out = (*env)->NewIntArray(env, count);
+  if (out == NULL) return NULL;
+  if (count > 0 && colours != NULL) {
+    (*env)->SetIntArrayRegion(env, out, 0, count, (const jint *)colours);
+  }
+  return out;
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverTraceEvents(JNIEnv *env, jobject thiz,
+                                                       jlong solver) {
+  (void)thiz;
+  const wfc_solver *native_solver = (const wfc_solver *)from_handle(solver);
+  int count = wfc_solver_trace_event_count(native_solver);
+  const uint64_t *events = wfc_solver_trace_events(native_solver);
+  jlongArray out = (*env)->NewLongArray(env, count);
+  if (out == NULL) return NULL;
+  if (count > 0 && events != NULL) {
+    (*env)->SetLongArrayRegion(env, out, 0, count, (const jlong *)events);
+  }
+  return out;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverTraceOverflow(JNIEnv *env, jobject thiz,
+                                                         jlong solver) {
+  (void)env;
+  (void)thiz;
+  return wfc_solver_trace_overflow((const wfc_solver *)from_handle(solver)) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverFinish(JNIEnv *env, jobject thiz, jlong solver) {
+  (void)env;
+  (void)thiz;
+  wfc_solver_finish((wfc_solver *)from_handle(solver));
+}
+
 JNIEXPORT jint JNICALL
 Java_ca_justinmo_wfcbitmap_generation_WfcNative_solverSolveFixed(JNIEnv *env, jobject thiz, jlong solver,
                                                       jlong model, jint seed, jlong deadline_nanos,

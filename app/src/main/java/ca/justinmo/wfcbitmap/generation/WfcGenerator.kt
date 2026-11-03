@@ -7,6 +7,7 @@ import ca.justinmo.wfcbitmap.palette.*
 import ca.justinmo.wfcbitmap.editor.*
 
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +46,8 @@ import kotlin.math.sqrt
  * thread.
  */
 object WfcGenerator {
+
+  private const val TAG = "WfcGenerator"
 
   /**
    * Output bitmap geometry: 9:16, 540 pixels tall.
@@ -285,6 +288,17 @@ object WfcGenerator {
      * previous screen's diagonals instead of only its edge pixels.
      */
     val cellPatterns: IntArray? = null,
+    /**
+     * The native model's edge rule for this picture. [relaxedEdges] is the user-facing "the drawing's
+     * border could not be kept" flag, which is false for a wrapped drawing even though its model also
+     * drops the rule; a replay needs the rule the solver actually ran with.
+     */
+    val modelRelaxedEdges: Boolean = false,
+    /**
+     * The packed tile set the solve used. A solve animation replays this model with [wonBySeed] to
+     * capture the real search instead of revealing the finished bitmap in a shuffled order.
+     */
+    val packedTiles: IntArray? = null,
   ) {
     /** What the preview draws: the generated image itself. */
     val image: ImageBitmap by lazy(LazyThreadSafetyMode.PUBLICATION) { bitmap.asImageBitmap() }
@@ -484,6 +498,8 @@ object WfcGenerator {
       extractMillis = extractNanos / 1_000_000,
       cellCenters = cellCenters,
       cellPatterns = cellPatterns,
+      modelRelaxedEdges = wrapEdges || relaxedEdges,
+      packedTiles = packed,
     )
     if (grouped == null && fixedCenters == null && fixedPatterns == null) {
       synchronized(cacheLock) {
@@ -498,6 +514,87 @@ object WfcGenerator {
       }
     }
     output
+  }
+
+  /**
+   * Replays the solve that produced [output] with tracing on, and returns the real search trace.
+   *
+   * The replay uses the exact model, edge rule, grid and winning seed of the picture on screen, so the
+   * search is deterministic and produces the same tiling again. That is deliberate: recording during
+   * every preview would either cost memory in the editor or record every portfolio worker, and a
+   * one-worker replay at export time costs one solve and keeps the normal path unchanged.
+   *
+   * @return null when the model is no longer available, the replay fails, the trace buffer overflowed,
+   *   or the replayed tiling differs from the displayed one. The caller should report that rather than
+   *   animate a picture that is not the one on screen.
+   */
+  internal suspend fun traceSolve(output: Output): SolveTrace? = withContext(Dispatchers.Default) {
+    val packed = output.packedTiles ?: return@withContext null
+    if (!WfcNative.available) return@withContext null
+    val model = WfcNative.modelCreate(
+      packed,
+      packed.size / WfcNative.PACKED_TILE_INTS,
+      output.columns,
+      output.rows,
+      relaxedEdges = output.modelRelaxedEdges,
+    )
+    if (model == 0L) return@withContext null
+    val solver = NativeTileSolver(
+      model = model,
+      columns = output.columns,
+      rows = output.rows,
+      seed = output.wonBySeed ?: output.seed,
+      traceEnabled = true,
+    )
+    try {
+      // The picture's own solve time is the best estimate of the replay cost; the floor keeps a very
+      // fast first solve from timing out on a cold device, and the ceiling keeps a pathological one
+      // from holding the export forever.
+      val budgetMillis = (output.solveMillis.coerceAtLeast(250L) * 4 + 2_000L)
+        .coerceAtMost(20_000L)
+      val assignment = solver.solve(
+        deadlineNanos = System.nanoTime() + budgetMillis * 1_000_000,
+        maxDecisions = MAX_DECISIONS,
+      )
+      if (assignment == null) {
+        Log.w(TAG, "Could not replay the solve for the animation")
+        return@withContext null
+      }
+      if (solver.traceOverflow) {
+        Log.w(TAG, "The solve trace filled its event buffer and was discarded")
+        return@withContext null
+      }
+      val initial = solver.traceInitial ?: return@withContext null
+      val initialColors = solver.traceInitialColors ?: return@withContext null
+      val events = solver.traceEvents ?: return@withContext null
+      if (initial.size != output.columns * output.rows ||
+        initialColors.size != output.columns * output.rows
+      ) {
+        Log.w(TAG, "Solve trace has ${initial.size} cells, expected ${output.columns * output.rows}")
+        return@withContext null
+      }
+      val expected = output.cellPatterns
+      if (expected != null) {
+        val tileCount = WfcNative.modelTileCount(model)
+        val sources = IntArray(tileCount) { WfcNative.modelTileSource(model, it) }
+        val replayed = IntArray(output.columns * output.rows) { sources[assignment[it]] }
+        if (!replayed.contentEquals(expected)) {
+          Log.w(TAG, "The replayed solve differs from the picture on screen; not animating it")
+          return@withContext null
+        }
+      }
+      SolveTrace(
+        columns = output.columns,
+        rows = output.rows,
+        tileCount = WfcNative.modelTileCount(model),
+        initialSizes = initial,
+        initialColors = initialColors,
+        events = events,
+      )
+    } finally {
+      solver.close()
+      WfcNative.modelDestroy(model)
+    }
   }
 
   /** One model plus the solve on it, kept together because the mapping is needed to render. */

@@ -63,6 +63,7 @@ fun VideoExportScreen(
   open: Boolean,
   format: VideoFormat,
   mode: VideoMode = VideoMode.Panorama,
+  solveAnimation: SolveAnimation = SolveAnimation.Collapse,
   screens: Int,
   fps: Int,
   pixelsPerFrame: Int = 2,
@@ -75,6 +76,7 @@ fun VideoExportScreen(
   exporting: Boolean,
   onScreensChange: (Int) -> Unit,
   onModeChange: (VideoMode) -> Unit = {},
+  onSolveAnimationChange: (SolveAnimation) -> Unit = {},
   onFpsChange: (Int) -> Unit,
   onPixelsPerFrameChange: (Int) -> Unit = {},
   onFormatChange: (VideoFormat) -> Unit,
@@ -158,13 +160,54 @@ fun VideoExportScreen(
               "A wide picture pans left to right and loops back to its start. Every frame moves the window " +
                 "one pixel, so the loop is smooth by construction."
             } else {
-              "The solved picture is revealed cell by cell from the blank paper. A GIF runs the reveal " +
+              "A replay of the real solver, not a reveal of the finished bitmap. A GIF runs the replay " +
                 "backwards so it loops; an MP4 stops on the finished picture."
             },
             color = MENU_TEXT_COLOR.copy(alpha = 0.6f),
             fontSize = 12.sp,
             lineHeight = 17.sp,
           )
+
+          if (mode == VideoMode.Solve) {
+            Spacer(Modifier.height(18.dp))
+            SettingLabel("Animation", solveAnimation.label)
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              SolveAnimation.entries.forEach { option ->
+                val chosen = option == solveAnimation
+                Button(
+                  onClick = { onSolveAnimationChange(option) },
+                  enabled = !exporting,
+                  modifier = Modifier.weight(1f),
+                  colors = ButtonDefaults.buttonColors(
+                    containerColor = if (chosen) {
+                      MENU_TEXT_COLOR
+                    } else {
+                      MENU_TEXT_COLOR.copy(alpha = 0.12f)
+                    },
+                    contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
+                    disabledContainerColor = if (chosen) {
+                      MENU_TEXT_COLOR.copy(alpha = 0.5f)
+                    } else {
+                      MENU_TEXT_COLOR.copy(alpha = 0.08f)
+                    },
+                    disabledContentColor = MENU_TEXT_COLOR.copy(alpha = 0.6f),
+                  ),
+                ) {
+                  Text(option.label, fontSize = 12.sp)
+                }
+              }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+              solveAnimation.description,
+              color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+              fontSize = 11.sp,
+              lineHeight = 15.sp,
+            )
+          }
 
           Spacer(Modifier.height(22.dp))
           if (mode == VideoMode.Panorama) {

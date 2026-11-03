@@ -64,6 +64,25 @@ enum class VideoMode(val label: String) {
   Solve("Solve"),
 }
 
+/**
+ * How the solve video depicts the search.
+ *
+ * Both variants replay the real solve captured by [ca.justinmo.wfcbitmap.generation.SolveTrace]; they
+ * differ only in what an undecided cell shows.
+ */
+enum class SolveAnimation(val label: String, val description: String) {
+  /**
+   * Reveal cells only when the solver actually decided them. Undecided cells stay blank, so the order
+   * on screen is the order of the search, including the first propagation wave and any backtracking.
+   */
+  Collapse("Collapse order", "Each cell appears when the solver really decided it."),
+  /**
+   * The same real decision order, with every cell that is not generated yet filled with the average of
+   * the colours still possible there. Generated cells use the editor's own pixels.
+   */
+  Wave("Wave state", "Ungenerated cells show the average of their remaining possible colours."),
+}
+
 /** Smallest and largest loop the export offers, in frame widths. */
 internal const val MIN_LOOP_SCREENS = 2
 internal const val MAX_LOOP_SCREENS = 6

@@ -85,6 +85,28 @@ int wfc_solver_decisions(const wfc_solver *solver);
 int64_t wfc_solver_revises(const wfc_solver *solver);
 
 /*
+ * Optional solve trace: every domain-size transition, plus the domain sizes and average candidate
+ * colour the search started from.
+ *
+ * The trace is what lets the app animate the real search instead of revealing the finished bitmap. Each
+ * event packs the variable in the low 20 bits, the new domain size in the next 10 bits, and the average
+ * RGB of the remaining candidate tile centres in the next 24 bits. Sizes above 1023 are stored as 1023,
+ * because no visualisation needs more resolution than that. A size of 1 means the cell was decided at
+ * that point, and a size of 0 is a contradiction that propagation will undo.
+ *
+ * Recording is off by default: it is only enabled for the replay a solve-video export asks for.
+ * wfc_solver_trace_overflow is true when the event buffer filled up, in which case the trace is
+ * incomplete and should not be used.
+ */
+void wfc_solver_set_trace(wfc_solver *solver, int enabled);
+const int32_t *wfc_solver_trace_initial_sizes(const wfc_solver *solver);
+const uint32_t *wfc_solver_trace_initial_colors(const wfc_solver *solver);
+int wfc_solver_trace_initial_count(const wfc_solver *solver);
+int wfc_solver_trace_event_count(const wfc_solver *solver);
+const uint64_t *wfc_solver_trace_events(const wfc_solver *solver);
+int wfc_solver_trace_overflow(const wfc_solver *solver);
+
+/*
  * Instrumentation for the last solve: how many decisions led to a contradiction (dead ends, i.e. wasted
  * branches) and how many revisions actually removed a tile. Together with wfc_solver_revises they say
  * whether the search is backtracking too much or propagating too widely -- see wfc_solver_set_order.
