@@ -179,6 +179,8 @@ fun PixelEditorScreen(
   videoProgress: Float? = null,
   /** Label beside the export progress bar. */
   videoLabel: String? = null,
+  /** Cancels the running export; the progress card is visible only while it runs. */
+  onCancelVideoExport: () -> Unit = {},
   /**
    * Whether the drawing's edges are read as wrapping into each other; see [EditorTool].
    *
@@ -658,6 +660,7 @@ fun PixelEditorScreen(
       ScalerMenu(
         expanded = scalerMenuOpen,
         aspect = output.aspect,
+        preview = output.preview,
         current = output.scaler,
         currentScale = output.scale,
         onDismiss = { scalerMenuOpen = false },
@@ -776,6 +779,7 @@ fun PixelEditorScreen(
       VideoExportProgress(
         label = videoLabel ?: "Exporting…",
         progress = videoProgress,
+        onCancel = onCancelVideoExport,
         modifier = Modifier
           .align(Alignment.BottomCenter)
           .padding(bottom = 76.dp),
@@ -931,6 +935,7 @@ private fun KernelMenu(
 private fun ScalerMenu(
   expanded: Boolean,
   aspect: OutputAspect,
+  preview: PreviewScale,
   current: PixelArtScaler,
   currentScale: OutputScale,
   onDismiss: () -> Unit,
@@ -1000,7 +1005,7 @@ private fun ScalerMenu(
     OutputScale.entries
       .filter { it in current.supportedScales }
       .forEach { scale ->
-        val (width, height) = savedPixelSize(aspect, scale)
+        val (width, height) = savedPixelSize(aspect, scale, preview)
         DropdownMenuItem(
           text = { SizeRow(scale.label, width, height) },
           onClick = {

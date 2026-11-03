@@ -1,5 +1,9 @@
 package ca.justinmo.wfcbitmap
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+
 /**
  * The canonical 9x9 test pattern from AGENTS.md, which a **debug** build opens with.
  *
@@ -40,5 +44,17 @@ internal object DebugTestPattern {
   /** One ARGB pixel per cell, row-major; what [PixelGridState.restoreDrawing] takes. */
   val pixels: IntArray = IntArray(columns * rows) { index ->
     if (ROWS[index / columns][index % columns] == '*') FILLED else EMPTY
+  }
+
+  /**
+   * The same pattern using the active palette: filled cells take its **first** colour and the
+   * background takes its **darkest** one, matching the editor's own default background.
+   */
+  fun pixelsFor(palette: List<Color>): IntArray {
+    val filled = palette.firstOrNull()?.toArgb() ?: FILLED
+    val background = palette.minByOrNull { it.luminance() }?.toArgb() ?: EMPTY
+    return IntArray(columns * rows) { index ->
+      if (ROWS[index / columns][index % columns] == '*') filled else background
+    }
   }
 }

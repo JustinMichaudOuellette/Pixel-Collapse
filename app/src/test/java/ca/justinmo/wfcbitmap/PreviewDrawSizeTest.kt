@@ -44,8 +44,8 @@ class PreviewDrawSizeTest {
 
   @Test
   fun aSmallerPreviewIsScaledUpToFill() {
-    // 1x is 152x270; fitted to the column it is drawn at nearly four times its own size, not left small.
-    val (width, height) = previewDrawSize(152, 270, columnWidth, columnHeight)
+    // 1x is 270x480; fitted to the column it is drawn larger than its own size, not left small.
+    val (width, height) = previewDrawSize(270, 480, columnWidth, columnHeight)
     assertEquals("it fills the column's width", columnWidth, width)
     assertTrue("and nearly all of its height: $height", height > columnHeight * 0.95)
   }

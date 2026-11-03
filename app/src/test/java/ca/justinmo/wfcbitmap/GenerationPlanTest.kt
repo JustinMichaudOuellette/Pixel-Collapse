@@ -11,22 +11,22 @@ class GenerationPlanTest {
   fun groupingLeavesTheOutputGridAlone() {
     for (aspect in OutputAspect.entries) {
       for (preview in PreviewScale.entries) {
-        val (expectedColumns, expectedRows) = WfcGenerator.gridForAspect(aspect.ratio, preview.cellCount)
+        val grid = previewGrid(aspect, preview)
         for (kernel in KernelSize.entries) {
           val plan = generationPlan(aspect, preview, kernel)
           assertEquals(
             "${aspect.label} ${preview.label} ${kernel.label} columns",
-            expectedColumns,
+            grid.columns,
             plan.columns,
           )
           assertEquals(
             "${aspect.label} ${preview.label} ${kernel.label} rows",
-            expectedRows,
+            grid.rows,
             plan.rows,
           )
           assertEquals(
             "${aspect.label} ${preview.label} ${kernel.label} pixels per cell",
-            preview.pixelsPerCell,
+            grid.pixelsPerCell,
             plan.pixelsPerCell,
           )
         }
@@ -39,8 +39,8 @@ class GenerationPlanTest {
     val plan = generationPlan(OutputAspect.Portrait9x16, PreviewScale.One, KernelSize.Six)
 
     assertEquals(2, plan.cellSize)
-    // 76 is the 9:16 cell count at the 2x preview; it used to be divided by 2, which shrank the picture.
-    assertEquals(76, plan.columns)
+    // 2× 9:16 is 540×960: 135×240 cells at four pixels per cell.
+    assertEquals(135, plan.columns)
     assertEquals(4, plan.pixelsPerCell)
   }
 

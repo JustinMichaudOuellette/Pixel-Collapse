@@ -14,9 +14,12 @@ internal data class VideoPlan(
   /** Panorama width and height in pixels. */
   val panoramaWidth: Int,
   val panoramaHeight: Int,
-  /** Frame (viewport) size in pixels. */
+  /** Frame (viewport) size in solver pixels. */
   val frameWidth: Int,
   val frameHeight: Int,
+  /** Pixel size of each written frame: the selected preview's size. */
+  val outputWidth: Int,
+  val outputHeight: Int,
   /** Panorama width in solver cells. */
   val panoramaColumns: Int,
   val panoramaRows: Int,
@@ -52,9 +55,14 @@ enum class VideoFormat(val label: String) {
 internal const val MIN_LOOP_SCREENS = 2
 internal const val MAX_LOOP_SCREENS = 6
 
-/** The frame rates the slider offers, in frames per second. */
+/** The frame rate MP4 offers: 10–60 fps. GIF can go to 100 fps (1 cs), so the internal cap is wider. */
 internal const val MIN_VIDEO_FPS = 10
-internal const val MAX_VIDEO_FPS = 50
+internal const val MAX_MP4_FPS = 60
+internal const val MAX_VIDEO_FPS = 100
+
+/** GIF's whole-centisecond delays: 1 cs (100 fps) through 10 cs (10 fps). */
+internal const val MIN_GIF_DELAY_CENTISECONDS = 1
+internal const val MAX_GIF_DELAY_CENTISECONDS = 10
 
 /**
  * How many cells at the loop point are pinned so that the panorama closes on itself.
@@ -67,27 +75,17 @@ internal const val MAX_VIDEO_FPS = 50
 internal const val LOOP_SEAM_CELLS = 2
 
 /**
- * The frame grid the video uses.
+ * The frame grid the video uses: exactly the selected preview grid.
  *
- * A panorama is several frames wide, so it must not inherit the finest preview: a 4x preview at six
- * screens would ask the solver for a grid six times the size it already takes to solve. The stream uses
- * the preview when it is modest, and caps the cell count when it is not; the frame is then drawn at the
- * same pixels per cell.
+ * The export solves at the preview's own cells, so the written video has the same detail as the picture
+ * on screen. A panorama too large for one solve is built as stitched screens of this same size rather
+ * than being shrunk.
  */
 internal fun videoFramePlan(
   aspect: OutputAspect,
   preview: PreviewScale,
   kernel: KernelSize,
-): GenerationPlan {
-  val plan = generationPlan(aspect, preview, kernel)
-  val cells = plan.columns * plan.rows
-  if (cells <= VIDEO_MAX_FRAME_CELLS) return plan
-  val (columns, rows) = WfcGenerator.gridForAspect(aspect.ratio, VIDEO_MAX_FRAME_CELLS)
-  return plan.copy(columns = columns, rows = rows)
-}
-
-/** Largest cell grid one video frame may have; a panorama multiplies this by up to six. */
-private const val VIDEO_MAX_FRAME_CELLS = 10_260
+): GenerationPlan = generationPlan(aspect, preview, kernel)
 
 /**
  * Largest panorama the export solves as one grid, in cells.
@@ -108,7 +106,7 @@ internal const val MAX_PANORAMA_CELLS = 120_000
  * Generous, because there is no smaller answer to fall back on: the whole picture is one solve, and a slow
  * one is still far quicker than the export that follows it.
  */
-internal const val PANORAMA_TIMEOUT_MILLIS = 60_000L
+internal const val PANORAMA_TIMEOUT_MILLIS = 20_000L
 
 
 /**
@@ -141,6 +139,8 @@ internal fun videoPlan(
   cellSize: Int,
   screens: Int,
   fps: Int,
+  outputWidth: Int = 0,
+  outputHeight: Int = 0,
 ): VideoPlan {
   val share = (frameColumns / 6).coerceIn(2, 16)
   // The seam is wider than the plain share by [SEAM_MARGIN_CELLS], but it can never take the whole frame:
@@ -161,6 +161,8 @@ internal fun videoPlan(
     panoramaHeight = frameRows * pixelsPerCell,
     frameWidth = frameColumns * pixelsPerCell,
     frameHeight = frameRows * pixelsPerCell,
+    outputWidth = if (outputWidth > 0) outputWidth else frameColumns * pixelsPerCell,
+    outputHeight = if (outputHeight > 0) outputHeight else frameRows * pixelsPerCell,
     panoramaColumns = panoramaColumns,
     panoramaRows = frameRows,
     pixelsPerCell = pixelsPerCell,
@@ -264,3 +266,57 @@ internal fun cropFrame(
 /** Every frame of the loop, in order. */
 internal fun panFrames(panorama: IntArray, panoramaWidth: Int, plan: VideoPlan): List<IntArray> =
   List(plan.frameCount) { cropFrame(panorama, panoramaWidth, plan, it) }
+
+/**
+ * A rough file-size estimate.
+ *
+ * It is measured on the *output* pixels, after the solver frame has been upscaled to the selected
+ * preview size, so changing preview detail moves the estimate as well as the picture. The per-pixel
+ * figures are deliberately rough: pixel-art GIF LZW and H.264 both depend heavily on the drawing.
+ */
+internal fun estimatedVideoBytes(plan: VideoPlan, format: VideoFormat): Long {
+  val pixels = plan.outputWidth.toLong() * plan.outputHeight.toLong()
+  val frameCount = plan.frameCount.toLong()
+  val bytesPerPixel = when (format) {
+    VideoFormat.Gif -> 0.12
+    VideoFormat.Mp4 -> 0.04
+  }
+  return (pixels * frameCount * bytesPerPixel).toLong().coerceAtLeast(1024L)
+}
+
+/** 512 KB, 3.4 MB, 1.2 GB: enough precision for an estimate, not a byte count. */
+internal fun formatByteSize(bytes: Long): String {
+  val kb = bytes / 1024.0
+  val mb = kb / 1024.0
+  val gb = mb / 1024.0
+  return when {
+    gb >= 1.0 -> String.format(java.util.Locale.US, "%.1f GB", gb)
+    mb >= 1.0 -> String.format(java.util.Locale.US, "%.1f MB", mb)
+    else -> String.format(java.util.Locale.US, "%.0f KB", kb.coerceAtLeast(1.0))
+  }
+}
+
+/**
+ * Nearest-neighbour enlargement of a solved frame to the preview's output size.
+ *
+ * The solve is capped so a large preview stays solvable; this is what makes the written video still
+ * 1080×1920 instead of the solver's smaller grid.
+ */
+internal fun scaleFrame(
+  frame: IntArray,
+  width: Int,
+  height: Int,
+  targetWidth: Int,
+  targetHeight: Int,
+): IntArray {
+  if (width == targetWidth && height == targetHeight) return frame
+  val scaled = IntArray(targetWidth * targetHeight)
+  for (y in 0 until targetHeight) {
+    val sourceRow = (y.toLong() * height / targetHeight).toInt().coerceIn(0, height - 1) * width
+    val targetRow = y * targetWidth
+    for (x in 0 until targetWidth) {
+      scaled[targetRow + x] = frame[sourceRow + (x.toLong() * width / targetWidth).toInt()]
+    }
+  }
+  return scaled
+}

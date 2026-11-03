@@ -14,11 +14,11 @@ import org.junit.Test
 class StartupPreviewTest {
 
   @Test
-  fun aDebugBuildOpensAtTheFinestPreview() {
+  fun aDebugBuildOpensAtTheDefaultPreview() {
     for (stored in PreviewScale.entries) {
       assertEquals(
-        "a debug build ignores the stored $stored and opens at 4x",
-        PreviewScale.Two,
+        "a debug build ignores the stored $stored and opens at 2x",
+        PreviewScale.One,
         startupPreview(stored, debugBuild = true),
       )
     }
@@ -32,9 +32,9 @@ class StartupPreviewTest {
   }
 
   @Test
-  fun theDebugDefaultIsTheLabelTheMenuShows() {
-    // "4x" in the output menu, and the base cell count rather than a fraction of it.
-    assertEquals("4×", PreviewScale.Two.label)
-    assertTrue(PreviewScale.Two.cellCount > PreviewScale.One.cellCount)
+  fun theDefaultIsTheTwoTimesPreview() {
+    assertEquals("2×", PreviewScale.One.label)
+    assertEquals(2, PreviewScale.One.factor)
+    assertTrue(PreviewScale.Two.factor > PreviewScale.One.factor)
   }
 }

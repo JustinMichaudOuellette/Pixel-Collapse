@@ -637,11 +637,11 @@ internal fun generationPlan(
   preview: PreviewScale,
   kernel: KernelSize,
 ): GenerationPlan {
-  val (columns, rows) = WfcGenerator.gridForAspect(aspect.ratio, preview.cellCount)
+  val grid = previewGrid(aspect, preview)
   return GenerationPlan(
-    columns = columns,
-    rows = rows,
-    pixelsPerCell = preview.pixelsPerCell,
+    columns = grid.columns,
+    rows = grid.rows,
+    pixelsPerCell = grid.pixelsPerCell,
     cellSize = kernel.cellSize,
   )
 }

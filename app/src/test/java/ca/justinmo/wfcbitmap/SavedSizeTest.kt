@@ -6,95 +6,110 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The two sizes the output menu offers, and the fact that they are two.
+ * The preview steps and the independent save sizes.
  *
- * The preview size is what the picture is generated at -- the bitmap on screen -- and the save size is what
- * that picture is written to a file at, worked out from the grid rather than from the preview, so choosing a
- * preview size never moves a number in the save list. Neither is a plain multiple of "the picture": the
- * solver grid keeps a fixed number of cells whatever shape is chosen, so the size is written beside each
- * option in the menu instead.
+ * The preview is four quarter steps of a 4× maximum: 1×, 2×, 3× and 4×. The save list keeps its own
+ * historical base, so changing the preview never changes the size of a saved file.
  */
 class SavedSizeTest {
 
   @Test
-  fun theDefaultShapeAtOneTimesIsTheGeneratedBitmap() {
-    assertEquals(
-      WfcGenerator.BITMAP_WIDTH to WfcGenerator.BITMAP_HEIGHT,
-      previewPixelSize(OutputAspect.Portrait9x16, PreviewScale.One),
-    )
+  fun theMaximumPreviewIsTheAgreedSizeForEveryShape() {
+    assertEquals(1080 to 1920, previewPixelSize(OutputAspect.Portrait9x16, PreviewScale.Two))
+    assertEquals(1080 to 1440, previewPixelSize(OutputAspect.Portrait3x4, PreviewScale.Two))
+    assertEquals(1080 to 1080, previewPixelSize(OutputAspect.Square, PreviewScale.Two))
+    assertEquals(1080 to 810, previewPixelSize(OutputAspect.Landscape4x3, PreviewScale.Two))
+    assertEquals(1080 to 608, previewPixelSize(OutputAspect.Landscape16x9, PreviewScale.Two))
   }
 
   @Test
-  fun thePreviewStepsSolveMoreCellsAsTheyGrow() {
-    assertEquals("1× is a sixteenth of the base cells", WfcGenerator.DEFAULT_CELL_COUNT / 16, PreviewScale.Half.cellCount)
-    assertEquals("2× is a quarter of the base cells", WfcGenerator.DEFAULT_CELL_COUNT / 4, PreviewScale.One.cellCount)
-    assertEquals("4× is the base cell count", WfcGenerator.DEFAULT_CELL_COUNT, PreviewScale.Two.cellCount)
-    assertTrue(PreviewScale.Half.cellCount < PreviewScale.One.cellCount)
-    assertTrue(PreviewScale.One.cellCount < PreviewScale.Two.cellCount)
+  fun theSmallerPreviewsAreQuarterStepsBackFromTheMaximum() {
+    // 9:16 is the clean case: every step divides exactly.
+    assertEquals(270 to 480, previewPixelSize(OutputAspect.Portrait9x16, PreviewScale.Half))
+    assertEquals(540 to 960, previewPixelSize(OutputAspect.Portrait9x16, PreviewScale.One))
+    assertEquals(810 to 1440, previewPixelSize(OutputAspect.Portrait9x16, PreviewScale.Three))
+    assertEquals(1080 to 1920, previewPixelSize(OutputAspect.Portrait9x16, PreviewScale.Two))
 
-    for (preview in PreviewScale.entries) {
-      val (columns, rows) = WfcGenerator.gridForAspect(
-        OutputAspect.Portrait9x16.ratio,
-        preview.cellCount,
-      )
-      val (width, height) = previewPixelSize(OutputAspect.Portrait9x16, preview)
-      assertEquals("${preview.label} width is its grid times its cell size", columns * preview.pixelsPerCell, width)
-      assertEquals("${preview.label} height is its grid times its cell size", rows * preview.pixelsPerCell, height)
+    // 4:3's 810-pixel long side rounds at the quarter and three-quarter steps.
+    assertEquals(270 to 203, previewPixelSize(OutputAspect.Landscape4x3, PreviewScale.Half))
+    assertEquals(540 to 405, previewPixelSize(OutputAspect.Landscape4x3, PreviewScale.One))
+    assertEquals(810 to 608, previewPixelSize(OutputAspect.Landscape4x3, PreviewScale.Three))
+    assertEquals(1080 to 810, previewPixelSize(OutputAspect.Landscape4x3, PreviewScale.Two))
+  }
+
+  @Test
+  fun thePreviewStepsAreLabelledOneToFourInOrder() {
+    assertEquals(listOf("1×", "2×", "3×", "4×"), PreviewScale.entries.map { it.label })
+    assertEquals(listOf(1, 2, 3, 4), PreviewScale.entries.map { it.factor })
+  }
+
+  @Test
+  fun theGridApproachesThePreviewSizeAndGrowsWithIt() {
+    for (aspect in OutputAspect.entries) {
+      for (preview in PreviewScale.entries) {
+        val (width, height) = previewPixelSize(aspect, preview)
+        val grid = previewGrid(aspect, preview)
+        // The bitmap is within a cell of the menu's size; lower steps round down a few pixels.
+        assertTrue(
+          "${aspect.label} ${preview.label} width ${grid.columns * grid.pixelsPerCell} vs $width",
+          abs(width - grid.columns * grid.pixelsPerCell) <= grid.pixelsPerCell,
+        )
+        assertTrue(
+          "${aspect.label} ${preview.label} height ${grid.rows * grid.pixelsPerCell} vs $height",
+          abs(height - grid.rows * grid.pixelsPerCell) <= grid.pixelsPerCell,
+        )
+        val plan = generationPlan(aspect, preview, KernelSize.Three)
+        assertEquals(grid.columns, plan.columns)
+        assertEquals(grid.rows, plan.rows)
+        assertEquals(grid.pixelsPerCell, plan.pixelsPerCell)
+      }
     }
   }
 
   @Test
-  fun thePreviewDefaultsToTheSmallestSize() {
-    // The coarsest preview is the starting point. The bigger previews are there to be chosen.
+  fun everyPreviewSizeIsPositive() {
+    for (aspect in OutputAspect.entries) {
+      for (preview in PreviewScale.entries) {
+        val (width, height) = previewPixelSize(aspect, preview)
+        assertTrue("${aspect.label} at ${preview.label} is ${width}x$height", width > 0 && height > 0)
+      }
+    }
+  }
+
+  @Test
+  fun thePreviewDefaultIsTwoTimes() {
+    assertEquals(PreviewScale.One, OutputSettings().preview)
     assertEquals(
-      PreviewScale.Half,
-      OutputSettings().preview,
-    )
-    assertEquals(
-      152 to 272,
+      540 to 960,
       previewPixelSize(OutputAspect.Portrait9x16, OutputSettings().preview),
     )
   }
 
   @Test
-  fun theSaveSizeIsItsOwnScaleOfTheGrid() {
-    // 1x is the picture the app has always generated, 16x is sixteen times it, and neither of those numbers
-    // knows or cares what the preview is set to.
-    val one = savedPixelSize(OutputAspect.Portrait9x16, OutputScale.One)
-    assertEquals(WfcGenerator.BITMAP_WIDTH to WfcGenerator.BITMAP_HEIGHT, one)
+  fun theSaveSizeIsAMultipleOfThePreview() {
+    val preview = PreviewScale.One // 2× gives 540×960 for 9:16.
+    val (previewWidth, previewHeight) = previewPixelSize(OutputAspect.Portrait9x16, preview)
+    assertEquals(540 to 960, previewWidth to previewHeight)
+    assertEquals(
+      previewWidth to previewHeight,
+      savedPixelSize(OutputAspect.Portrait9x16, OutputScale.One, preview),
+    )
+    assertEquals(
+      1080 to 1920,
+      savedPixelSize(OutputAspect.Portrait9x16, OutputScale.Two, preview),
+    )
     for (scale in OutputScale.entries) {
-      val saved = savedPixelSize(OutputAspect.Portrait9x16, scale)
-      assertEquals("width at ${scale.label}", scale.pixels(one.first), saved.first)
-      assertEquals("height at ${scale.label}", scale.pixels(one.second), saved.second)
+      val saved = savedPixelSize(OutputAspect.Portrait9x16, scale, preview)
+      assertEquals(scale.pixels(previewWidth), saved.first)
+      assertEquals(scale.pixels(previewHeight), saved.second)
     }
   }
 
   @Test
-  fun theSmallestSaveSizeIsOneTimes() {
-    // A file smaller than the picture would be a file the drawing cannot be seen in, so 1x is the floor.
-    assertEquals("1×", OutputScale.entries.first().label)
-    assertEquals(1.0, OutputScale.entries.first().factor, 0.0)
-  }
-
-  @Test
-  fun theTopOfTheSaveListIsTheSixteen() {
-    // Four times the largest the list used to have (4x, 1216x2160): 4864x8640.
-    assertEquals(
-      4864 to 8640,
-      savedPixelSize(OutputAspect.Portrait9x16, OutputScale.Sixteen),
-    )
-  }
-
-  @Test
-  fun everySizeIsAWholeNumberOfPixels() {
-    // Nothing may round down to nothing: every shape at every size still has to be a picture.
+  fun everySaveSizeIsAWholeNumberOfPixels() {
     for (aspect in OutputAspect.entries) {
-      for (preview in PreviewScale.entries) {
-        val (shownWidth, shownHeight) = previewPixelSize(aspect, preview)
-        assertTrue("${aspect.label} at ${preview.label} is ${shownWidth}x$shownHeight", shownWidth > 0 && shownHeight > 0)
-      }
       for (scale in OutputScale.entries) {
-        val (width, height) = savedPixelSize(aspect, scale)
+        val (width, height) = savedPixelSize(aspect, scale, PreviewScale.One)
         assertTrue("${aspect.label} saved at ${scale.label} is ${width}x$height", width > 0 && height > 0)
       }
     }
@@ -103,32 +118,25 @@ class SavedSizeTest {
   @Test
   fun theShapeDecidesTheProportions() {
     val preview = PreviewScale.One
-    val scale = OutputScale.One
     val portrait = previewPixelSize(OutputAspect.Portrait9x16, preview)
     val square = previewPixelSize(OutputAspect.Square, preview)
     val landscape = previewPixelSize(OutputAspect.Landscape16x9, preview)
 
-    // Square to within a cell: the grid keeps a fixed cell count, so the sides are whole cells and one of
-    // them can round a cell further than the other (203x202 cells for a square).
-    assertTrue(
-      "a square picture is square to within a cell: square=$square at ${scale.label}",
-      abs(square.first - square.second) <= 2 * WfcGenerator.PIXELS_PER_CELL,
-    )
-    assertTrue("a 9:16 picture is taller than it is wide: $portrait", portrait.second > portrait.first)
-    assertTrue("a 16:9 picture is wider than it is tall: $landscape", landscape.first > landscape.second)
+    assertTrue("square=$square", abs(square.first - square.second) <= 2)
+    assertTrue("portrait=$portrait", portrait.second > portrait.first)
+    assertTrue("landscape=$landscape", landscape.first > landscape.second)
   }
 
   @Test
-  fun everyShapeIsWithinACellOfItsAspectRatio() {
+  fun everyShapeIsWithinRoundingOfItsAspectRatio() {
     for (aspect in OutputAspect.entries) {
-      val (width, height) = previewPixelSize(aspect, PreviewScale.One)
+      val (width, height) = previewPixelSize(aspect, PreviewScale.Two)
       val ratio = width.toFloat() / height
       assertEquals(
         "${aspect.label} should keep its proportions: ${width}x$height",
         aspect.ratio,
         ratio,
-        // Within rounding of the grid: the cell count is fixed, so the sides are integers near the ratio.
-        0.02f,
+        0.01f,
       )
     }
   }

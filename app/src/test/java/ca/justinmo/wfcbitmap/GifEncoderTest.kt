@@ -104,21 +104,28 @@ class GifEncoderTest {
   }
 
   @Test
-  fun aVideoFrameIsCappedSoItsPanoramaCanBeSolved() {
-    val plan = videoFramePlan(OutputAspect.Portrait9x16, PreviewScale.Two, KernelSize.Six)
-
-    assertTrue("frame grid ${plan.columns}x${plan.rows}", plan.columns * plan.rows <= 10_260)
-    assertEquals(4, plan.pixelsPerCell)
-    assertEquals(2, plan.cellSize)
+  fun aVideoFrameUsesTheSelectedPreviewGrid() {
+    for (preview in PreviewScale.entries) {
+      val expected = generationPlan(OutputAspect.Portrait9x16, preview, KernelSize.Six)
+      val frame = videoFramePlan(OutputAspect.Portrait9x16, preview, KernelSize.Six)
+      assertEquals("${preview.label} columns", expected.columns, frame.columns)
+      assertEquals("${preview.label} rows", expected.rows, frame.rows)
+      assertEquals("${preview.label} pixels per cell", expected.pixelsPerCell, frame.pixelsPerCell)
+      assertEquals("${preview.label} kernel", 2, frame.cellSize)
+    }
   }
 
   @Test
-  fun aModestPreviewIsUsedAsTheVideoFrameUnchanged() {
-    val preview = generationPlan(OutputAspect.Portrait9x16, PreviewScale.Half, KernelSize.Three)
-    val frame = videoFramePlan(OutputAspect.Portrait9x16, PreviewScale.Half, KernelSize.Three)
-
-    assertEquals(preview.columns, frame.columns)
-    assertEquals(preview.rows, frame.rows)
+  fun theOutputIsTheSelectedPreviewSize() {
+    val frame = videoFramePlan(OutputAspect.Portrait9x16, PreviewScale.Two, KernelSize.Three)
+    val plan = videoPlan(
+      frameColumns = frame.columns, frameRows = frame.rows, pixelsPerCell = frame.pixelsPerCell,
+      cellSize = frame.cellSize, screens = 2, fps = 25,
+      outputWidth = 1080, outputHeight = 1920,
+    )
+    assertEquals(1080, plan.outputWidth)
+    assertEquals(1920, plan.outputHeight)
+    assertEquals("no upscaling at full preview", plan.frameWidth, plan.outputWidth)
   }
 
   @Test
@@ -165,7 +172,7 @@ class GifEncoderTest {
     assertEquals(67 * 4, plan.frameHeight)
     // One frame per pixel of panorama width: the window moves exactly one pixel each time.
     assertEquals(plan.panoramaWidth, plan.frameCount)
-    assertEquals(77 * 4, plan.panoramaWidth)
+    assertEquals(193 * 4, plan.panoramaWidth)
     assertEquals(4, plan.frameDelayCentiseconds)
     assertEquals(25f, plan.effectiveFps, 0.01f)
   }
@@ -182,20 +189,15 @@ class GifEncoderTest {
   }
 
   @Test
-  fun evenTheWidestLoopFitsOneSolve() {
-    // The loop is one solve because that is the only way its two ends can be pinned together, so the
-    // longest loop the slider offers has to fit the solver at the widest frame the export allows.
+  fun aFullPreviewFrameUsesTheShortestLoop() {
     val frame = videoFramePlan(OutputAspect.Portrait9x16, PreviewScale.Two, KernelSize.Three)
     val widest = widestLoop(frame.columns, frame.rows, frame.columns - (frame.columns / 6 + 1))
-    assertEquals(MAX_LOOP_SCREENS, widest)
+    assertEquals(MIN_LOOP_SCREENS, widest)
     val plan = videoPlan(
       frameColumns = frame.columns, frameRows = frame.rows, pixelsPerCell = frame.pixelsPerCell,
       cellSize = frame.cellSize, screens = MAX_LOOP_SCREENS, fps = 25,
     )
-    assertTrue(
-      "a ${plan.panoramaColumns}x${plan.panoramaRows} loop is over the $MAX_PANORAMA_CELLS budget",
-      plan.panoramaColumns * plan.panoramaRows <= MAX_PANORAMA_CELLS,
-    )
+    assertEquals(MIN_LOOP_SCREENS, plan.screenCount)
   }
 
   @Test

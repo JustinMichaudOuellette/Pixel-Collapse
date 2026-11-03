@@ -95,56 +95,89 @@ enum class OutputScale(val label: String, val numerator: Int, val denominator: I
   fun pixels(value: Int): Int = (value.toLong() * numerator / denominator).toInt()
 }
 
-/** The number of pixels each solved cell is drawn with, whatever the preview resolution. */
-private const val PREVIEW_PIXELS_PER_CELL = 4
-
 /**
  * How much detail the preview is generated with.
  *
- * The preview always fills its column, so the setting changes what is in the picture: 1x solves a
- * sixteenth of the base cells (the blockiest picture), 2x a quarter, and 4x the base cells -- today's
- * detail. Every cell is drawn as four pixels in the generated bitmap, so the bitmap grows with the
- * number of cells while the preview stays the same size on screen.
+ * Each step is a quarter of the 4× size: 1× is 270×480 for 9:16, 2× is 540×960, 3× is 810×1440 and
+ * 4× is 1080×1920. The other shapes follow the same quarter steps from their own 4× size (see
+ * [maxPreviewSize]). The generated bitmap is exactly this size; the solver grid is that size divided
+ * by a whole number of pixels per cell (see [previewGrid]).
  *
  * The constant names predate the labels; they are kept because sessions and preferences store the enum
- * by name.
+ * by name. `Two` is still the 4× option it has always been, so stored sessions keep their detail.
  */
-enum class PreviewScale(
-  val label: String,
-  val cellCount: Int,
-  val pixelsPerCell: Int = PREVIEW_PIXELS_PER_CELL,
-) {
-  /** The default: a sixteenth of the base cells, and the coarsest picture. */
-  Half("1×", WfcGenerator.DEFAULT_CELL_COUNT / 16),
-  /** A quarter of the base cells. */
-  One("2×", WfcGenerator.DEFAULT_CELL_COUNT / 4),
-  /** The base cell count: the finest picture, and today's detail. */
-  Two("4×", WfcGenerator.DEFAULT_CELL_COUNT),
+enum class PreviewScale(val label: String, val factor: Int) {
+  /** 1×: a quarter of the 4× width and height. */
+  Half("1×", 1),
+  /** 2×: half of the 4× size. */
+  One("2×", 2),
+  /** 3×: three quarters of the 4× size. */
+  Three("3×", 3),
+  /** 4×: the maximum preview size. */
+  Two("4×", 4),
 }
 
 /**
- * The pixel size the picture on screen is generated at: the solver grid for [aspect] at the preview's
- * cell count, one cell being [PreviewScale.pixelsPerCell] pixels of it.
+ * The 4× preview size for each shape: 1080 pixels on the short side, with the given long side.
  *
- * The shape decides it as much as the resolution does -- the grid keeps the requested cell count
- * whatever the aspect, so a square picture is wider than a 9:16 one at the same resolution -- which is
- * why the menu shows the size beside each option rather than a bare multiplier.
+ * These are the numbers the output menu shows; every smaller preview is this size times 1/4, 2/4 or
+ * 3/4, rounded to a whole pixel.
+ */
+private fun maxPreviewSize(aspect: OutputAspect): Pair<Int, Int> = when (aspect) {
+  OutputAspect.Portrait9x16 -> 1080 to 1920
+  OutputAspect.Portrait3x4 -> 1080 to 1440
+  OutputAspect.Square -> 1080 to 1080
+  OutputAspect.Landscape4x3 -> 1080 to 810
+  OutputAspect.Landscape16x9 -> 1080 to 608
+}
+
+/**
+ * The solver grid and pixels-per-cell that draw [aspect] at [preview]'s exact pixel size.
+ *
+ * The pixels-per-cell is the largest whole divisor of both preview sides, up to the scale factor:
+ * 4× 9:16 is 270×480 cells at 4 pixels each, while 4× 4:3 is 360×270 cells at 3 pixels each because
+ * 810 is not divisible by 4.
+ */
+internal data class PreviewGrid(
+  val columns: Int,
+  val rows: Int,
+  val pixelsPerCell: Int,
+)
+
+internal fun previewGrid(aspect: OutputAspect, preview: PreviewScale): PreviewGrid {
+  val (width, height) = previewPixelSize(aspect, preview)
+  // Each step solves a quarter of the width/height of the one above it: 4× is the full preview grid,
+  // 3× three quarters, 2× half and 1× a quarter. Drawing each cell at four pixels keeps the bitmap near
+  // the preview's pixel size while making the lower steps visibly blockier (and much cheaper).
+  val columns = (width / 4).coerceAtLeast(1)
+  val rows = (height / 4).coerceAtLeast(1)
+  return PreviewGrid(columns = columns, rows = rows, pixelsPerCell = 4)
+}
+
+/**
+ * The pixel size the picture on screen is generated at.
+ *
+ * Starting from the 4× size, 3× is three quarters, 2× a half and 1× a quarter, each side rounded to
+ * the nearest whole pixel (so 4:3's 810-pixel height gives 608 at 3× and 203 at 1×).
  */
 internal fun previewPixelSize(aspect: OutputAspect, preview: PreviewScale): Pair<Int, Int> {
-  val (columns, rows) = WfcGenerator.gridForAspect(aspect.ratio, preview.cellCount)
-  return columns * preview.pixelsPerCell to rows * preview.pixelsPerCell
+  val (maxWidth, maxHeight) = maxPreviewSize(aspect)
+  fun quarter(value: Int): Int = ((value.toLong() * preview.factor + 2) / 4).toInt()
+  return quarter(maxWidth) to quarter(maxHeight)
 }
 
 /**
- * The pixel size the picture is written at, in pixels of the solver grid.
+ * The pixel size the picture is written at.
  *
- * The save size is its own scale of the picture, not a multiple of whatever the preview happens to be: a
- * 1× save is the picture as the app has always drawn it, 16× is sixteen times that, and choosing a
- * preview size never moves a number in this list. That is what makes the two settings independent -- the
- * preview decides how the picture is drawn, the save size decides what is written out of it.
+ * This is a multiple of the **selected preview**, so the numbers in the upscaler menu line up with what
+ * is on screen: at 2× preview, 2× save is twice 540×960 rather than a separately based size.
  */
-internal fun savedPixelSize(aspect: OutputAspect, scale: OutputScale): Pair<Int, Int> {
-  val (width, height) = previewPixelSize(aspect, PreviewScale.One)
+internal fun savedPixelSize(
+  aspect: OutputAspect,
+  scale: OutputScale,
+  preview: PreviewScale,
+): Pair<Int, Int> {
+  val (width, height) = previewPixelSize(aspect, preview)
   return scale.pixels(width) to scale.pixels(height)
 }
 
@@ -195,9 +228,9 @@ enum class KernelSize(val pixels: Int, val label: String) {
  */
 data class OutputSettings(
   val aspect: OutputAspect = OutputAspect.Portrait9x16,
-  val preview: PreviewScale = PreviewScale.Half,
-  val scale: OutputScale = OutputScale.One,
-  val scaler: PixelArtScaler = PixelArtScaler.Nearest,
+  val preview: PreviewScale = PreviewScale.One,
+  val scale: OutputScale = OutputScale.Two,
+  val scaler: PixelArtScaler = PixelArtScaler.Eagle,
   val kernel: KernelSize = KernelSize.Three,
 ) {
   /** The same settings with a save size the chosen scaler can actually make. */
@@ -211,10 +244,9 @@ data class OutputSettings(
 /**
  * The preview size a build opens with.
  *
- * A debug build opens at [PreviewScale.Two] -- the "4×" option, the base cell count and the finest picture
- * the app draws -- so a generation, kernel or seam problem is looked at with every cell on screen. The size
- * can still be changed while the app runs; this only decides where it starts. A release build opens on
- * whatever was last chosen, which is [PreviewScale.Half] until someone picks otherwise.
+ * The default is [PreviewScale.One], the 2× size; a debug build opens there too, so a generation,
+ * kernel or seam problem is looked at with a normal-sized preview. The size can be changed while the
+ * app runs; only a restored session's stored choice overrides the default.
  */
 internal fun startupPreview(stored: PreviewScale, debugBuild: Boolean): PreviewScale =
-  if (debugBuild) PreviewScale.Two else stored
+  if (debugBuild) PreviewScale.One else stored

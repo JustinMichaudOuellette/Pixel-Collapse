@@ -54,6 +54,8 @@ fun VideoExportPreview() {
       frameRows = 135,
       pixelsPerCell = 4,
       cellSize = 1,
+      outputWidth = 1080,
+      outputHeight = 1920,
       exporting = false,
       onScreensChange = {},
       onFpsChange = {},

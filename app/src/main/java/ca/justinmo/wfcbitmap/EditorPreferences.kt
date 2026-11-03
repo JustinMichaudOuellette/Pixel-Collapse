@@ -64,6 +64,28 @@ class EditorPreferences(context: Context) {
     preferences.edit().putBoolean(KEY_AUTO_MIGRATE_COLORS, value).apply()
   }
 
+  fun videoScreens(fallback: Int): Int =
+    preferences.getInt(KEY_VIDEO_SCREENS, fallback).coerceIn(MIN_LOOP_SCREENS, MAX_LOOP_SCREENS)
+
+  fun setVideoScreens(value: Int) {
+    preferences.edit().putInt(KEY_VIDEO_SCREENS, value).apply()
+  }
+
+  fun videoFps(fallback: Int): Int =
+    preferences.getInt(KEY_VIDEO_FPS, fallback).coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS)
+
+  fun setVideoFps(value: Int) {
+    preferences.edit().putInt(KEY_VIDEO_FPS, value).apply()
+  }
+
+  fun videoFormat(fallback: VideoFormat): VideoFormat =
+    enumByName(preferences.getString(KEY_VIDEO_FORMAT, null), VideoFormat.entries)
+      ?: fallback
+
+  fun setVideoFormat(value: VideoFormat) {
+    preferences.edit().putString(KEY_VIDEO_FORMAT, value.name).apply()
+  }
+
   /**
    * The output settings, falling back per field.
    *
@@ -112,5 +134,8 @@ class EditorPreferences(context: Context) {
     const val KEY_OUTPUT_SCALE = "output_scale"
     const val KEY_OUTPUT_SCALER = "output_scaler"
     const val KEY_OUTPUT_KERNEL = "output_kernel"
+    const val KEY_VIDEO_SCREENS = "video_screens"
+    const val KEY_VIDEO_FPS = "video_fps"
+    const val KEY_VIDEO_FORMAT = "video_format"
   }
 }

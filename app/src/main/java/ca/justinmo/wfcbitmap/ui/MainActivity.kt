@@ -61,9 +61,15 @@ import ca.justinmo.wfcbitmap.KernelSize
 import ca.justinmo.wfcbitmap.Mp4Encoder
 import ca.justinmo.wfcbitmap.Mp4Saver
 import ca.justinmo.wfcbitmap.OutputSettings
+import ca.justinmo.wfcbitmap.MAX_MP4_FPS
+import ca.justinmo.wfcbitmap.MAX_PANORAMA_CELLS
+import ca.justinmo.wfcbitmap.MAX_VIDEO_FPS
+import ca.justinmo.wfcbitmap.MIN_VIDEO_FPS
 import ca.justinmo.wfcbitmap.VideoFormat
 import ca.justinmo.wfcbitmap.cropFrame
 import ca.justinmo.wfcbitmap.generationPlan
+import ca.justinmo.wfcbitmap.previewPixelSize
+import ca.justinmo.wfcbitmap.scaleFrame
 import ca.justinmo.wfcbitmap.stitchScreen
 import ca.justinmo.wfcbitmap.LOOP_SEAM_CELLS
 import ca.justinmo.wfcbitmap.PANORAMA_TIMEOUT_MILLIS
@@ -81,9 +87,12 @@ import ca.justinmo.wfcbitmap.savedPixelSize
 import ca.justinmo.wfcbitmap.ui.theme.WFCBitmapTheme
 import ca.justinmo.wfcbitmap.WfcGenerator
 import kotlin.math.roundToInt
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -263,7 +272,11 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   val gridState = remember(initialPalette) {
     PixelGridState(palette = initialPalette.colors).apply {
       if (debugBuild) {
-        restoreDrawing(DebugTestPattern.columns, DebugTestPattern.rows, DebugTestPattern.pixels)
+        restoreDrawing(
+          DebugTestPattern.columns,
+          DebugTestPattern.rows,
+          DebugTestPattern.pixelsFor(initialPalette.colors),
+        )
       } else {
         restored?.let { restoreDrawing(it.columns, it.rows, it.pixels) }
       }
@@ -277,14 +290,16 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   // The loop's two knobs: how many frame widths it covers, and how many frames a second it plays at.
   // One pixel per frame means the frame count follows from the loop's width, so the frame rate is what
   // sets how long the clip lasts.
-  var videoScreens by remember { mutableIntStateOf(3) }
-  var videoFps by remember { mutableIntStateOf(25) }
+  var videoScreens by remember { mutableIntStateOf(preferences.videoScreens(fallback = 2)) }
+  var videoFps by remember { mutableIntStateOf(preferences.videoFps(fallback = 100)) }
   // The container the export writes. A setting of the export rather than a second button: the dialog picks
   // one, and the one Export button writes it.
-  var videoFormat by remember { mutableStateOf(VideoFormat.Gif) }
+  var videoFormat by remember { mutableStateOf(preferences.videoFormat(fallback = VideoFormat.Gif)) }
   var exportingVideo by remember { mutableStateOf(false) }
   var videoExportProgress by remember { mutableStateOf<Float?>(null) }
   var videoExportLabel by remember { mutableStateOf("") }
+  var videoExportJob by remember { mutableStateOf<Job?>(null) }
+  val videoExportCancelled = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
   var savedPatterns by remember { mutableStateOf<List<SavedPattern>>(emptyList()) }
   /*
    * A loaded pattern may name a palette that is no longer in the assets. The pattern file carries the
@@ -341,7 +356,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       } ?: OutputAspect.Portrait9x16,
       preview = restored?.previewName?.let { name ->
         PreviewScale.entries.firstOrNull { it.name == name }
-      } ?: PreviewScale.Half,
+      } ?: PreviewScale.One,
       scale = restored?.scaleName?.let { name ->
         OutputScale.entries.firstOrNull { it.name == name }
       } ?: OutputScale.One,
@@ -435,6 +450,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(mirrorVertical) { preferences.setMirrorVertical(mirrorVertical) }
   LaunchedEffect(outputSettings) { preferences.setOutputSettings(outputSettings) }
   LaunchedEffect(autoMigrateColors) { preferences.setAutoMigrateColors(autoMigrateColors) }
+  LaunchedEffect(videoScreens) { preferences.setVideoScreens(videoScreens) }
+  LaunchedEffect(videoFps) { preferences.setVideoFps(videoFps) }
+  LaunchedEffect(videoFormat) { preferences.setVideoFormat(videoFormat) }
 
   /*
    * The colour the paint tools are using. It lives in the screen, because the toolbar that picks it does;
@@ -678,6 +696,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     if (exportingVideo) return
     videoExportOpen = false
     val frame = videoFramePlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
+    val previewSize = previewPixelSize(outputSettings.aspect, outputSettings.preview)
     val video = videoPlan(
       frameColumns = frame.columns,
       frameRows = frame.rows,
@@ -685,6 +704,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       cellSize = frame.cellSize,
       screens = videoScreens,
       fps = videoFps,
+      outputWidth = previewSize.first,
+      outputHeight = previewSize.second,
     )
     val columns = gridState.columns
     val rows = gridState.rows
@@ -698,7 +719,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     generation.job?.cancel()
     // The application scope, not the composition: backgrounding or turning the screen off must not
     // cancel a long export. The progress state is observed by the editor whenever it is visible.
-    application.exportScope.launch {
+    videoExportCancelled.set(false)
+    videoExportJob = application.exportScope.launch {
       try {
         val frameWidth = video.frameWidth
         val frameHeight = video.frameHeight
@@ -743,8 +765,30 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           }
         }
 
-        videoExportLabel = "Solving the $noun panorama…"
-        val open = solveOne(null)
+        val canSolvePanorama = panoramaColumns * panoramaRows <= MAX_PANORAMA_CELLS
+        videoExportLabel = if (canSolvePanorama) {
+          "Solving the $noun panorama…"
+        } else {
+          "Building $noun…"
+        }
+        // The first solve can take seconds, so let the bar creep forward instead of sitting at zero.
+        // It never passes the 10% mark reserved for the panorama; encoding takes the rest.
+        val solveStartedAt = System.nanoTime()
+        val solveTicker = launch {
+          while (isActive) {
+            delay(200)
+            val seconds = (System.nanoTime() - solveStartedAt) / 1_000_000_000.0
+            val fraction = (seconds / 20.0).toFloat().coerceIn(0f, 1f)
+            videoExportProgress = maxOf(videoExportProgress ?: 0f, fraction * 0.01f)
+          }
+        }
+        val open = if (canSolvePanorama) {
+          solveOne(null)
+        } else {
+          // A preview-sized frame can put the loop over the one-solve budget. Skip the doomed solve and
+          // go straight to stitching screens at the selected size.
+          null
+        }
         val looped = open?.let { first ->
           val centres = first.cellCenters ?: return@let null
           val anchor = solveColumns / 2
@@ -759,6 +803,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           solveOne(pinned)
         }
         val solved = looped ?: open
+        solveTicker.cancel()
         if (solved != null) {
           // Keep the picture's own columns: the extra ones were there to close the loop, not to be shown.
           val stride = solveColumns * video.pixelsPerCell
@@ -781,7 +826,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           } else {
             Log.i(TAG, "Video loop closed: the last $panoramaColumns cells run into the first")
           }
-          videoExportProgress = 0.1f
+          videoExportProgress = maxOf(videoExportProgress ?: 0f, 0.01f)
           videoExportLabel = "Exporting $noun…"
         }
         // Only reached when the panorama could not be solved at all; the plan keeps every loop small
@@ -818,12 +863,17 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           // the width, then nothing. Patterns come first because a matching colour is not enough to continue
           // the drawing's diagonals; the colour-only stage matters because it still pastes the whole band
           // over, and a screen that keeps its band has no break at the join at all.
-          val attempts = listOf(
-            video.overlapColumns to true,
-            video.overlapColumns to false,
-            (video.overlapColumns / 2) to false,
-            0 to false,
-          ).distinct()
+          val attempts = if (previousCenters == null) {
+            // The first screen has no edge to pin; trying the same solve four times only multiplies
+            // the worst-case wait.
+            listOf(0 to false)
+          } else {
+            listOf(
+              video.overlapColumns to true,
+              video.overlapColumns to false,
+              0 to false,
+            )
+          }.distinct()
           var generated: WfcGenerator.Output? = null
           var lastFailure: WfcGenerator.GenerationException? = null
           var pinnedColumns = 0
@@ -863,6 +913,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
             }
           }
           val solved = generated ?: throw lastFailure!!
+          // If even the unpinned solve was the one that worked, still paste the previous edge over this
+          // screen: the join keeps its edge data even though the solve did not constrain it.
+          if (screen > 0 && pinnedColumns == 0) pinnedColumns = video.overlapColumns
           previousCenters = solved.cellCenters
           previousPatterns = solved.cellPatterns
           Log.i(
@@ -883,9 +936,12 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           // Copy exactly as much of the previous screen's edge as this screen was pinned to: pasting
           // more would overwrite cells this screen chose freely, which is the break at the seam.
           stitchScreen(panorama, video, screenPixels, screen, seamColumns = pinnedColumns)
-          // Stitching is a small part of the wall clock; encoding the frames is the long tail. Keep the
-          // bar's first tenth for the screens so it does not race to 60% in the first second.
-          videoExportProgress = 0.02f + 0.08f * (screen + 1) / video.screenCount
+          // A stitched fallback is rarer and slower than one panorama solve; give it the span from
+          // 10% to 35%, then leave everything from there on to the frame encoder.
+          videoExportProgress = maxOf(
+            videoExportProgress ?: 0f,
+            0.01f * (screen + 1) / video.screenCount,
+          )
         }
         if (!panoramaSolved) {
           // The stitched fallback is a left-to-right pan, not a loop: close it the cheap way so the wrap
@@ -899,52 +955,83 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
             }
           }
         }
+        val encodingStart = 0.01f
+        videoExportProgress = maxOf(videoExportProgress ?: 0f, encodingStart)
         val reportFrame: (Int) -> Unit = { index ->
+          if (videoExportCancelled.get()) {
+            throw CancellationException("Export cancelled")
+          }
           if (index % 4 == 0 || index == video.frameCount - 1) {
-            val progress = 0.1f + 0.88f * index / video.frameCount
-            mainHandler.post { videoExportProgress = progress }
-          }
-        }
-        val bytes = if (format == VideoFormat.Mp4) {
-          withContext(Dispatchers.Default) {
-            Mp4Encoder.encode(
-              context = context,
-              width = video.frameWidth,
-              height = video.frameHeight,
-              frameCount = video.frameCount,
-              // The GIF delay is whole centiseconds, so the rate that delay makes is the real one; both
-              // formats use it so the MP4 and the GIF play at the same speed.
-              fps = video.effectiveFps.roundToInt().coerceIn(1, 60),
-            ) { index ->
-              reportFrame(index)
-              cropFrame(panorama, video.panoramaWidth, video, index)
-            }
-          }
-        } else {
-          val palette = GifEncoder.paletteFor(panorama)
-          withContext(Dispatchers.Default) {
-            GifEncoder.encode(
-              width = video.frameWidth,
-              height = video.frameHeight,
-              palette = palette,
-              frameCount = video.frameCount,
-              delayForFrame = { video.frameDelayCentiseconds },
-            ) { index ->
-              reportFrame(index)
-              cropFrame(panorama, video.panoramaWidth, video, index)
+            val progress = encodingStart + (0.99f - encodingStart) * index / video.frameCount
+            mainHandler.post {
+              videoExportProgress = maxOf(videoExportProgress ?: 0f, progress)
             }
           }
         }
         val uri = if (format == VideoFormat.Mp4) {
+          val bytes = withContext(Dispatchers.Default) {
+            Mp4Encoder.encode(
+              context = context,
+              width = video.outputWidth,
+              height = video.outputHeight,
+              frameCount = video.frameCount,
+              // The GIF delay is whole centiseconds, so the rate that delay makes is the real one; both
+              // formats use it so the MP4 and the GIF play at the same speed.
+              fps = videoFps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS),
+            ) { index ->
+              reportFrame(index)
+              scaleFrame(
+                cropFrame(panorama, video.panoramaWidth, video, index),
+                video.frameWidth,
+                video.frameHeight,
+                video.outputWidth,
+                video.outputHeight,
+              )
+            }
+          }
+          videoExportProgress = maxOf(videoExportProgress ?: 0f, 0.99f)
           Mp4Saver.save(context, bytes)
         } else {
-          GifSaver.save(context, bytes)
+          val palette = GifEncoder.paletteFor(panorama)
+          // Stream the GIF to a cache file: a full-resolution clip's bytes do not fit in a
+          // ByteArrayOutputStream (that was the 200 MB allocation crash).
+          val temp = File.createTempFile("wfc-export-", ".gif", context.cacheDir)
+          try {
+            withContext(Dispatchers.Default) {
+              temp.outputStream().buffered().use { out ->
+                GifEncoder.encodeTo(
+                  out = out,
+                  width = video.outputWidth,
+                  height = video.outputHeight,
+                  palette = palette,
+                  frameCount = video.frameCount,
+                  delayForFrame = { video.frameDelayCentiseconds },
+                ) { index ->
+                  reportFrame(index)
+                  scaleFrame(
+                    cropFrame(panorama, video.panoramaWidth, video, index),
+                    video.frameWidth,
+                    video.frameHeight,
+                    video.outputWidth,
+                    video.outputHeight,
+                  )
+                }
+              }
+            }
+            videoExportProgress = maxOf(videoExportProgress ?: 0f, 0.99f)
+            GifSaver.save(context, temp)
+          } finally {
+            temp.delete()
+          }
         }
         videoExportProgress = 1f
         message = EditorMessage("$noun saved", "View") {
           if (format == VideoFormat.Mp4) viewMp4(uri) else viewVideo(uri)
         }
       } catch (e: CancellationException) {
+        if (videoExportCancelled.get()) {
+          message = EditorMessage("Export cancelled")
+        }
         throw e
       } catch (e: Exception) {
         Log.w(TAG, "Could not make the $noun", e)
@@ -958,6 +1045,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       } finally {
         exportingVideo = false
         videoExportProgress = null
+        videoExportJob = null
+        videoExportCancelled.set(false)
         requestGeneration()
       }
     }
@@ -968,7 +1057,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * multiple of whatever the preview happens to be showing.
    */
   fun savedSize(): Pair<Int, Int> =
-    savedPixelSize(outputSettings.aspect, outputSettings.scale)
+    savedPixelSize(outputSettings.aspect, outputSettings.scale, outputSettings.preview)
 
   fun writePicture(picture: Bitmap) {
     scope.launch {
@@ -1078,6 +1167,11 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onMessageShown = { message = null },
     videoProgress = videoExportProgress,
     videoLabel = videoExportLabel,
+    onCancelVideoExport = {
+      videoExportCancelled.set(true)
+      videoExportLabel = "Cancelling…"
+      videoExportJob?.cancel()
+    },
     output = outputSettings,
     onOutputChange = { outputSettings = it },
     // The wrap setting belongs to whoever builds the picture, so the screen reports the tap and this side
@@ -1149,6 +1243,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   )
 
   val videoFrame = videoFramePlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
+  val videoOutput = previewPixelSize(outputSettings.aspect, outputSettings.preview)
   VideoExportScreen(
     open = videoExportOpen,
     format = videoFormat,
@@ -1158,6 +1253,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     frameRows = videoFrame.rows,
     pixelsPerCell = videoFrame.pixelsPerCell,
     cellSize = videoFrame.cellSize,
+    outputWidth = videoOutput.first,
+    outputHeight = videoOutput.second,
     exporting = exportingVideo,
     onScreensChange = { videoScreens = it },
     onFpsChange = { videoFps = it },

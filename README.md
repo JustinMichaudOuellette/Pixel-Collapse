@@ -121,14 +121,15 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 
 - **3D rendering output** — stand the picture up as a solid scene, one block per cell, and export it as a
   rotating shot through the video output above or as a model file another tool can open.
+- **Photo input** — take a photo, downscale it, posterize it, dither it and use it as input for a pattern
+- **More video styles** — change direction, pre-generate a list of random number and change it slightly for each frame
 
 ## TODOs
 
 - **Info screen** info screen as a tool, point to the git repo
 - **Settings** increase button size
-- **Improve MP4 output** make it look high res
-- **Improve GIF output** make it look likw the above, make it smooth
 - **Improve launcher icon** make it full bleed, improve pattern
+- **Portrait support** adapt the ui for portrait mode
 
 ## License
 

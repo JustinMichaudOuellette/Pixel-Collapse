@@ -37,10 +37,15 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import ca.justinmo.wfcbitmap.MAX_LOOP_SCREENS
+import ca.justinmo.wfcbitmap.MAX_GIF_DELAY_CENTISECONDS
+import ca.justinmo.wfcbitmap.MAX_MP4_FPS
 import ca.justinmo.wfcbitmap.MAX_VIDEO_FPS
+import ca.justinmo.wfcbitmap.MIN_GIF_DELAY_CENTISECONDS
 import ca.justinmo.wfcbitmap.MIN_LOOP_SCREENS
 import ca.justinmo.wfcbitmap.MIN_VIDEO_FPS
 import ca.justinmo.wfcbitmap.VideoFormat
+import ca.justinmo.wfcbitmap.estimatedVideoBytes
+import ca.justinmo.wfcbitmap.formatByteSize
 import ca.justinmo.wfcbitmap.videoPlan
 import kotlin.math.roundToInt
 
@@ -68,6 +73,8 @@ fun VideoExportScreen(
   frameRows: Int,
   pixelsPerCell: Int,
   cellSize: Int,
+  outputWidth: Int,
+  outputHeight: Int,
   exporting: Boolean,
   onScreensChange: (Int) -> Unit,
   onFpsChange: (Int) -> Unit,
@@ -76,7 +83,10 @@ fun VideoExportScreen(
   onExport: () -> Unit,
 ) {
   if (!open) return
-  val plan = videoPlan(frameColumns, frameRows, pixelsPerCell, cellSize, screens, fps)
+  val plan = videoPlan(
+    frameColumns, frameRows, pixelsPerCell, cellSize, screens, fps,
+    outputWidth = outputWidth, outputHeight = outputHeight,
+  )
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -144,56 +154,72 @@ fun VideoExportScreen(
           )
 
           Spacer(Modifier.height(10.dp))
-          SettingLabel("Frame rate", "${formatOneDecimal(plan.effectiveFps)} fps · ${plan.frameDelayCentiseconds} cs")
-          Slider(
-            value = fps.toFloat(),
-            onValueChange = { onFpsChange(it.roundToInt().coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS)) },
-            valueRange = MIN_VIDEO_FPS.toFloat()..MAX_VIDEO_FPS.toFloat(),
-            steps = MAX_VIDEO_FPS - MIN_VIDEO_FPS - 1,
-            colors = SliderDefaults.colors(
-              thumbColor = MENU_TEXT_COLOR,
-              activeTrackColor = MENU_TEXT_COLOR,
-              inactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.25f),
-            ),
+          SettingLabel(
+            "Frame rate",
+            if (format == VideoFormat.Gif) {
+              "${formatOneDecimal(plan.effectiveFps)} fps · ${plan.frameDelayCentiseconds} cs"
+            } else {
+              "${fps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS)} fps"
+            },
           )
-          if (plan.effectiveFps.roundToInt() != fps) {
-            Text(
-              "A GIF stores whole centiseconds, so $fps fps is played as ${plan.frameDelayCentiseconds} cs.",
-              color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
-              fontSize = 11.sp,
-              lineHeight = 15.sp,
+          if (format == VideoFormat.Gif) {
+            // A GIF only stores whole centiseconds, so the thumb is the delay itself. There are exactly
+            // nine ticks: 2 cs (50 fps) through 10 cs (10 fps), one per possible GIF value.
+            Slider(
+              value = plan.frameDelayCentiseconds.toFloat(),
+              onValueChange = { cs ->
+                val whole = cs.roundToInt().coerceIn(
+                  MIN_GIF_DELAY_CENTISECONDS,
+                  MAX_GIF_DELAY_CENTISECONDS,
+                )
+                onFpsChange((100f / whole).roundToInt().coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS))
+              },
+              valueRange = MIN_GIF_DELAY_CENTISECONDS.toFloat()..MAX_GIF_DELAY_CENTISECONDS.toFloat(),
+              steps = MAX_GIF_DELAY_CENTISECONDS - MIN_GIF_DELAY_CENTISECONDS - 1,
+              colors = SliderDefaults.colors(
+                thumbColor = MENU_TEXT_COLOR,
+                activeTrackColor = MENU_TEXT_COLOR,
+                inactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.25f),
+              ),
+            )
+          } else {
+            Slider(
+              value = fps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS).toFloat(),
+              onValueChange = { onFpsChange(it.roundToInt().coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS)) },
+              valueRange = MIN_VIDEO_FPS.toFloat()..MAX_MP4_FPS.toFloat(),
+              steps = MAX_MP4_FPS - MIN_VIDEO_FPS - 1,
+              colors = SliderDefaults.colors(
+                thumbColor = MENU_TEXT_COLOR,
+                activeTrackColor = MENU_TEXT_COLOR,
+                inactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.25f),
+              ),
             )
           }
 
           Spacer(Modifier.height(12.dp))
           Text(
-            "${plan.frameWidth}×${plan.frameHeight} · ${plan.frameCount} frames · " +
+            "${plan.outputWidth}×${plan.outputHeight} · ${plan.frameCount} frames · " +
               "${formatOneDecimal(plan.loopSeconds)} s per loop · 1 px per frame",
+            color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+            fontSize = 11.sp,
+            lineHeight = 15.sp,
+          )
+          Text(
+            "Estimated size ≈ ${formatByteSize(estimatedVideoBytes(plan, format))}",
             color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
             fontSize = 11.sp,
             lineHeight = 15.sp,
           )
 
           Spacer(Modifier.height(24.dp))
-          FormatToggle(format = format, enabled = !exporting, onFormatChange = onFormatChange)
+          FormatToggle(
+            format = format,
+            enabled = !exporting,
+            exporting = exporting,
+            onFormatChange = onFormatChange,
+            onExport = onExport,
+          )
           Spacer(Modifier.height(16.dp))
-        }
-
-        // The action never scrolls: it is the reason this screen exists, and a settings screen whose last
-        // line is the button is a settings screen that hides its button when the phone is small.
-        Button(
-          onClick = onExport,
-          enabled = !exporting,
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-            .height(48.dp),
-          colors = ButtonDefaults.buttonColors(
-            containerColor = MENU_TEXT_COLOR,
-            contentColor = Color.Black,
-          ),
-        ) {
-          Text(if (exporting) "Exporting…" else "Export ${format.label}")
         }
       }
     }
@@ -221,7 +247,9 @@ private fun SettingLabel(label: String, value: String) {
 private fun FormatToggle(
   format: VideoFormat,
   enabled: Boolean,
+  exporting: Boolean,
   onFormatChange: (VideoFormat) -> Unit,
+  onExport: () -> Unit,
 ) {
   Row(
     modifier = Modifier.fillMaxWidth(),
@@ -262,6 +290,19 @@ private fun FormatToggle(
           )
         }
       }
+    }
+    Button(
+      onClick = onExport,
+      enabled = enabled,
+      modifier = Modifier
+        .weight(1f)
+        .height(56.dp),
+      colors = ButtonDefaults.buttonColors(
+        containerColor = MENU_TEXT_COLOR,
+        contentColor = Color.Black,
+      ),
+    ) {
+      Text(if (exporting) "…" else "Export", fontSize = 14.sp)
     }
   }
 }

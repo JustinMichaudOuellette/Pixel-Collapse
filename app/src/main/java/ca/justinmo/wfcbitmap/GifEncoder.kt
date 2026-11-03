@@ -1,6 +1,7 @@
 package ca.justinmo.wfcbitmap
 
 import java.io.ByteArrayOutputStream
+import java.io.OutputStream
 
 /**
  * A small animated-GIF writer: one global colour table, full frames, a loop count, and LZW data.
@@ -30,6 +31,26 @@ internal object GifEncoder {
     delayForFrame: (Int) -> Int,
     frameAt: (Int) -> IntArray,
   ): ByteArray {
+    val bytes = ByteArrayOutputStream()
+    encodeTo(bytes, width, height, palette, frameCount, delayForFrame, frameAt)
+    return bytes.toByteArray()
+  }
+
+  /**
+   * Streams the same GIF to [out].
+   *
+   * A full-resolution GIF is far too large for a ByteArray; writing frames as they are encoded keeps
+   * only one frame and its LZW block in memory.
+   */
+  fun encodeTo(
+    out: OutputStream,
+    width: Int,
+    height: Int,
+    palette: IntArray,
+    frameCount: Int,
+    delayForFrame: (Int) -> Int,
+    frameAt: (Int) -> IntArray,
+  ) {
     require(width > 0 && height > 0)
     require(palette.size in 1..256) { "A GIF palette has at most 256 colours" }
     require(frameCount > 0)
@@ -38,7 +59,6 @@ internal object GifEncoder {
     val paletteIndices = HashMap<Int, Int>(palette.size * 2)
     palette.forEachIndexed { index, colour -> paletteIndices[colour and 0xFFFFFF] = index }
 
-    val out = ByteArrayOutputStream()
     out.write("GIF89a".toByteArray(Charsets.US_ASCII))
 
     // Logical screen descriptor: global table, 8-bit colour resolution, table size.
@@ -97,7 +117,6 @@ internal object GifEncoder {
     }
 
     out.write(0x3B)
-    return out.toByteArray()
   }
 
   /**
@@ -222,6 +241,11 @@ internal object GifEncoder {
   }
 
   private fun ByteArrayOutputStream.writeShort(value: Int) {
+    write(value and 0xFF)
+    write((value ushr 8) and 0xFF)
+  }
+
+  private fun OutputStream.writeShort(value: Int) {
     write(value and 0xFF)
     write((value ushr 8) and 0xFF)
   }
