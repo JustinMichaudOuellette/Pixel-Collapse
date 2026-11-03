@@ -33,6 +33,14 @@ fun ColorSwatchSelectedPreviewPreview() {
   }
 }
 
+@Preview(name = "Info screen", heightDp = 900, widthDp = 411, backgroundColor = 0xFF000000, showBackground = true)
+@Composable
+fun EditorInfoPreview() {
+  WFCBitmapTheme {
+    EditorInfoScreen(open = true, onClose = {})
+  }
+}
+
 @Preview(heightDp = 418, widthDp = 880, backgroundColor = 0xFF000000, showBackground = true)
 @Composable
 fun PixelEditorPreview() {

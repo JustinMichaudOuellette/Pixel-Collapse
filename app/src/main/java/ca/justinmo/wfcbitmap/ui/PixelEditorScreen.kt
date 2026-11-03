@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.GridOn
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Palette as PaletteIcon
 import androidx.compose.material.icons.filled.PowerSettingsNew
@@ -257,6 +258,9 @@ fun PixelEditorScreen(
   var kernelMenuOpen by remember { mutableStateOf(false) }
   var scalerMenuOpen by remember { mutableStateOf(false) }
   var paletteMenuOpen by remember { mutableStateOf(false) }
+  // The explanation of the app, over everything. It is the editor's own state like the menus are: reading
+  // it changes nothing about the drawing or the picture, so it belongs here rather than to the caller.
+  var infoOpen by remember { mutableStateOf(false) }
 
 
   // Tapping the armed mode puts the drawing back to painting; tapping another one arms that. A
@@ -570,6 +574,16 @@ fun PixelEditorScreen(
       onResize()
     },
 
+    // What the app does, in its own words. Its own group, next to the close button: reading is not editing,
+    // and the tools that change the drawing should not have to be passed on the way to it.
+    EditorTool(
+      icon = Icons.Default.Info,
+      contentDescription = "About this app",
+      explanation = "Explains what the picture is, what the sizes and the edge settings change, and where " +
+        "saved files go.",
+      startsGroup = true,
+    ) { infoOpen = true },
+
     // Last, in its own group, and as far from the tools that edit the drawing as the strip goes: closing
     // the app throws away a drawing that has never been saved anywhere, so it must not be a button the
     // thumb can reach while it is painting. A held press says exactly that before it is tapped.
@@ -767,6 +781,10 @@ fun PixelEditorScreen(
           .padding(bottom = 76.dp),
       )
     }
+
+    // Last, so it covers the editor and the snackbar with it: it is a reading screen, and nothing under it
+    // is meant to be touched while it is up.
+    EditorInfoScreen(open = infoOpen, onClose = { infoOpen = false })
   }
 }
 
