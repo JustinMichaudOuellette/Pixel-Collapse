@@ -80,10 +80,11 @@ internal fun EditorInfoScreen(open: Boolean, onClose: () -> Unit) {
     )
     InfoSection(
       title = "The video",
-      body = "The export solves one wide panorama and then pans a frame-sized window across it from left " +
-        "to right, as an MP4 or an animated GIF. The panorama is a single solve, so there is no seam " +
-        "between screens for the pattern to break at; only a panorama too large for one solve is " +
-        "stitched, and those joins can show.",
+      body = "The export solves one wide panorama, pins the cells past its end to its own first cells, and " +
+        "then pans a frame-sized window across it one pixel at a time. Because the panorama's end is its " +
+        "beginning, the last frame runs into the first and the clip loops without a jump; because the " +
+        "window moves a pixel at a time, nothing is skipped. A GIF stores whole centiseconds, so the frame " +
+        "rate you pick is played at the nearest delay it can express, and the dialog says which.",
     )
     Spacer(Modifier.height(28.dp))
   }

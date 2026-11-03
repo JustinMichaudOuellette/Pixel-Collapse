@@ -62,11 +62,10 @@ import ca.justinmo.wfcbitmap.Mp4Encoder
 import ca.justinmo.wfcbitmap.Mp4Saver
 import ca.justinmo.wfcbitmap.OutputSettings
 import ca.justinmo.wfcbitmap.VideoFormat
-import ca.justinmo.wfcbitmap.VIDEO_FPS
 import ca.justinmo.wfcbitmap.cropFrame
 import ca.justinmo.wfcbitmap.generationPlan
 import ca.justinmo.wfcbitmap.stitchScreen
-import ca.justinmo.wfcbitmap.MAX_PANORAMA_CELLS
+import ca.justinmo.wfcbitmap.LOOP_SEAM_CELLS
 import ca.justinmo.wfcbitmap.PANORAMA_TIMEOUT_MILLIS
 import ca.justinmo.wfcbitmap.startupPreview
 import ca.justinmo.wfcbitmap.videoFramePlan
@@ -81,6 +80,7 @@ import ca.justinmo.wfcbitmap.SavedPattern
 import ca.justinmo.wfcbitmap.savedPixelSize
 import ca.justinmo.wfcbitmap.ui.theme.WFCBitmapTheme
 import ca.justinmo.wfcbitmap.WfcGenerator
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -273,9 +273,15 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   val patternStore = remember(context) { PatternStore.forDirectory(context.filesDir) }
   var savePatternDialogOpen by remember { mutableStateOf(false) }
   var loadPatternDialogOpen by remember { mutableStateOf(false) }
-  var videoDialogOpen by remember { mutableStateOf(false) }
-  var videoDuration by remember { mutableStateOf(15f) }
-  var videoSpeed by remember { mutableStateOf(0.5f) }
+  var videoExportOpen by remember { mutableStateOf(false) }
+  // The loop's two knobs: how many frame widths it covers, and how many frames a second it plays at.
+  // One pixel per frame means the frame count follows from the loop's width, so the frame rate is what
+  // sets how long the clip lasts.
+  var videoScreens by remember { mutableIntStateOf(3) }
+  var videoFps by remember { mutableIntStateOf(25) }
+  // The container the export writes. A setting of the export rather than a second button: the dialog picks
+  // one, and the one Export button writes it.
+  var videoFormat by remember { mutableStateOf(VideoFormat.Gif) }
   var exportingVideo by remember { mutableStateOf(false) }
   var videoExportProgress by remember { mutableStateOf<Float?>(null) }
   var videoExportLabel by remember { mutableStateOf("") }
@@ -670,15 +676,15 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    */
   fun exportVideo(format: VideoFormat) {
     if (exportingVideo) return
-    videoDialogOpen = false
+    videoExportOpen = false
     val frame = videoFramePlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
     val video = videoPlan(
       frameColumns = frame.columns,
       frameRows = frame.rows,
       pixelsPerCell = frame.pixelsPerCell,
       cellSize = frame.cellSize,
-      durationSeconds = videoDuration,
-      speed = videoSpeed,
+      screens = videoScreens,
+      fps = videoFps,
     )
     val columns = gridState.columns
     val rows = gridState.rows
@@ -697,47 +703,90 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         val frameWidth = video.frameWidth
         val frameHeight = video.frameHeight
         val panorama = IntArray(video.panoramaWidth * frameHeight)
+        val panoramaColumns = video.panoramaColumns
+        val panoramaRows = video.panoramaRows
         /*
-         * The panorama is solved as a single grid whenever it fits the solver, which is most exports.
+         * The panorama is solved two cells wider than the picture and closed on itself: those two cells are
+         * pinned to the same values at both ends, so the column past the last one shown is the first one,
+         * and the window that straddles the wrap is a window the solver itself made consistent.
          *
-         * Stitching whole frames is what produced the visible cut: each screen is its own collapse, and a
-         * pinned edge only makes the next one start from the previous one's last cells -- past those, the
-         * solver is free to arrange the drawing differently, and the join shows as the pattern breaking.
-         * One grid has no join to break. The per-screen path below is kept for panoramas too big for a
-         * single collapse, and is used if this attempt fails.
+         * The values to repeat are taken from the MIDDLE of a first solve, and that detail is the whole
+         * trick. The picture's first two columns sit on the grid's left border, where a pattern is allowed
+         * to have nothing on its left; that pair is therefore a configuration no interior strip can carry,
+         * and pinning it at the far end asks for something that does not exist -- the search comes back
+         * empty in a hundred milliseconds. A pair from the middle is an ordinary interior configuration and
+         * pins anywhere.
          */
-        val panoramaCells = video.panoramaColumns * video.panoramaRows
-        var panoramaSolved = false
-        if (panoramaCells <= MAX_PANORAMA_CELLS) {
-          videoExportLabel = "Solving the $noun panorama…"
-          val solved = try {
+        val solveColumns = panoramaColumns + LOOP_SEAM_CELLS
+        val solveOne: suspend (IntArray?) -> WfcGenerator.Output? = { pinned ->
+          try {
             generationMutex.withLock {
               WfcGenerator.generate(
                 pixels = pixels,
                 sourceWidth = columns,
                 sourceHeight = rows,
                 seed = requestedSeed,
-                columns = video.panoramaColumns,
-                rows = video.panoramaRows,
+                columns = solveColumns,
+                rows = panoramaRows,
                 wrapEdges = wrapEdges,
                 mirrorHorizontal = mirrorHorizontal,
                 mirrorVertical = mirrorVertical,
                 pixelsPerCell = video.pixelsPerCell,
                 cellSize = video.cellSize,
                 timeoutMillis = PANORAMA_TIMEOUT_MILLIS,
+                fixedCenters = pinned,
                 forceRelaxedEdges = true,
               )
             }
           } catch (e: WfcGenerator.GenerationException) {
             null
           }
-          if (solved != null) {
-            solved.bitmap.getPixels(panorama, 0, video.panoramaWidth, 0, 0, video.panoramaWidth, frameHeight)
-            videoExportProgress = 0.1f
-            videoExportLabel = "Exporting $noun…"
-            panoramaSolved = true
-          }
         }
+
+        videoExportLabel = "Solving the $noun panorama…"
+        val open = solveOne(null)
+        val looped = open?.let { first ->
+          val centres = first.cellCenters ?: return@let null
+          val anchor = solveColumns / 2
+          val pinned = IntArray(solveColumns * panoramaRows) { Int.MIN_VALUE }
+          for (row in 0 until panoramaRows) {
+            for (i in 0 until LOOP_SEAM_CELLS) {
+              val value = centres[row * solveColumns + anchor + i]
+              pinned[row * solveColumns + i] = value
+              pinned[row * solveColumns + solveColumns - LOOP_SEAM_CELLS + i] = value
+            }
+          }
+          solveOne(pinned)
+        }
+        val solved = looped ?: open
+        if (solved != null) {
+          // Keep the picture's own columns: the extra ones were there to close the loop, not to be shown.
+          val stride = solveColumns * video.pixelsPerCell
+          val raw = IntArray(stride * frameHeight)
+          solved.bitmap.getPixels(raw, 0, stride, 0, 0, stride, frameHeight)
+          for (y in 0 until frameHeight) {
+            raw.copyInto(panorama, y * video.panoramaWidth, y * stride, y * stride + video.panoramaWidth)
+          }
+          if (looped == null) {
+            // Last resort: repeat the first cells at the end. The wrap is continuous to the pixel, but the
+            // pattern just before it was not solved against them, so the join can still show.
+            Log.w(TAG, "Video loop could not be closed; repeating the first cells at the end")
+            val seam = minOf(video.panoramaWidth, LOOP_SEAM_CELLS * video.pixelsPerCell)
+            for (y in 0 until frameHeight) {
+              for (x in 0 until seam) {
+                panorama[y * video.panoramaWidth + (video.panoramaWidth - seam + x)] =
+                  panorama[y * video.panoramaWidth + x]
+              }
+            }
+          } else {
+            Log.i(TAG, "Video loop closed: the last $panoramaColumns cells run into the first")
+          }
+          videoExportProgress = 0.1f
+          videoExportLabel = "Exporting $noun…"
+        }
+        // Only reached when the panorama could not be solved at all; the plan keeps every loop small
+        // enough that this is a safety net rather than a path the app takes.
+        val panoramaSolved = solved != null
         val screenColumns = frameWidth / video.pixelsPerCell
         var previousCenters: IntArray? = null
         var previousPatterns: IntArray? = null
@@ -838,6 +887,18 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           // bar's first tenth for the screens so it does not race to 60% in the first second.
           videoExportProgress = 0.02f + 0.08f * (screen + 1) / video.screenCount
         }
+        if (!panoramaSolved) {
+          // The stitched fallback is a left-to-right pan, not a loop: close it the cheap way so the wrap
+          // is at least pixel-continuous. The plan keeps every loop small enough for one solve, so this
+          // is a safety net rather than a path the app takes.
+          val seam = minOf(video.panoramaWidth, LOOP_SEAM_CELLS * video.pixelsPerCell)
+          for (y in 0 until frameHeight) {
+            for (x in 0 until seam) {
+              panorama[y * video.panoramaWidth + (video.panoramaWidth - seam + x)] =
+                panorama[y * video.panoramaWidth + x]
+            }
+          }
+        }
         val reportFrame: (Int) -> Unit = { index ->
           if (index % 4 == 0 || index == video.frameCount - 1) {
             val progress = 0.1f + 0.88f * index / video.frameCount
@@ -851,7 +912,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
               width = video.frameWidth,
               height = video.frameHeight,
               frameCount = video.frameCount,
-              fps = VIDEO_FPS,
+              // The GIF delay is whole centiseconds, so the rate that delay makes is the real one; both
+              // formats use it so the MP4 and the GIF play at the same speed.
+              fps = video.effectiveFps.roundToInt().coerceIn(1, 60),
             ) { index ->
               reportFrame(index)
               cropFrame(panorama, video.panoramaWidth, video, index)
@@ -865,7 +928,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
               height = video.frameHeight,
               palette = palette,
               frameCount = video.frameCount,
-              delayForFrame = { video.delayPattern[it % video.delayPattern.size] },
+              delayForFrame = { video.frameDelayCentiseconds },
             ) { index ->
               reportFrame(index)
               cropFrame(panorama, video.panoramaWidth, video, index)
@@ -1060,7 +1123,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         loadPatternDialogOpen = true
       }
     },
-    onExportVideo = { videoDialogOpen = true },
+    onExportVideo = { videoExportOpen = true },
     onExit = { exitApp() },
     // Only a restored session has a colour to start with; otherwise the palette's first swatch is it.
     initialColor = restored?.let { Color(it.colorArgb) },
@@ -1086,19 +1149,21 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   )
 
   val videoFrame = videoFramePlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
-  VideoExportDialog(
-    open = videoDialogOpen,
-    durationSeconds = videoDuration,
-    speed = videoSpeed,
+  VideoExportScreen(
+    open = videoExportOpen,
+    format = videoFormat,
+    screens = videoScreens,
+    fps = videoFps,
     frameColumns = videoFrame.columns,
     frameRows = videoFrame.rows,
     pixelsPerCell = videoFrame.pixelsPerCell,
     cellSize = videoFrame.cellSize,
     exporting = exportingVideo,
-    onDurationChange = { videoDuration = it },
-    onSpeedChange = { videoSpeed = it },
-    onDismiss = { videoDialogOpen = false },
-    onExport = { format -> exportVideo(format) },
+    onScreensChange = { videoScreens = it },
+    onFpsChange = { videoFps = it },
+    onFormatChange = { videoFormat = it },
+    onDismiss = { videoExportOpen = false },
+    onExport = { exportVideo(videoFormat) },
   )
 
   if (savePatternDialogOpen) {

@@ -41,6 +41,29 @@ fun EditorInfoPreview() {
   }
 }
 
+@Preview(name = "Video export", heightDp = 900, widthDp = 411, backgroundColor = 0xFF000000, showBackground = true)
+@Composable
+fun VideoExportPreview() {
+  WFCBitmapTheme {
+    VideoExportScreen(
+      open = true,
+      format = ca.justinmo.wfcbitmap.VideoFormat.Gif,
+      screens = 3,
+      fps = 25,
+      frameColumns = 76,
+      frameRows = 135,
+      pixelsPerCell = 4,
+      cellSize = 1,
+      exporting = false,
+      onScreensChange = {},
+      onFpsChange = {},
+      onFormatChange = {},
+      onDismiss = {},
+      onExport = {},
+    )
+  }
+}
+
 @Preview(heightDp = 418, widthDp = 880, backgroundColor = 0xFF000000, showBackground = true)
 @Composable
 fun PixelEditorPreview() {

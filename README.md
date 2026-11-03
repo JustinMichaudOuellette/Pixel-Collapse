@@ -85,9 +85,6 @@ Requires an Android SDK with platform 37 and **NDK 27.0.12077973** (pinned in
 ./gradlew :app:installDebug      # install on a connected device
 ```
 
-Min SDK 26, target 37, Kotlin 2.4.21, Compose BOM 2026.09.00, AGP 9.5.0. Only `arm64-v8a` and `x86_64` are
-built — phones and the emulator.
-
 ## Testing
 
 ```bash
@@ -124,14 +121,13 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 
 - **3D rendering output** — stand the picture up as a solid scene, one block per cell, and export it as a
   rotating shot through the video output above or as a model file another tool can open.
-- **Input Photo** — input a photo, downscale it, posterize it and use it as a pattern.
 
 ## TODOs
 
 - **Info screen** info screen as a tool, point to the git repo
 - **Settings** increase button size
 - **Improve MP4 output** make it look high res
-- **Improve GIF output** make it look, make it smooth
+- **Improve GIF output** make it look likw the above, make it smooth
 - **Improve launcher icon** make it full bleed, improve pattern
 
 ## License

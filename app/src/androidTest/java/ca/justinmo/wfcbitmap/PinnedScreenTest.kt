@@ -329,8 +329,8 @@ class PinnedScreenTest {
         frameRows = frameRows,
         pixelsPerCell = scale,
         cellSize = cellSize,
-        durationSeconds = 1f,
-        speed = 1f,
+        screens = 3,
+        fps = 25,
       )
       assertEquals("three screens", 3, plan.screenCount)
       val patterns = patternsOf(pixels, width, height, cellSize)
@@ -533,7 +533,7 @@ class PinnedScreenTest {
     val frameColumns = 76
     val frameRows = 135
     for (cellSize in listOf(1, 3)) {
-    val plan = videoPlan(frameColumns, frameRows, scale, cellSize, durationSeconds = 1f, speed = 1f)
+    val plan = videoPlan(frameColumns, frameRows, scale, cellSize, screens = 3, fps = 25)
     assertEquals("three screens", 3, plan.screenCount)
     // How a solved cell renders, so the stitched panorama can be read back as the cells it was made of.
     // With a 3x3 block on a 4x4 square every block pixel is sampled at least once, so the map cannot
@@ -625,8 +625,8 @@ class PinnedScreenTest {
       frameRows = frame.rows,
       pixelsPerCell = frame.pixelsPerCell,
       cellSize = frame.cellSize,
-      durationSeconds = 15f,
-      speed = 0.5f,
+      screens = 3,
+      fps = 25,
     )
     val cellsAcross = plan.panoramaColumns * plan.panoramaRows
     assertTrue(
@@ -634,31 +634,80 @@ class PinnedScreenTest {
         "over the $MAX_PANORAMA_CELLS single-solve budget",
       cellsAcross <= MAX_PANORAMA_CELLS,
     )
-    val started = System.currentTimeMillis()
-    val solved = WfcGenerator.generate(
+    val rowsCount = plan.panoramaRows
+    val panoramaColumns = plan.panoramaColumns
+    val patterns = patternsOf(pixels, width, height, plan.cellSize)
+    // Mirrors the export: a plain solve two cells wider than the picture, then one that pins an interior
+    // pair of its columns at both ends, which is what makes the wrap a solved adjacency.
+    val solveColumns = panoramaColumns + LOOP_SEAM_CELLS
+    val open = WfcGenerator.generate(
       pixels = pixels,
       sourceWidth = width,
       sourceHeight = height,
       seed = 1234,
-      columns = plan.panoramaColumns,
-      rows = plan.panoramaRows,
+      columns = solveColumns,
+      rows = rowsCount,
       wrapEdges = true,
       pixelsPerCell = plan.pixelsPerCell,
       cellSize = plan.cellSize,
       timeoutMillis = PANORAMA_TIMEOUT_MILLIS,
       forceRelaxedEdges = true,
     )
+    val openCentres = open.cellCenters ?: error("the panorama has no centres")
+    val anchor = solveColumns / 2
+    val pinned = IntArray(solveColumns * rowsCount) { Int.MIN_VALUE }
+    for (row in 0 until rowsCount) {
+      for (i in 0 until LOOP_SEAM_CELLS) {
+        val value = openCentres[row * solveColumns + anchor + i]
+        pinned[row * solveColumns + i] = value
+        pinned[row * solveColumns + solveColumns - LOOP_SEAM_CELLS + i] = value
+      }
+    }
+    val looped = WfcGenerator.generate(
+      pixels = pixels,
+      sourceWidth = width,
+      sourceHeight = height,
+      seed = 1234,
+      columns = solveColumns,
+      rows = rowsCount,
+      wrapEdges = true,
+      pixelsPerCell = plan.pixelsPerCell,
+      cellSize = plan.cellSize,
+      timeoutMillis = PANORAMA_TIMEOUT_MILLIS,
+      fixedCenters = pinned,
+      forceRelaxedEdges = true,
+    )
+    val loopCentres = looped.cellCenters ?: error("the looped panorama has no centres")
     println(
-      "default panorama ${plan.panoramaColumns}x${plan.panoramaRows} solved in " +
-        "${System.currentTimeMillis() - started} ms (${solved.tileCount} patterns)",
+      "default loop ${panoramaColumns}x$rowsCount closed " +
+        "(${plan.frameCount} frames at ${plan.frameDelayCentiseconds} cs)",
     )
-    assertIsATiling(
-      solved.cellCenters ?: error("the panorama has no centres"),
-      plan.panoramaColumns,
-      plan.panoramaRows,
-      patternsOf(pixels, width, height, plan.cellSize),
-      "default panorama",
-    )
+    // The ends are the same cells, so the wrap is an adjacency the solver itself made.
+    for (row in 0 until rowsCount) {
+      for (i in 0 until LOOP_SEAM_CELLS) {
+        assertEquals(
+          "loop point at row $row, cell $i",
+          loopCentres[row * solveColumns + i],
+          loopCentres[row * solveColumns + solveColumns - LOOP_SEAM_CELLS + i],
+        )
+      }
+    }
+    // The picture is the columns that were kept, and it is a tiling all the way across -- including the
+    // windows that straddle the loop point.
+    val cells = IntArray(panoramaColumns * rowsCount) { index ->
+      loopCentres[(index / panoramaColumns) * solveColumns + index % panoramaColumns]
+    }
+    assertIsATiling(cells, panoramaColumns, rowsCount, patterns, "default loop")
+    for (row in 1 until rowsCount - 1) {
+      for (col in listOf(0, panoramaColumns - 1)) {
+        val window = List(9) { slot ->
+          val r = row - 1 + slot / 3
+          val c = (col - 1 + slot % 3 + panoramaColumns) % panoramaColumns
+          cells[r * panoramaColumns + c]
+        }
+        assertTrue("window straddling the loop point at $col,$row", window in patterns)
+      }
+    }
   }
 
   /** A cell's block expanded over its `scale` square, exactly as `renderSolvedCells` writes it. */

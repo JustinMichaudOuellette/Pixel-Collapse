@@ -543,12 +543,12 @@ fun PixelEditorScreen(
       explanation = "Brings back a saved drawing and the palette it was made with.",
     ) { onLoadPattern() },
 
-    // A movie of the drawing: a wide panorama is generated and a frame-sized window pans across it.
+    // A movie of the drawing: a wide panorama is generated and a frame-sized window pans across it, looping.
     EditorTool(
       icon = Icons.Default.Movie,
-      contentDescription = "Make a panning GIF",
-      explanation = "Generates a wide picture and pans across it left to right, saved as an animated " +
-        "GIF. Duration and speed are adjustable.",
+      contentDescription = "Make a panning video",
+      explanation = "Generates a wide picture and pans across it left to right, looping back to the start. " +
+        "Saved as an animated GIF or an MP4; the loop length and frame rate are adjustable.",
       startsGroup = true,
     ) { onExportVideo() },
 

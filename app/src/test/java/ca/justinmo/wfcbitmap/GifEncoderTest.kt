@@ -125,7 +125,7 @@ class GifEncoderTest {
   fun stitchedScreensShareTheOverlapAndFillThePanorama() {
     val plan = videoPlan(
       frameColumns = 10, frameRows = 2, pixelsPerCell = 1, cellSize = 1,
-      durationSeconds = 2f, speed = 1f,
+      screens = 4, fps = 25,
     )
     assertEquals(4, plan.screenCount)
     // 10 / 6 = 1, floored to 2, plus the one-cell seam margin.
@@ -151,10 +151,10 @@ class GifEncoderTest {
   }
 
   @Test
-  fun aPlanStitchesEnoughScreensToCoverTheRequestedPan() {
+  fun aPlanCoversTheLoopItWasAskedFor() {
     val plan = videoPlan(
       frameColumns = 38, frameRows = 67, pixelsPerCell = 4, cellSize = 2,
-      durationSeconds = 4f, speed = 1f,
+      screens = 6, fps = 25,
     )
 
     // Overlap is 38 / 6 = 6 cells plus the seam margin, so each extra screen advances 31 cells.
@@ -163,43 +163,50 @@ class GifEncoderTest {
     assertEquals(38 + 5 * 31, plan.panoramaColumns)
     assertEquals(38 * 4, plan.frameWidth)
     assertEquals(67 * 4, plan.frameHeight)
-    assertEquals(240, plan.frameCount)
-    assertEquals(listOf(1, 2, 2), plan.delayPattern)
-    assertEquals(1.02f, plan.effectiveSpeed, 0.05f)
+    // One frame per pixel of panorama width: the window moves exactly one pixel each time.
+    assertEquals(plan.panoramaWidth, plan.frameCount)
+    assertEquals(77 * 4, plan.panoramaWidth)
+    assertEquals(4, plan.frameDelayCentiseconds)
+    assertEquals(25f, plan.effectiveFps, 0.01f)
   }
 
   @Test
-  fun aVeryLongRequestIsCappedAtTheScreenBudget() {
+  fun aLoopLongerThanTheSliderIsCapped() {
     val plan = videoPlan(
       frameColumns = 38, frameRows = 67, pixelsPerCell = 4, cellSize = 2,
-      durationSeconds = 20f, speed = 4f,
+      screens = 99, fps = 25,
     )
 
-    assertEquals(96, plan.screenCount)
-    assertEquals(38 + 95 * 31, plan.panoramaColumns)
+    assertEquals(MAX_LOOP_SCREENS, plan.screenCount)
+    assertEquals(38 + (MAX_LOOP_SCREENS - 1) * 31, plan.panoramaColumns)
   }
 
   @Test
-  fun theNewMaximumDurationAndSpeedDoNotHitTheCap() {
+  fun evenTheWidestLoopFitsOneSolve() {
+    // The loop is one solve because that is the only way its two ends can be pinned together, so the
+    // longest loop the slider offers has to fit the solver at the widest frame the export allows.
+    val frame = videoFramePlan(OutputAspect.Portrait9x16, PreviewScale.Two, KernelSize.Three)
+    val widest = widestLoop(frame.columns, frame.rows, frame.columns - (frame.columns / 6 + 1))
+    assertEquals(MAX_LOOP_SCREENS, widest)
     val plan = videoPlan(
-      frameColumns = 76, frameRows = 135, pixelsPerCell = 4, cellSize = 2,
-      durationSeconds = 30f, speed = 2f,
+      frameColumns = frame.columns, frameRows = frame.rows, pixelsPerCell = frame.pixelsPerCell,
+      cellSize = frame.cellSize, screens = MAX_LOOP_SCREENS, fps = 25,
     )
-
-    assertEquals(74, plan.screenCount)
-    assertTrue("effective ${plan.effectiveSpeed}", plan.effectiveSpeed >= 2f - 0.01f)
+    assertTrue(
+      "a ${plan.panoramaColumns}x${plan.panoramaRows} loop is over the $MAX_PANORAMA_CELLS budget",
+      plan.panoramaColumns * plan.panoramaRows <= MAX_PANORAMA_CELLS,
+    )
   }
 
   @Test
-  fun theStitchedPanoramaIsMadeOfWholeScreens() {
+  fun theLoopIsMadeOfWholeScreens() {
     val plan = videoPlan(
       frameColumns = 76, frameRows = 135, pixelsPerCell = 4, cellSize = 2,
-      durationSeconds = 10f, speed = 2f,
+      screens = 4, fps = 25,
     )
 
     assertEquals(plan.panoramaColumns, plan.frameWidth / 4 + (plan.screenCount - 1) * (76 - plan.overlapColumns))
     assertEquals(13, plan.overlapColumns)
-    assertTrue(plan.screenCount <= 96)
   }
 
   @Test
@@ -209,7 +216,7 @@ class GifEncoderTest {
     // after, and that disagreement is the hard jump at the seam.
     val plan = videoPlan(
       frameColumns = 10, frameRows = 1, pixelsPerCell = 1, cellSize = 1,
-      durationSeconds = 2f, speed = 1f,
+      screens = 2, fps = 25,
     )
     val advance = plan.frameWidth - plan.overlapColumns
     assertEquals(3, plan.overlapColumns)
@@ -232,33 +239,33 @@ class GifEncoderTest {
   }
 
   @Test
-  fun theFirstFrameIsTheLeftEdgeAndTheLastIsTheRightEdge() {
+  fun eachFrameMovesTheWindowExactlyOnePixel() {
+    val width = 10
+    val panorama = IntArray(width) { it } // values 0..9
+    val plan = videoPlan(
+      frameColumns = 2, frameRows = 1, pixelsPerCell = 1, cellSize = 1,
+      screens = 2, fps = 25,
+    ).copy(panoramaWidth = width, frameWidth = 2, frameCount = width)
+
+    val starts = (0 until plan.frameCount).map { cropFrame(panorama, width, plan, it).first() }
+    assertEquals((0 until width).toList(), starts)
+  }
+
+  @Test
+  fun theFrameAfterTheLastOneIsTheFirstOneAgain() {
     val width = 6
     val panorama = IntArray(width) { it } // values 0..5
     val plan = videoPlan(
       frameColumns = 2, frameRows = 1, pixelsPerCell = 1, cellSize = 1,
-      durationSeconds = 1f, speed = 1f,
-    ).copy(panoramaWidth = width, frameWidth = 2, frameCount = 3)
+      screens = 2, fps = 25,
+    ).copy(panoramaWidth = width, frameWidth = 2, frameCount = width)
 
     val first = cropFrame(panorama, width, plan, 0)
-    val last = cropFrame(panorama, width, plan, 2)
-
     assertTrue(first.contentEquals(intArrayOf(0, 1)))
-    assertTrue(last.contentEquals(intArrayOf(4, 5)))
-  }
-
-  @Test
-  fun framesMoveLeftToRight() {
-    val width = 10
-    val panorama = IntArray(width) { it }
-    val plan = videoPlan(
-      frameColumns = 2, frameRows = 1, pixelsPerCell = 1, cellSize = 1,
-      durationSeconds = 1f, speed = 1f,
-    ).copy(panoramaWidth = width, frameWidth = 2, frameCount = 5)
-
-    val starts = (0 until 5).map { cropFrame(panorama, width, plan, it).first() }
-    assertEquals(starts.sorted(), starts)
-    assertEquals(0, starts.first())
-    assertEquals(width - plan.frameWidth, starts.last())
+    // The last frame straddles the loop point: its second half is the panorama's own beginning.
+    val last = cropFrame(panorama, width, plan, width - 1)
+    assertTrue(last.contentEquals(intArrayOf(width - 1, 0)))
+    // And the frame after it is the first one again, which is what makes the clip loop.
+    assertTrue(cropFrame(panorama, width, plan, width).contentEquals(first))
   }
 }
