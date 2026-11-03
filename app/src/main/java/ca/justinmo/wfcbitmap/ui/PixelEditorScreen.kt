@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.GridOn
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Palette as PaletteIcon
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -65,6 +66,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
@@ -145,6 +147,8 @@ fun PixelEditorScreen(
   onSavePattern: () -> Unit = {},
   /** Called when the Load pattern tool is tapped. */
   onLoadPattern: () -> Unit = {},
+  /** Called when the Video export tool is tapped. */
+  onExportVideo: () -> Unit = {},
   /**
    * Called when the Close tool is tapped: leaving an app is the activity's business, not the editor's, so
    * the caller closes itself rather than this screen reaching for a context to finish.
@@ -170,6 +174,10 @@ fun PixelEditorScreen(
   message: EditorMessage? = null,
   /** Called once [message] has been handed to the snackbar, so the caller can forget it. */
   onMessageShown: () -> Unit = {},
+  /** Progress of a long video export, 0..1; null when nothing is being exported. */
+  videoProgress: Float? = null,
+  /** Label beside the export progress bar. */
+  videoLabel: String? = null,
   /**
    * Whether the drawing's edges are read as wrapping into each other; see [EditorTool].
    *
@@ -269,6 +277,15 @@ fun PixelEditorScreen(
   val snackbar = remember { SnackbarHostState() }
   val snackbarScope = rememberCoroutineScope()
   var snackbarJob by remember { mutableStateOf<Job?>(null) }
+  /*
+   * Whether the line currently on (or about to be on) screen has an action button.
+   *
+   * This is set synchronously when a message with an action is handed over, before the snackbar
+   * coroutine has actually run. Checking SnackbarHostState.currentSnackbarData instead is too late:
+   * a notice arriving in the same frame sees no current line, cancels the pending action job, and
+   * shows itself -- which is how "Saved ... View" ended up as an actionless notice.
+   */
+  var snackbarHasAction by remember { mutableStateOf(false) }
 
   /**
    * Shows [message] over the drawing, replacing whatever line was there.
@@ -286,12 +303,14 @@ fun PixelEditorScreen(
     onAction: (() -> Unit)? = null,
   ) {
     snackbarJob?.cancel()
+    snackbarHasAction = actionLabel != null
     snackbarJob = snackbarScope.launch {
       val outcome = snackbar.showSnackbar(
         message = message,
         actionLabel = actionLabel,
         duration = duration,
       )
+      snackbarHasAction = false
       // Dismissed means the line timed out or was swept away by a newer one: only a tap runs the action.
       if (outcome == SnackbarResult.ActionPerformed) onAction?.invoke()
     }
@@ -309,7 +328,9 @@ fun PixelEditorScreen(
    */
   LaunchedEffect(notice) {
     // Short: it is a word about the picture, and it sits over the picture while it is up.
-    notice?.let { showSnackbar(it, SnackbarDuration.Short) }
+    // Never replace a line that has a button: after a save or an export, "View" is the whole point
+    // of the snackbar, and a notice arriving from the rebuilt preview must not take it away.
+    if (notice != null && !snackbarHasAction) showSnackbar(notice, SnackbarDuration.Short)
   }
 
   /*
@@ -518,6 +539,15 @@ fun PixelEditorScreen(
       explanation = "Brings back a saved drawing and the palette it was made with.",
     ) { onLoadPattern() },
 
+    // A movie of the drawing: a wide panorama is generated and a frame-sized window pans across it.
+    EditorTool(
+      icon = Icons.Default.Movie,
+      contentDescription = "Make a panning GIF",
+      explanation = "Generates a wide picture and pans across it left to right, saved as an animated " +
+        "GIF. Duration and speed are adjustable.",
+      startsGroup = true,
+    ) { onExportVideo() },
+
     EditorTool(
       icon = Icons.Default.Save,
       contentDescription = "Save the picture to the gallery",
@@ -712,10 +742,29 @@ fun PixelEditorScreen(
         .padding(12.dp),
     ) { data ->
       Snackbar(
-        snackbarData = data,
         containerColor = PANEL_BACKGROUND,
         contentColor = Color.White,
+        actionContentColor = Color.White,
         dismissActionContentColor = Color.White,
+        action = data.visuals.actionLabel?.let { label ->
+          {
+            TextButton(onClick = { data.performAction() }) {
+              Text(label, color = Color.White)
+            }
+          }
+        },
+      ) {
+        Text(data.visuals.message, color = Color.White)
+      }
+    }
+
+    if (videoProgress != null) {
+      VideoExportProgress(
+        label = videoLabel ?: "Exporting…",
+        progress = videoProgress,
+        modifier = Modifier
+          .align(Alignment.BottomCenter)
+          .padding(bottom = 76.dp),
       )
     }
   }

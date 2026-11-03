@@ -271,6 +271,14 @@ object WfcGenerator {
     val solveMillis: Long = 0,
     /** Time spent sampling the tile set and building the native model, in milliseconds. */
     val extractMillis: Long = 0,
+    /** The centre value of every solved cell, row-major; what a following screen pins its edge to. */
+    val cellCenters: IntArray? = null,
+    /**
+     * The packed pattern index of every solved cell, row-major: the *shape* that produced the cell and not
+     * just its colour. A following screen pins its edge to this as well, so the seam continues the
+     * previous screen's diagonals instead of only its edge pixels.
+     */
+    val cellPatterns: IntArray? = null,
   ) {
     /** What the preview draws: the generated image itself. */
     val image: ImageBitmap by lazy(LazyThreadSafetyMode.PUBLICATION) { bitmap.asImageBitmap() }
@@ -303,6 +311,10 @@ object WfcGenerator {
     mirrorVertical: Boolean = false,
     pixelsPerCell: Int = PIXELS_PER_CELL,
     cellSize: Int = 1,
+    timeoutMillis: Long? = null,
+    fixedCenters: IntArray? = null,
+    fixedPatterns: IntArray? = null,
+    forceRelaxedEdges: Boolean = false,
   ): Output = withContext(Dispatchers.Default) {
     if (sourceWidth <= 0 || sourceHeight <= 0 || pixels.size < sourceWidth * sourceHeight) {
       throw GenerationException("The drawing is empty - draw a pattern first.")
@@ -350,7 +362,7 @@ object WfcGenerator {
       }
       packed = WfcNative.packTiles(sampled)
       val reusable = cachedOutput
-      if (grouped == null && reusable != null && cachedSeed == seed && columns == reusable.columns &&
+      if (grouped == null && fixedCenters == null && fixedPatterns == null && reusable != null && cachedSeed == seed && columns == reusable.columns &&
         rows == reusable.rows && cachedPacked.contentEquals(packed) &&
         cachedWrapEdges == wrapEdges && cachedMirrorHorizontal == mirrorHorizontal &&
         cachedMirrorVertical == mirrorVertical && cachedPixelsPerCell == renderScale
@@ -388,19 +400,22 @@ object WfcGenerator {
      */
     val scope = this
     val shouldAbort = { !scope.isActive }
-    val budgetMillis = solveBudgetMillis(previousSolveMillis())
-    var relaxedEdges = false
+    val budgetMillis = timeoutMillis?.coerceAtLeast(1) ?: solveBudgetMillis(previousSolveMillis())
+    val dropEdgeRule = wrapEdges || forceRelaxedEdges
+    var relaxedEdges = forceRelaxedEdges
     var tier = solveTier(
       packed = packed,
       columns = columns,
       rows = rows,
       seed = seed,
-      dropEdgeRule = wrapEdges,
+      dropEdgeRule = dropEdgeRule,
       deadlineNanos = System.nanoTime() + budgetMillis * 1_000_000,
       shouldAbort = shouldAbort,
+      fixedCenters = fixedCenters,
+      fixedPatterns = fixedPatterns,
     )
     ensureActive()
-    if (tier?.result?.assignment == null && !wrapEdges) {
+    if (tier?.result?.assignment == null && !dropEdgeRule) {
       // The edge rule found no tiling (or none in time). Dropping it is the difference between a picture
       // whose border is not the drawing's and no picture at all, and the notice line says which.
       tier = solveTier(
@@ -411,6 +426,8 @@ object WfcGenerator {
         dropEdgeRule = true,
         deadlineNanos = System.nanoTime() + TIMEOUT_NANOS,
         shouldAbort = shouldAbort,
+        fixedCenters = fixedCenters,
+        fixedPatterns = fixedPatterns,
       )
       ensureActive()
       relaxedEdges = tier?.result?.assignment != null
@@ -434,6 +451,18 @@ object WfcGenerator {
     val renderMillis = (System.nanoTime() - renderStartedAt) / 1_000_000
     // What the next solve's budget is measured against: see [lastSolveMillis].
     val solveMillis = tier.result.millis
+    val cellCenters = IntArray(columns * rows) {
+      // assignment indexes model tiles, and centres is indexed by model tile. Do not route this
+      // through sources: that array maps a model tile to its packed source, which is a different
+      // index as soon as the model prunes a pattern.
+      tier.centers[assignment[it]]
+    }
+    val cellPatterns = IntArray(columns * rows) {
+      // The packed source index of the pattern each cell was solved with: a label for the shape, stable
+      // across generations because the packed order is fixed for a given tile set. This is what lets the
+      // next screen reproduce an edge *pattern* rather than only its colours.
+      tier.sources[assignment[it]]
+    }
     val output = Output(
       bitmap = bitmap,
       columns = columns,
@@ -447,8 +476,10 @@ object WfcGenerator {
       renderMillis = renderMillis,
       solveMillis = solveMillis,
       extractMillis = extractNanos / 1_000_000,
+      cellCenters = cellCenters,
+      cellPatterns = cellPatterns,
     )
-    if (grouped == null) {
+    if (grouped == null && fixedCenters == null && fixedPatterns == null) {
       synchronized(cacheLock) {
         cachedPacked = packed
         cachedOutput = output
@@ -490,6 +521,8 @@ object WfcGenerator {
     dropEdgeRule: Boolean,
     deadlineNanos: Long,
     shouldAbort: () -> Boolean,
+    fixedCenters: IntArray? = null,
+    fixedPatterns: IntArray? = null,
   ): Tier? {
     val nativeModel = WfcNative.modelCreate(
       packed,
@@ -507,7 +540,7 @@ object WfcGenerator {
         columns = columns,
         rows = rows,
         solverFactory = { workerSeed, workerColumns, workerRows ->
-          NativeTileSolver(nativeModel, workerColumns, workerRows, workerSeed)
+          NativeTileSolver(nativeModel, workerColumns, workerRows, workerSeed, fixedCenters, fixedPatterns)
         },
       )
       // Hand the caller's cancellation down to the search. Without this the solve would run to its
@@ -545,7 +578,7 @@ object WfcGenerator {
     private var next = 0
 
     /**
-     * Draws a solved grid: cell (x, y) shows `centres[sources[assignment[y * columns + x]]]`.
+     * Draws a solved grid: cell (x, y) shows `centres[assignment[y * columns + x]]`.
      *
      * The lookup happens here rather than into an intermediate colour array, so a collapse keeps no
      * pixel-side allocation at all.
@@ -691,16 +724,19 @@ internal fun renderSolvedCells(
     val rowBase = y * columns
     val pixelY = y * scale
     for (x in 0 until columns) {
-      val tile = sources[assignment[rowBase + x]]
+      // assignment is a model-tile index; centres is indexed the same way. Using sources here reads a
+      // packed-source index into a model-tile array, which picks the wrong colour whenever the model
+      // pruned a tile.
+      val solved = assignment[rowBase + x]
       val pixelX = x * scale
       if (blocks == null) {
-        val colour = centres[tile]
+        val colour = centres[solved]
         for (dy in 0 until scale) {
           val base = (pixelY + dy) * width + pixelX
           for (dx in 0 until scale) pixels[base + dx] = colour
         }
       } else {
-        val block = blocks[centres[tile]]
+        val block = blocks[centres[solved]]
         for (dy in 0 until scale) {
           val sourceRow = (dy * cell / scale) * cell
           val base = (pixelY + dy) * width + pixelX

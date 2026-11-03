@@ -207,3 +207,14 @@ data class OutputSettings(
     return copy(scale = supported)
   }
 }
+
+/**
+ * The preview size a build opens with.
+ *
+ * A debug build opens at [PreviewScale.Two] -- the "4×" option, the base cell count and the finest picture
+ * the app draws -- so a generation, kernel or seam problem is looked at with every cell on screen. The size
+ * can still be changed while the app runs; this only decides where it starts. A release build opens on
+ * whatever was last chosen, which is [PreviewScale.Half] until someone picks otherwise.
+ */
+internal fun startupPreview(stored: PreviewScale, debugBuild: Boolean): PreviewScale =
+  if (debugBuild) PreviewScale.Two else stored

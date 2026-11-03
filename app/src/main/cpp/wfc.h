@@ -59,10 +59,17 @@ void wfc_solver_abort(wfc_solver *solver);
  * [wfc_solver_assignment], so no allocation happens per solve.
  *
  * @param deadline_nanos absolute CLOCK_MONOTONIC deadline, i.e. System.nanoTime() on Android.
+ * @param fixed_centers optional per-variable pinned centre; INT32_MIN leaves the cell free.
+ * @param fixed_patterns optional per-variable pinned *packed* pattern index (the caller's tile index);
+ *        INT32_MIN leaves the cell free. Pinning the pattern rather than only its centre is what makes a
+ *        stitched screen continue the previous one's shape and not merely its edge colours: with only a
+ *        centre pinned, every pattern that shares that centre stays available, so the diagonals behind it
+ *        can be laid out differently.
  * @return 1 when a tiling was found, 0 when there is none (root propagation emptied a domain), the
  *         deadline passed, the decision cap was hit, or the solver was aborted.
  */
-int wfc_solver_solve(wfc_solver *solver, const wfc_model *model, uint32_t seed,int64_t deadline_nanos, int max_decisions);
+int wfc_solver_solve(wfc_solver *solver, const wfc_model *model, uint32_t seed, int64_t deadline_nanos,
+                     int max_decisions, const int32_t *fixed_centers, const int32_t *fixed_patterns);
 
 /* The tiles of the last successful solve, one per variable, valid until [wfc_solver_finish]. */
 const int32_t *wfc_solver_assignment(const wfc_solver *solver);

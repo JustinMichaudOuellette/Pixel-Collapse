@@ -4,10 +4,13 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
@@ -42,6 +45,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import ca.justinmo.wfcbitmap.DebugTestPattern
 import ca.justinmo.wfcbitmap.DrawingStore
 import ca.justinmo.wfcbitmap.edgeRuleNotice
 import ca.justinmo.wfcbitmap.EditorMessage
@@ -51,9 +55,22 @@ import ca.justinmo.wfcbitmap.ImageSaver
 import ca.justinmo.wfcbitmap.LatencyMeter
 import ca.justinmo.wfcbitmap.OutputAspect
 import ca.justinmo.wfcbitmap.OutputScale
+import ca.justinmo.wfcbitmap.GifEncoder
+import ca.justinmo.wfcbitmap.GifSaver
 import ca.justinmo.wfcbitmap.KernelSize
+import ca.justinmo.wfcbitmap.Mp4Encoder
+import ca.justinmo.wfcbitmap.Mp4Saver
 import ca.justinmo.wfcbitmap.OutputSettings
+import ca.justinmo.wfcbitmap.VideoFormat
+import ca.justinmo.wfcbitmap.VIDEO_FPS
+import ca.justinmo.wfcbitmap.cropFrame
 import ca.justinmo.wfcbitmap.generationPlan
+import ca.justinmo.wfcbitmap.stitchScreen
+import ca.justinmo.wfcbitmap.MAX_PANORAMA_CELLS
+import ca.justinmo.wfcbitmap.PANORAMA_TIMEOUT_MILLIS
+import ca.justinmo.wfcbitmap.startupPreview
+import ca.justinmo.wfcbitmap.videoFramePlan
+import ca.justinmo.wfcbitmap.videoPlan
 import ca.justinmo.wfcbitmap.Palette
 import ca.justinmo.wfcbitmap.PatternStore
 import ca.justinmo.wfcbitmap.PixelArtScaler
@@ -68,6 +85,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
@@ -224,15 +243,42 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     }
   }
 
+  /*
+   * Whether this build is debuggable, read from the installed application rather than `BuildConfig.DEBUG`
+   * because the module does not enable `buildConfig`. A debug build opens on AGENTS.md's canonical test
+   * pattern instead of the restored session, so whatever is being looked at in the editor is reproducible
+   * from the moment the app starts; a release build is unaffected.
+   */
+  val debugBuild = remember {
+    val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    if (debuggable) {
+      Log.i(
+        TAG,
+        "Debug build: opening on the canonical ${DebugTestPattern.columns}x${DebugTestPattern.rows} test pattern",
+      )
+    }
+    debuggable
+  }
+
   val gridState = remember(initialPalette) {
     PixelGridState(palette = initialPalette.colors).apply {
-      restored?.let { restoreDrawing(it.columns, it.rows, it.pixels) }
+      if (debugBuild) {
+        restoreDrawing(DebugTestPattern.columns, DebugTestPattern.rows, DebugTestPattern.pixels)
+      } else {
+        restored?.let { restoreDrawing(it.columns, it.rows, it.pixels) }
+      }
     }
   }
 
   val patternStore = remember(context) { PatternStore.forDirectory(context.filesDir) }
   var savePatternDialogOpen by remember { mutableStateOf(false) }
   var loadPatternDialogOpen by remember { mutableStateOf(false) }
+  var videoDialogOpen by remember { mutableStateOf(false) }
+  var videoDuration by remember { mutableStateOf(15f) }
+  var videoSpeed by remember { mutableStateOf(0.5f) }
+  var exportingVideo by remember { mutableStateOf(false) }
+  var videoExportProgress by remember { mutableStateOf<Float?>(null) }
+  var videoExportLabel by remember { mutableStateOf("") }
   var savedPatterns by remember { mutableStateOf<List<SavedPattern>>(emptyList()) }
   /*
    * A loaded pattern may name a palette that is no longer in the assets. The pattern file carries the
@@ -300,7 +346,12 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         KernelSize.entries.firstOrNull { it.name == name }
       } ?: KernelSize.Three,
     )
-    mutableStateOf(preferences.outputSettings(restoredOutput).withSupportedScale())
+    // A debug build opens at the finest preview (see [startupPreview]); the rest of the session is the
+    // user's, and the override happens before the save size is clamped so the two stay consistent.
+    val stored = preferences.outputSettings(restoredOutput)
+    mutableStateOf(
+      stored.copy(preview = startupPreview(stored.preview, debugBuild)).withSupportedScale(),
+    )
   }
 
   /*
@@ -350,7 +401,11 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * generator hands that cancellation down to the search, so superseded work still stops promptly.
    */
   val scope = rememberCoroutineScope()
+  val mainHandler = remember { Handler(Looper.getMainLooper()) }
   val generation = remember { GenerationSlot() }
+  // The WFC generator keeps a tally and a result cache, so only one generation may run at a time.
+  // The mutex lives on the application so an export that outlives the editor still serialises with it.
+  val generationMutex = application.generationMutex
 
   // The Application already picked the saved session's palette (or endesga-32.txt) as the one to parse
   // first, so the editor can open straight into it; the rest of the list arrives for the picker.
@@ -443,19 +498,21 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         // failure come back as a message the preview can show where the picture would have been.
         var generationError: String? = null
         val generated = try {
-          WfcGenerator.generate(
-            pixels = pixels,
-            sourceWidth = columns,
-            sourceHeight = rows,
-            seed = requestedSeed,
-            columns = plan.columns,
-            rows = plan.rows,
-            wrapEdges = wrapEdges,
-            mirrorHorizontal = mirrorHorizontal,
-            mirrorVertical = mirrorVertical,
-            pixelsPerCell = plan.pixelsPerCell,
-            cellSize = plan.cellSize,
-          )
+          generationMutex.withLock {
+            WfcGenerator.generate(
+              pixels = pixels,
+              sourceWidth = columns,
+              sourceHeight = rows,
+              seed = requestedSeed,
+              columns = plan.columns,
+              rows = plan.rows,
+              wrapEdges = wrapEdges,
+              mirrorHorizontal = mirrorHorizontal,
+              mirrorVertical = mirrorVertical,
+              pixelsPerCell = plan.pixelsPerCell,
+              cellSize = plan.cellSize,
+            )
+          }
         } catch (e: CancellationException) {
           // A newer edit replaced this one; let the cancellation through instead of reporting it.
           throw e
@@ -586,6 +643,263 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     }
   }
 
+  /** Opens the exported GIF. */
+  fun viewVideo(video: Uri) {
+    val opened = runCatching { context.startActivity(GifSaver.viewIntent(video)) }
+    if (opened.isFailure) {
+      Log.w(TAG, "No app would show $video", opened.exceptionOrNull())
+      Toast.makeText(context, "No app to show the GIF", Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  /** Opens the exported MP4. */
+  fun viewMp4(video: Uri) {
+    val opened = runCatching { context.startActivity(Mp4Saver.viewIntent(video)) }
+    if (opened.isFailure) {
+      Log.w(TAG, "No app would show $video", opened.exceptionOrNull())
+      Toast.makeText(context, "No app to show the video", Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  /**
+   * Makes the panning GIF: generate a wide panorama, cut frame-sized windows out of it left to right,
+   * and encode them into the gallery.
+   *
+   * The panorama is a second generation, much wider than the preview, so it waits on [generationMutex]
+   * and the preview job is cancelled first. The preview is rebuilt in the `finally` whatever happens.
+   */
+  fun exportVideo(format: VideoFormat) {
+    if (exportingVideo) return
+    videoDialogOpen = false
+    val frame = videoFramePlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
+    val video = videoPlan(
+      frameColumns = frame.columns,
+      frameRows = frame.rows,
+      pixelsPerCell = frame.pixelsPerCell,
+      cellSize = frame.cellSize,
+      durationSeconds = videoDuration,
+      speed = videoSpeed,
+    )
+    val columns = gridState.columns
+    val rows = gridState.rows
+    val pixels = IntArray(columns * rows) { gridState.pixels[it].toArgb() }
+    val requestedSeed = seed
+    val noun = format.label
+    exportingVideo = true
+    videoExportLabel = "Exporting $noun…"
+    videoExportProgress = 0f
+    message = null
+    generation.job?.cancel()
+    // The application scope, not the composition: backgrounding or turning the screen off must not
+    // cancel a long export. The progress state is observed by the editor whenever it is visible.
+    application.exportScope.launch {
+      try {
+        val frameWidth = video.frameWidth
+        val frameHeight = video.frameHeight
+        val panorama = IntArray(video.panoramaWidth * frameHeight)
+        /*
+         * The panorama is solved as a single grid whenever it fits the solver, which is most exports.
+         *
+         * Stitching whole frames is what produced the visible cut: each screen is its own collapse, and a
+         * pinned edge only makes the next one start from the previous one's last cells -- past those, the
+         * solver is free to arrange the drawing differently, and the join shows as the pattern breaking.
+         * One grid has no join to break. The per-screen path below is kept for panoramas too big for a
+         * single collapse, and is used if this attempt fails.
+         */
+        val panoramaCells = video.panoramaColumns * video.panoramaRows
+        var panoramaSolved = false
+        if (panoramaCells <= MAX_PANORAMA_CELLS) {
+          videoExportLabel = "Solving the $noun panorama…"
+          val solved = try {
+            generationMutex.withLock {
+              WfcGenerator.generate(
+                pixels = pixels,
+                sourceWidth = columns,
+                sourceHeight = rows,
+                seed = requestedSeed,
+                columns = video.panoramaColumns,
+                rows = video.panoramaRows,
+                wrapEdges = wrapEdges,
+                mirrorHorizontal = mirrorHorizontal,
+                mirrorVertical = mirrorVertical,
+                pixelsPerCell = video.pixelsPerCell,
+                cellSize = video.cellSize,
+                timeoutMillis = PANORAMA_TIMEOUT_MILLIS,
+                forceRelaxedEdges = true,
+              )
+            }
+          } catch (e: WfcGenerator.GenerationException) {
+            null
+          }
+          if (solved != null) {
+            solved.bitmap.getPixels(panorama, 0, video.panoramaWidth, 0, 0, video.panoramaWidth, frameHeight)
+            videoExportProgress = 0.1f
+            videoExportLabel = "Exporting $noun…"
+            panoramaSolved = true
+          }
+        }
+        val screenColumns = frameWidth / video.pixelsPerCell
+        var previousCenters: IntArray? = null
+        var previousPatterns: IntArray? = null
+        for (screen in 0 until (if (panoramaSolved) 0 else video.screenCount)) {
+          // Copy the previous screen's edge onto this screen's edge: its last [pinnedCells] cells become
+          // this screen's first [pinnedCells]. Both the colour of each cell and the pattern behind it are
+          // copied -- the colour alone is not enough to continue the drawing's diagonals across the join.
+          // `skipLast` leaves the previous screen's last column unpinned: it was that screen's right
+          // border, so its pattern was chosen with nothing to its right, and pinning it exactly would pin
+          // an outward pixel no solve ever constrained.
+          val pinEdge = { source: IntArray?, pinnedCells: Int, skipLast: Boolean ->
+            if (pinnedCells <= 0 || source == null) {
+              null
+            } else {
+              IntArray(screenColumns * video.panoramaRows) { Int.MIN_VALUE }.also { pinned ->
+                for (row in 0 until video.panoramaRows) {
+                  val base = row * screenColumns
+                  for (cell in 0 until pinnedCells) {
+                    if (skipLast && cell == pinnedCells - 1) continue
+                    pinned[base + cell] =
+                      source[base + (screenColumns - pinnedCells + cell)]
+                  }
+                }
+              }
+            }
+          }
+          // A pin can make an otherwise fine screen unsolvable, and a stronger pin fails sooner, so it is
+          // given up in stages: exact patterns at the full width, then colours at the full width, then half
+          // the width, then nothing. Patterns come first because a matching colour is not enough to continue
+          // the drawing's diagonals; the colour-only stage matters because it still pastes the whole band
+          // over, and a screen that keeps its band has no break at the join at all.
+          val attempts = listOf(
+            video.overlapColumns to true,
+            video.overlapColumns to false,
+            (video.overlapColumns / 2) to false,
+            0 to false,
+          ).distinct()
+          var generated: WfcGenerator.Output? = null
+          var lastFailure: WfcGenerator.GenerationException? = null
+          var pinnedColumns = 0
+          var pinnedPatterns = false
+          for ((pinWidth, wantPatterns) in attempts) {
+            try {
+              generated = generationMutex.withLock {
+                WfcGenerator.generate(
+                  pixels = pixels,
+                  sourceWidth = columns,
+                  sourceHeight = rows,
+                  // A new seed per screen gives each solve a different arrangement; the pinned
+                  // overlap below is what makes it continue the previous screen.
+                  seed = requestedSeed + screen * 1013,
+                  columns = screenColumns,
+                  rows = video.panoramaRows,
+                  wrapEdges = wrapEdges,
+                  mirrorHorizontal = mirrorHorizontal,
+                  mirrorVertical = mirrorVertical,
+                  pixelsPerCell = video.pixelsPerCell,
+                  cellSize = video.cellSize,
+                  timeoutMillis = 15_000L,
+                  fixedCenters = pinEdge(previousCenters, pinWidth, false),
+                  fixedPatterns = if (wantPatterns) {
+                    pinEdge(previousPatterns, pinWidth, true)
+                  } else {
+                    null
+                  },
+                  forceRelaxedEdges = true,
+                )
+              }
+              pinnedColumns = pinWidth
+              pinnedPatterns = wantPatterns
+              break
+            } catch (e: WfcGenerator.GenerationException) {
+              lastFailure = e
+            }
+          }
+          val solved = generated ?: throw lastFailure!!
+          previousCenters = solved.cellCenters
+          previousPatterns = solved.cellPatterns
+          Log.i(
+            TAG,
+            "Video screen $screen/${video.screenCount}: pinned $pinnedColumns of " +
+              "${video.overlapColumns} edge cells " +
+              (if (pinnedPatterns) "with their patterns" else "by colour") +
+              " (${solved.millis} ms, ${solved.tileCount} patterns)",
+          )
+          val bitmap = solved.bitmap
+          if (bitmap.width != frameWidth || bitmap.height != frameHeight) {
+            throw IllegalStateException(
+              "Screen was ${bitmap.width}x${bitmap.height}, expected ${frameWidth}x$frameHeight",
+            )
+          }
+          val screenPixels = IntArray(frameWidth * frameHeight)
+          bitmap.getPixels(screenPixels, 0, frameWidth, 0, 0, frameWidth, frameHeight)
+          // Copy exactly as much of the previous screen's edge as this screen was pinned to: pasting
+          // more would overwrite cells this screen chose freely, which is the break at the seam.
+          stitchScreen(panorama, video, screenPixels, screen, seamColumns = pinnedColumns)
+          // Stitching is a small part of the wall clock; encoding the frames is the long tail. Keep the
+          // bar's first tenth for the screens so it does not race to 60% in the first second.
+          videoExportProgress = 0.02f + 0.08f * (screen + 1) / video.screenCount
+        }
+        val reportFrame: (Int) -> Unit = { index ->
+          if (index % 4 == 0 || index == video.frameCount - 1) {
+            val progress = 0.1f + 0.88f * index / video.frameCount
+            mainHandler.post { videoExportProgress = progress }
+          }
+        }
+        val bytes = if (format == VideoFormat.Mp4) {
+          withContext(Dispatchers.Default) {
+            Mp4Encoder.encode(
+              context = context,
+              width = video.frameWidth,
+              height = video.frameHeight,
+              frameCount = video.frameCount,
+              fps = VIDEO_FPS,
+            ) { index ->
+              reportFrame(index)
+              cropFrame(panorama, video.panoramaWidth, video, index)
+            }
+          }
+        } else {
+          val palette = GifEncoder.paletteFor(panorama)
+          withContext(Dispatchers.Default) {
+            GifEncoder.encode(
+              width = video.frameWidth,
+              height = video.frameHeight,
+              palette = palette,
+              frameCount = video.frameCount,
+              delayForFrame = { video.delayPattern[it % video.delayPattern.size] },
+            ) { index ->
+              reportFrame(index)
+              cropFrame(panorama, video.panoramaWidth, video, index)
+            }
+          }
+        }
+        val uri = if (format == VideoFormat.Mp4) {
+          Mp4Saver.save(context, bytes)
+        } else {
+          GifSaver.save(context, bytes)
+        }
+        videoExportProgress = 1f
+        message = EditorMessage("$noun saved", "View") {
+          if (format == VideoFormat.Mp4) viewMp4(uri) else viewVideo(uri)
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        Log.w(TAG, "Could not make the $noun", e)
+        message = EditorMessage(
+          if (e is WfcGenerator.GenerationException) {
+            e.message ?: "Could not make the $noun"
+          } else {
+            "Could not make the $noun"
+          },
+        )
+      } finally {
+        exportingVideo = false
+        videoExportProgress = null
+        requestGeneration()
+      }
+    }
+  }
+
   /**
    * The size the file is written at: the grid at the save size, which is the picture's own size and not a
    * multiple of whatever the preview happens to be showing.
@@ -699,6 +1013,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     // The save's own line, with its way to go and look at what was written.
     message = message,
     onMessageShown = { message = null },
+    videoProgress = videoExportProgress,
+    videoLabel = videoExportLabel,
     output = outputSettings,
     onOutputChange = { outputSettings = it },
     // The wrap setting belongs to whoever builds the picture, so the screen reports the tap and this side
@@ -744,6 +1060,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         loadPatternDialogOpen = true
       }
     },
+    onExportVideo = { videoDialogOpen = true },
     onExit = { exitApp() },
     // Only a restored session has a colour to start with; otherwise the palette's first swatch is it.
     initialColor = restored?.let { Color(it.colorArgb) },
@@ -766,6 +1083,22 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         },
       )
     },
+  )
+
+  val videoFrame = videoFramePlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
+  VideoExportDialog(
+    open = videoDialogOpen,
+    durationSeconds = videoDuration,
+    speed = videoSpeed,
+    frameColumns = videoFrame.columns,
+    frameRows = videoFrame.rows,
+    pixelsPerCell = videoFrame.pixelsPerCell,
+    cellSize = videoFrame.cellSize,
+    exporting = exportingVideo,
+    onDurationChange = { videoDuration = it },
+    onSpeedChange = { videoSpeed = it },
+    onDismiss = { videoDialogOpen = false },
+    onExport = { format -> exportVideo(format) },
   )
 
   if (savePatternDialogOpen) {

@@ -1405,9 +1405,12 @@ void wfc_solver_finish(wfc_solver *s) {
   s->model = NULL;
 }
 
-int wfc_solver_solve(wfc_solver *s, const wfc_model *model, uint32_t seed, int64_t deadline_nanos,int max_decisions) {
+int wfc_solver_solve(wfc_solver *s, const wfc_model *model, uint32_t seed, int64_t deadline_nanos,
+                     int max_decisions, const int32_t *fixed_centers,
+                     const int32_t *fixed_patterns) {
   if (s == NULL || model == NULL) return 0;
   if (!bind_model(s, model)) return 0;
+  const wfc_model *m = model;
   /* A previous solve that ended with frames still open (every solution does) must not leak them. */
   free_frames(s);
   s->rng = seed == 0 ? 0x9E3779B9u : seed;
@@ -1430,6 +1433,63 @@ int wfc_solver_solve(wfc_solver *s, const wfc_model *model, uint32_t seed, int64
 
   int64_t phase_started = now_nanos();
   if (!initialise_domains(s)) return 0;
+  /*
+   * Optional pins: a cell given a centre keeps only the tiles whose centre is that pixel, and a cell given
+   * a pattern keeps only that one packed pattern. This is how a video screen is joined to the previous
+   * one: the shared edge cells are pinned, and the solver is left to make the rest fit them.
+   *
+   * The pattern pin matters as much as the centre one. A centre is shared by every pattern that shows that
+   * colour there, so pinning centres alone reproduces the previous screen's edge *pixels* while leaving the
+   * solver free to draw different diagonals behind them -- a seam that is locally a legal tiling and still
+   * looks like the pattern has been cut. Pinning the pattern reproduces the shape that was there.
+   */
+  if (fixed_centers != NULL || fixed_patterns != NULL) {
+    for (int v = 0; v < m->variable_count; v++) {
+      int wanted_centre = fixed_centers != NULL ? fixed_centers[v] : INT32_MIN;
+      int wanted_pattern = fixed_patterns != NULL ? fixed_patterns[v] : INT32_MIN;
+      // INT32_MIN, not -1: opaque ARGB colours have the sign bit set and are negative ints, so -1
+      // was a sentinel that collided with real colours and silently un-pinned most of an edge.
+      if (wanted_centre == INT32_MIN && wanted_pattern == INT32_MIN) continue;
+      uint64_t *row = &s->domains[(size_t)v * m->word_count];
+      int size = 0;
+      for (int t = 0; t < m->tile_count; t++) {
+        uint64_t bit = 1ull << (t & 63);
+        if ((row[t >> 6] & bit) == 0) continue;
+        int keep = (wanted_centre == INT32_MIN || m->tiles[t].centre == wanted_centre) &&
+                   (wanted_pattern == INT32_MIN || m->source[t] == wanted_pattern);
+        if (!keep) {
+          row[t >> 6] &= ~bit;
+        } else {
+          size++;
+        }
+      }
+      adjust_size(s, v, size);
+      if (size == 0) return 0;
+      /*
+       * The narrowing above writes the domain directly instead of going through set_word, so it leaves
+       * no trail entry -- correct, a pin must survive backtracking -- but it also announces nothing to
+       * the neighbours, and revise() is the only thing that queues a neighbour's arc. The arcs either
+       * side of a pin therefore have to be seeded here.
+       *
+       * Without this, enqueue_seed_arcs answers "these two domains already support each other" from
+       * the *unpinned* classes. That answer is stale the moment the cell is pinned, so the free cell
+       * beside the band is never revised against it and can settle on a value that does not fit the
+       * pinned one: a seam whose pattern the drawing does not contain.
+       */
+      for (int d = 0; d < WFC_DIRS; d++) {
+        if (((m->present[v] >> d) & 1) == 0) continue;
+        enqueue(s, v + m->step_offset[d], OPPOSITE[d]);
+        enqueue(s, v, d);
+      }
+    }
+    /* adjust_size can remove the old smallest class; find the smallest one that still has a cell. */
+    int smallest = m->tile_count + 1;
+    for (int v = 0; v < m->variable_count; v++) {
+      if (s->size[v] > 1 && s->size[v] < smallest) smallest = s->size[v];
+    }
+    if (smallest <= m->tile_count) s->smallest = smallest;
+    else s->smallest = m->tile_count + 1;
+  }
   enqueue_seed_arcs(s);
   s->setup_nanos = now_nanos() - phase_started;
   if (s->abort_flag != 0) return 0;

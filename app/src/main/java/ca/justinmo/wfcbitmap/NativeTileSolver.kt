@@ -17,6 +17,8 @@ internal class NativeTileSolver(
   private val columns: Int,
   private val rows: Int,
   private val seed: Int,
+  private val fixedCenters: IntArray? = null,
+  private val fixedPatterns: IntArray? = null,
 ) : TileSolver {
 
   private val handle: Long = if (model == 0L) 0L else NativeSolverPool.acquire()
@@ -25,7 +27,13 @@ internal class NativeTileSolver(
 
   override fun solve(deadlineNanos: Long, maxDecisions: Int): IntArray? {
     if (handle == 0L) return null
-    val solved = WfcNative.solverSolve(handle, model, seed, deadlineNanos, maxDecisions, assignment)
+    val solved = if (fixedCenters != null || fixedPatterns != null) {
+      WfcNative.solverSolveFixed(
+        handle, model, seed, deadlineNanos, maxDecisions, fixedCenters, fixedPatterns, assignment,
+      )
+    } else {
+      WfcNative.solverSolve(handle, model, seed, deadlineNanos, maxDecisions, assignment)
+    }
     // The array belongs to this solver, and a solver only ever runs once, so handing it back without a
     // copy is safe here.
     return if (solved == 1) assignment else null

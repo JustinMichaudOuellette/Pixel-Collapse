@@ -100,7 +100,7 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverSolve(JNIEnv *env, jobject thiz, jlon
   if (length < variable_count) return 0;
 
   int solved = wfc_solver_solve(native_solver, native_model, (uint32_t)seed, (int64_t)deadline_nanos,
-                                (int)max_decisions);
+                                (int)max_decisions, NULL, NULL);
   if (solved) {
     /* The solution already lives in the solver's buffer: copy it out, no allocation here either. */
     const int32_t *assignment = wfc_solver_assignment(native_solver);
@@ -108,6 +108,47 @@ Java_ca_justinmo_wfcbitmap_WfcNative_solverSolve(JNIEnv *env, jobject thiz, jlon
     (*env)->SetIntArrayRegion(env, out, 0, variable_count, (const jint *)assignment);
   }
   /* The result is handed over: reset the solver so the next collapse starts clean. */
+  wfc_solver_finish(native_solver);
+  return solved ? 1 : 0;
+}
+
+/*
+ * Copies one optional per-variable pin array out of Java, or returns NULL when the caller passed null
+ * (or an array too short to be the grid). The caller frees the result with free().
+ */
+static int32_t *copy_pins(JNIEnv *env, jintArray pins, int variable_count) {
+  if (pins == NULL) return NULL;
+  if ((*env)->GetArrayLength(env, pins) < variable_count) return NULL;
+  int32_t *copy = malloc((size_t)variable_count * sizeof(int32_t));
+  if (copy == NULL) return NULL;
+  (*env)->GetIntArrayRegion(env, pins, 0, variable_count, (jint *)copy);
+  return copy;
+}
+
+JNIEXPORT jint JNICALL
+Java_ca_justinmo_wfcbitmap_WfcNative_solverSolveFixed(JNIEnv *env, jobject thiz, jlong solver,
+                                                      jlong model, jint seed, jlong deadline_nanos,
+                                                      jint max_decisions, jintArray fixed_centers,
+                                                      jintArray fixed_patterns, jintArray out) {
+  (void)thiz;
+  wfc_solver *native_solver = (wfc_solver *)from_handle(solver);
+  const wfc_model *native_model = (const wfc_model *)from_handle(model);
+  if (native_solver == NULL || native_model == NULL || out == NULL) return 0;
+  if (fixed_centers == NULL && fixed_patterns == NULL) return 0;
+  int variable_count = wfc_model_variable_count(native_model);
+  if ((*env)->GetArrayLength(env, out) < variable_count) return 0;
+
+  int32_t *centres = copy_pins(env, fixed_centers, variable_count);
+  int32_t *patterns = copy_pins(env, fixed_patterns, variable_count);
+  int solved = wfc_solver_solve(native_solver, native_model, (uint32_t)seed, (int64_t)deadline_nanos,
+                                (int)max_decisions, centres, patterns);
+  free(centres);
+  free(patterns);
+  if (solved) {
+    const int32_t *assignment = wfc_solver_assignment(native_solver);
+    if (assignment == NULL) return 0;
+    (*env)->SetIntArrayRegion(env, out, 0, variable_count, (const jint *)assignment);
+  }
   wfc_solver_finish(native_solver);
   return solved ? 1 : 0;
 }

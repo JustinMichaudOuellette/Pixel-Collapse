@@ -106,6 +106,28 @@ internal object WfcNative {
   /** @return 1 when [out] was filled with a tiling, 0 otherwise. */
   external fun solverSolve(solver: Long, model: Long, seed: Int, deadlineNanos: Long, maxDecisions: Int, out: IntArray): Int
 
+  /**
+   * Like [solverSolve], with optional per-cell pins.
+   *
+   * @param fixedCenters [Int.MIN_VALUE] leaves a cell free and any other value restricts it to tiles
+   *   whose centre is that pixel. The sentinel is not -1: opaque ARGB colours are negative ints, so -1
+   *   collides with real colours.
+   * @param fixedPatterns the same, for the pattern instead of the pixel: a value is a packed tile index
+   *   (see [packTiles]) and restricts the cell to that one pattern. Pinning the pattern is what makes a
+   *   stitched screen continue the previous screen's *shape*; a centre alone leaves every pattern that
+   *   shows that colour available, so the diagonals behind it can be laid out differently.
+   */
+  external fun solverSolveFixed(
+    solver: Long,
+    model: Long,
+    seed: Int,
+    deadlineNanos: Long,
+    maxDecisions: Int,
+    fixedCenters: IntArray?,
+    fixedPatterns: IntArray?,
+    out: IntArray,
+  ): Int
+
   external fun solverDecisions(solver: Long): Int
 
   external fun solverRevises(solver: Long): Long
