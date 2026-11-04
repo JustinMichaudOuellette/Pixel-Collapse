@@ -38,6 +38,14 @@ internal val MENU_TEXT_COLOR = Color.White
 /** A hairline between the parts of a menu -- the shape from the sizes, the palettes from each other. */
 internal val MENU_DIVIDER_COLOR = Color.White.copy(alpha = 0.15f)
 
+/**
+ * The grid's separators on the drawing: #767676.
+ *
+ * A grey rather than white, because the lines are there to mark the cells and not to compete with the
+ * drawing: on a dark drawing white made the grid the brightest thing on screen.
+ */
+internal val GRID_LINE_COLOR = Color(0xFF767676)
+
 /** A heading over a group of menu rows, the same in both menus. */
 @Composable
 internal fun MenuHeading(text: String) {

@@ -650,7 +650,7 @@ fun ZoomablePixelCanvas(
        * drawing's edge. Either way the band would be pointing at cells that are not special, so the grid is
        * left uniformly dashed instead -- see [showsEdgeBand].
        */
-      val gridLineColor = Color.White
+      val gridLineColor = GRID_LINE_COLOR
       val lineWidth = 1f / sx
       val pathEffect = PathEffect.dashPathEffect(floatArrayOf(lineWidth, lineWidth))
       /*

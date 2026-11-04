@@ -374,6 +374,57 @@ class PixelGridEditsTest {
     assertEquals(0, grid.undoDepth)
   }
 
+  /**
+   * A tap on a cell that already shows the tapped colour takes it away. While the cell is drawn in this
+   * session that means putting back what was there; a cell that was already the tapped colour -- restored
+   * from a pattern, or painted before the app was closed -- has nothing to put back, so it reverts to the
+   * drawing's own background.
+   */
+  @Test
+  fun tappingAColourThatIsAlreadyThereGoesBackToTheBackground() {
+    // paper is the lighter colour, so the palette's darkest -- the default -- is ink, while the drawing's
+    // background is the paper. The tap must use the latter.
+    val paper = Color(0xFFE8D8B0)
+    val ink = Color(0xFFBE4A2F)
+    val grid = PixelGridState(palette = listOf(ink, paper), initialColumns = 9, initialRows = 9)
+    for (y in 0 until 9) {
+      for (x in 0 until 9) grid.setPixel(x, y, paper)
+    }
+    grid.setPixel(4, 4, ink)
+    assertEquals(ink, grid.defaultColor)
+
+    grid.paint(4, 4, ink)
+
+    assertEquals(paper, grid.getPixel(4, 4))
+  }
+
+  @Test
+  fun tappingTheBackgroundItselfChangesNothing() {
+    val paper = Color(0xFFE8D8B0)
+    val grid = PixelGridState(palette = listOf(red, paper), initialColumns = 9, initialRows = 9)
+    for (y in 0 until 9) {
+      for (x in 0 until 9) grid.setPixel(x, y, paper)
+    }
+    val steps = grid.undoDepth
+
+    grid.paint(4, 4, paper)
+
+    assertEquals(paper, grid.getPixel(4, 4))
+    assertEquals("a tap on the paper is not an edit", steps, grid.undoDepth)
+  }
+
+  @Test
+  fun aRememberedColourStillWinsOverTheBackground() {
+    val grid = grid()
+    val before = grid.getPixel(1, 1)
+
+    grid.paint(1, 1, red)
+    assertEquals(red, grid.getPixel(1, 1))
+
+    grid.paint(1, 1, red)
+    assertEquals(before, grid.getPixel(1, 1))
+  }
+
   @Test
   fun paintCellsIsOneEditHoweverManyCellsItTouches() {
     val grid = grid()

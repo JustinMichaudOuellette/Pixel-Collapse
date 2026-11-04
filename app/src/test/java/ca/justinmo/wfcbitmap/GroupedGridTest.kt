@@ -188,7 +188,8 @@ class GroupedGridTest {
     assertEquals(27, grid.columns)
     assertEquals(21, grid.rows)
     assertEquals(red, grid.getPixel(26, 19))
-    assertEquals(grid.defaultColor, grid.getPixel(0, 20))
+    // The saved drawing is that one colour all over, so that is its background, and the added row is it.
+    assertEquals(red, grid.getPixel(0, 20))
     assertEquals("the restored drawing starts with no history", false, grid.canUndo())
   }
 

@@ -1,18 +1,12 @@
 package ca.justinmo.wfcbitmap.ui
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import android.graphics.Bitmap
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -28,13 +22,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
@@ -46,16 +41,21 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ca.justinmo.wfcbitmap.generation.WfcGenerator
+import ca.justinmo.wfcbitmap.output.OutputAspect
+import ca.justinmo.wfcbitmap.output.PixelArtScaler
+import ca.justinmo.wfcbitmap.output.PixelScaler
+import ca.justinmo.wfcbitmap.output.PreviewScale
+import ca.justinmo.wfcbitmap.output.previewPixelSize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -132,7 +132,8 @@ fun WfcPreview(
             val pressed = event.changes.count { it.pressed }
             if (pressed >= 2) {
               pinched = true
-              val nextZoom = (zoom * event.calculateZoom()).coerceIn(1f, 8f)
+              val nextZoom = (zoom * pinchGain(event.calculateZoom()))
+                .coerceIn(MIN_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM)
               zoom = nextZoom
               pan = if (nextZoom > 1f) pan + event.calculatePan() else Offset.Zero
               event.changes.forEach { it.consume() }
@@ -310,19 +311,64 @@ internal fun previewDrawSize(
   zoom: Float = 1f,
 ): Pair<Int, Int> {
   if (bitmapWidth <= 0 || bitmapHeight <= 0 || columnWidth <= 0 || columnHeight <= 0) return 0 to 0
+  // The pinch multiplies the scale the picture would be shown at, before it is snapped to a whole one:
+  // applying it to the snapped size instead would leave a picture that is bigger than the column (a
+  // 2x-upscaled preview, for instance) stuck at its fitted size however far the fingers move.
   val fit = minOf(
     columnWidth.toDouble() / bitmapWidth,
     columnHeight.toDouble() / bitmapHeight,
-  )
+  ) * zoom.coerceAtLeast(1f)
   if (fit >= 1.0) {
-    val base = floor(fit).toInt().coerceAtLeast(1)
-    val scale = (base * zoom).roundToInt().coerceAtLeast(1)
+    // Rounded down at rest so the picture never spills past the column it was given; zooming in is
+    // allowed to exceed it, which is what the pan is for.
+    val scale = if (zoom <= 1f) {
+      floor(fit).toInt().coerceAtLeast(1)
+    } else {
+      fit.roundToInt().coerceAtLeast(1)
+    }
     return bitmapWidth * scale to bitmapHeight * scale
   }
   // Smaller than the column: whole-number division, so each k-by-k block of picture pixels is one pixel.
   val divisor = ceil(1.0 / fit).toInt().coerceAtLeast(1)
   return (bitmapWidth / divisor).coerceAtLeast(1) to (bitmapHeight / divisor).coerceAtLeast(1)
 }
+
+/**
+ * The width the preview column needs for a picture of [aspect] generated at [preview], given [heightPx]
+ * of height to fill.
+ *
+ * Exactly the width the picture is drawn at, so the column has no side padding to give it: the picture
+ * fills the slot and the editor gets the difference. Asking for a 9:16 slot of the full height instead
+ * left the picture 30-odd pixels of empty column on each side, because a 540-pixel picture cannot be
+ * magnified to 598 without stretching it.
+ */
+internal fun previewColumnWidthPx(aspect: OutputAspect, preview: PreviewScale, heightPx: Int): Int {
+  val (bitmapWidth, bitmapHeight) = previewPixelSize(aspect, preview)
+  return previewDrawSize(
+    bitmapWidth = bitmapWidth,
+    bitmapHeight = bitmapHeight,
+    // The height decides the magnification; the width of the column being asked for has no say in it.
+    columnWidth = Int.MAX_VALUE,
+    columnHeight = heightPx,
+  ).first
+}
+
+/** The preview at rest, and the furthest it goes: eight times the fitted picture. */
+internal const val MIN_PREVIEW_ZOOM = 1f
+internal const val MAX_PREVIEW_ZOOM = 8f
+
+/**
+ * How much stronger a pinch is than the fingers that made it: a quarter again.
+ *
+ * Reaching the full zoom should take one comfortable pinch, not a second one after letting go, and the
+ * raw gesture is a little too slow for that -- two fingers can only be stretched so far across a phone.
+ * The *change* is amplified, not the factor: at rest the gesture is 1, and 1 has to stay 1, or every
+ * pinch would start with a 25% jump before the fingers had moved.
+ */
+internal const val PINCH_GAIN = 1.5f
+
+/** [gestureZoom] -- the ratio a pinch reports -- with the quarter-again gain applied. */
+internal fun pinchGain(gestureZoom: Float): Float = 1f + (gestureZoom - 1f) * PINCH_GAIN
 
 /** A hairline over the picture rather than a band across it: the preview is the point, not the bar. */
 private val BAR_HEIGHT = 2.dp

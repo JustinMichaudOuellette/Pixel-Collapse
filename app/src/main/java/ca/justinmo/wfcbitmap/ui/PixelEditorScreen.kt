@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Colorize
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Delete
@@ -454,6 +455,25 @@ fun PixelEditorScreen(
       gridState.rotateClockwise()
       onResize()
     },
+    /*
+     * Crops to what is drawn, keeping the margin the solver needs: one cell when the edges wrap (the
+     * pattern can run off the drawing and back on), two when the drawing's border is the picture's
+     * border, because then a window centred on a border cell has to be complete. The border colour is
+     * the drawing's own background, detected from its cells.
+     */
+    EditorTool(
+      icon = Icons.Default.Crop,
+      contentDescription = "Crop the drawing to what is drawn on it",
+      explanation = if (wrapEdges || !edgeRuleKept) {
+        "Trims the empty background around the drawing, leaving one cell of it, which is what the " +
+          "pattern needs to wrap around the edges."
+      } else {
+        "Trims the empty background around the drawing, leaving two cells of it, which is what the " +
+          "drawing's border needs to be the picture's border."
+      },
+    ) {
+      if (gridState.cropToContent(borderCells = if (wrapEdges || !edgeRuleKept) 1 else 2)) onResize()
+    },
 
     EditorTool(
       icon = Icons.Default.PaletteIcon,
@@ -601,11 +621,15 @@ fun PixelEditorScreen(
   // instead of keeping the leftmost offset of the smaller, first frame.
   var previewDragged by remember { mutableStateOf(false) }
   BoxWithConstraints(modifier = modifier) {
-    // The preview never gets wider than its 9:16 shape at full height; a wider picture grows over the
-    // editor from that slot, and can be dragged left out of the way.
+    // The column is exactly as wide as the picture is drawn at this height, so nothing is left to pad
+    // on either side of it. The panel is the same width, whatever the shape: a picture wider than the
+    // screen's 9:16 slot still draws over the editor, which is what the drag is for.
     val maxPreviewSlot = (maxWidth - PREVIEW_CHROME_WIDTH).coerceAtLeast(minPreviewWidth())
-    val previewSlot = (maxHeight * 9f / 16f).coerceIn(minPreviewWidth(), maxPreviewSlot)
-    val previewPanelWidth = maxOf(previewSlot, maxHeight * output.aspect.ratio)
+    val availableHeightPx = with(density) { maxHeight.toPx() }.toInt()
+    val drawnPreviewWidthPx = previewColumnWidthPx(output.aspect, output.preview, availableHeightPx)
+    val drawnPreviewWidth = with(density) { drawnPreviewWidthPx.toDp() }
+    val previewSlot = drawnPreviewWidth.coerceIn(minPreviewWidth(), maxPreviewSlot)
+    val previewPanelWidth = maxOf(previewSlot, drawnPreviewWidth)
     val previewPanelWidthPx = with(density) { previewPanelWidth.toPx() }
     // Stop where the panel's right edge meets the editor's left edge: it may leave the editor, but it
     // never retracts past that edge and leaves the preview slot empty.

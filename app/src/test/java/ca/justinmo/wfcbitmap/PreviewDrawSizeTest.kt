@@ -6,6 +6,7 @@ import ca.justinmo.wfcbitmap.storage.*
 import ca.justinmo.wfcbitmap.palette.*
 import ca.justinmo.wfcbitmap.editor.*
 
+import ca.justinmo.wfcbitmap.ui.previewColumnWidthPx
 import ca.justinmo.wfcbitmap.ui.previewDrawSize
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -82,6 +83,44 @@ class PreviewDrawSizeTest {
     assertEquals(1080 to 1920, previewDrawSize(540, 960, columnWidth, columnHeight, zoom = 2f))
     assertEquals(1080 to 1920, previewDrawSize(540, 960, columnWidth, columnHeight, zoom = 1.6f))
     assertEquals(1620 to 2880, previewDrawSize(540, 960, columnWidth, columnHeight, zoom = 3f))
+  }
+
+  @Test
+  fun pinchZoomStillWorksWhenThePictureIsBiggerThanTheColumn() {
+    // With an upscaler on, the picture shown is twice the generated bitmap -- 1080x1920 here -- which is
+    // bigger than the column, so it is fitted by whole-number division rather than magnification. The
+    // pinch has to move that division, or zooming does nothing at all with upscaling enabled.
+    assertEquals(540 to 960, previewDrawSize(1080, 1920, columnWidth, columnHeight, zoom = 1f))
+    assertEquals(1080 to 1920, previewDrawSize(1080, 1920, columnWidth, columnHeight, zoom = 2f))
+    assertEquals(2160 to 3840, previewDrawSize(1080, 1920, columnWidth, columnHeight, zoom = 4f))
+    // And each step is still a whole number of screen pixels per picture pixel.
+    for (zoom in listOf(1f, 1.5f, 2f, 3f, 4f, 8f)) {
+      val (width, _) = previewDrawSize(1080, 1920, columnWidth, columnHeight, zoom)
+      assertTrue("zoom $zoom drew $width", width % 1080 == 0 || 1080 % width == 0)
+    }
+  }
+
+  @Test
+  fun theColumnIsExactlyAsWideAsThePictureIsDrawn() {
+    // The column the editor allots to the preview is worked out from the drawn picture, so the picture
+    // fills it: any difference would be the horizontal padding this replaced.
+    val heightPx = 1080
+    for (aspect in OutputAspect.entries) {
+      for (preview in PreviewScale.entries) {
+        val (bitmapWidth, bitmapHeight) = previewPixelSize(aspect, preview)
+        val columnWidth = previewColumnWidthPx(aspect, preview, heightPx)
+        val (drawnWidth, drawnHeight) = previewDrawSize(bitmapWidth, bitmapHeight, columnWidth, heightPx)
+        assertEquals(
+          "${aspect.label} ${preview.label}: a $columnWidth-pixel column draws $drawnWidth pixels",
+          columnWidth,
+          drawnWidth,
+        )
+        assertTrue(
+          "${aspect.label} ${preview.label} is taller than the column",
+          drawnHeight <= heightPx,
+        )
+      }
+    }
   }
 
   @Test

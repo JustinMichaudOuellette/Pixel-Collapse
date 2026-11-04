@@ -389,12 +389,13 @@ class PixelGridState(
   fun addColumnLeft() {
     if (!canAddColumn()) return
     val count = cellStep
+    val filler = addedColour()
     noteEdit()
     val newCols = columns + count
     val newPixels = mutableListOf<Color>()
     val newPrevious = arrayOfNulls<Color>(newCols * rows)
     for (r in 0 until rows) {
-      repeat(count) { newPixels.add(defaultColor) }
+      repeat(count) { newPixels.add(filler) }
       for (c in 0 until columns) {
         val oldIdx = r * columns + c
         newPixels.add(pixels[oldIdx])
@@ -411,6 +412,7 @@ class PixelGridState(
   fun addColumnRight() {
     if (!canAddColumn()) return
     val count = cellStep
+    val filler = addedColour()
     noteEdit()
     val newCols = columns + count
     val newPixels = mutableListOf<Color>()
@@ -421,7 +423,7 @@ class PixelGridState(
         newPixels.add(pixels[oldIdx])
         newPrevious[r * newCols + c] = previousColors[oldIdx]
       }
-      repeat(count) { newPixels.add(defaultColor) }
+      repeat(count) { newPixels.add(filler) }
     }
     columns = newCols
     pixels.clear()
@@ -475,11 +477,12 @@ class PixelGridState(
   fun addRowTop() {
     if (!canAddRow()) return
     val count = cellStep
+    val filler = addedColour()
     noteEdit()
     val newRows = rows + count
     val newPixels = mutableListOf<Color>()
     val newPrevious = arrayOfNulls<Color>(columns * newRows)
-    repeat(count) { newPixels.addAll(List(columns) { defaultColor }) }
+    repeat(count) { newPixels.addAll(List(columns) { filler }) }
     for (r in 0 until rows) {
       for (c in 0 until columns) {
         val oldIdx = r * columns + c
@@ -497,6 +500,7 @@ class PixelGridState(
   fun addRowBottom() {
     if (!canAddRow()) return
     val count = cellStep
+    val filler = addedColour()
     noteEdit()
     val newRows = rows + count
     val newPixels = mutableListOf<Color>()
@@ -508,7 +512,7 @@ class PixelGridState(
         newPrevious[r * columns + c] = previousColors[oldIdx]
       }
     }
-    repeat(count) { newPixels.addAll(List(columns) { defaultColor }) }
+    repeat(count) { newPixels.addAll(List(columns) { filler }) }
     rows = newRows
     pixels.clear()
     pixels.addAll(newPixels)
@@ -580,9 +584,77 @@ class PixelGridState(
   }
 
   /**
+   * Crops the drawing to what is actually drawn on it, keeping [borderCells] cells of background round it.
+   *
+   * "Drawn on it" means every cell that is not the background colour ([background]), so the plain margin
+   * a drawing usually carries goes away and the picture stops paying for it: a 40x40 drawing of a 12x12
+   * subject is solved from 12 cells, not 40.
+   *
+   * The border is not decoration. With the edges wrapping, one cell is enough for the pattern to run off
+   * the drawing and back on; with the edges kept, the drawing's border is the picture's border and a
+   * window centred on a border cell has to be complete, which takes two. The border is *added* when the
+   * drawing sits against its own edge, so the result always has it, and the result is then rounded up to
+   * whole grouping cells and to the editor's smallest grid -- the rules about cells do not stop applying
+   * because a tool made the grid smaller.
+   *
+   * @return true when the drawing changed; a drawing that is all background has nothing to crop to.
+   */
+  fun cropToContent(borderCells: Int): Boolean {
+    val background = background()
+    var left = columns
+    var right = -1
+    var top = rows
+    var bottom = -1
+    for (row in 0 until rows) {
+      for (column in 0 until columns) {
+        if (pixels[row * columns + column] == background) continue
+        if (column < left) left = column
+        if (column > right) right = column
+        if (row < top) top = row
+        if (row > bottom) bottom = row
+      }
+    }
+    if (right < 0) return false
+    val border = borderCells.coerceAtLeast(0)
+    val newColumns = alignUp(right - left + 1 + 2 * border, cellStep)
+    val newRows = alignUp(bottom - top + 1 + 2 * border, cellStep)
+    // The content is placed exactly one border in from the new top-left; any rounding-up slack and any
+    // background that was outside the old grid lands on the right and the bottom.
+    val offsetColumn = left - border
+    val offsetRow = top - border
+    if (newColumns == columns && newRows == rows && offsetColumn == 0 && offsetRow == 0) {
+      return false
+    }
+    noteEdit()
+    val newPixels = ArrayList<Color>(newColumns * newRows)
+    val newPrevious = arrayOfNulls<Color>(newColumns * newRows)
+    for (r in 0 until newRows) {
+      val sourceRow = offsetRow + r
+      for (c in 0 until newColumns) {
+        val sourceColumn = offsetColumn + c
+        if (sourceRow in 0 until rows && sourceColumn in 0 until columns) {
+          val oldIdx = sourceRow * columns + sourceColumn
+          newPixels.add(pixels[oldIdx])
+          newPrevious[r * newColumns + c] = previousColors[oldIdx]
+        } else {
+          newPixels.add(background)
+        }
+      }
+    }
+    columns = newColumns
+    rows = newRows
+    pixels.clear()
+    pixels.addAll(newPixels)
+    previousColors = newPrevious
+    revision++
+    return true
+  }
+
+  /**
    * Replaces the grid with [newColumns] x [newRows], copying [source] into its top-left corner and
-   * filling the rest with [defaultColor]. Cells the source does not cover are new, so they have no
-   * previous colour to toggle back to.
+   * filling the rest with the source's own background colour -- see [backgroundColour] -- so the added
+   * space extends the paper the drawing is on rather than the subject drawn on it. Cells the source does
+   * not cover are new, so they have no previous colour to toggle back to.
    */
   private fun replaceGrid(
     newColumns: Int,
@@ -591,6 +663,7 @@ class PixelGridState(
     sourceRows: Int,
     source: List<Color>,
   ) {
+    val filler = backgroundColour(source, sourceColumns, sourceRows, defaultColor)
     val newPixels = ArrayList<Color>(newColumns * newRows)
     val newPrevious = arrayOfNulls<Color>(newColumns * newRows)
     for (r in 0 until newRows) {
@@ -600,7 +673,7 @@ class PixelGridState(
           newPixels.add(source[oldIdx])
           newPrevious[r * newColumns + c] = previousColors.getOrNull(oldIdx)
         } else {
-          newPixels.add(defaultColor)
+          newPixels.add(filler)
         }
       }
     }
@@ -611,6 +684,33 @@ class PixelGridState(
     previousColors = newPrevious
     revision++
   }
+
+  /**
+   * The colour a cell added at the edge starts as: the drawing's own background.
+   *
+   * Not [defaultColor], which is the palette's darkest swatch: that is the right answer for an empty
+   * drawing, but on one that has a background of its own -- or was drawn on a palette whose darkest
+   * colour is not the paper -- it puts a stripe of the wrong colour along the new edge.
+   */
+  private fun addedColour(): Color = background()
+
+  /**
+   * The drawing's background, detected from its cells and kept until the drawing changes.
+   *
+   * Detection walks every cell, and a tap asks for it whenever the tapped cell already shows the tapped
+   * colour, so the answer is cached per [revision] instead of being recomputed on every tap.
+   */
+  private fun background(): Color {
+    val cached = backgroundCache
+    if (cached != null && backgroundCacheRevision == revision) return cached
+    val detected = backgroundColour(pixels, columns, rows, defaultColor)
+    backgroundCache = detected
+    backgroundCacheRevision = revision
+    return detected
+  }
+
+  private var backgroundCache: Color? = null
+  private var backgroundCacheRevision: Int = -1
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Painting
@@ -638,25 +738,29 @@ class PixelGridState(
    * between does not cost A a second tap -- tapping A once puts A back, which is what a tap on a cell
    * that already has the selected colour has to mean. (It did require A to be the previous tap, so
    * editing B in between swallowed the first tap on A and it took two.)
+   *
+   * When the cell already shows [color] and nothing was remembered -- it was painted that colour before
+   * this session, or drawn into a restored pattern -- it reverts to the drawing's own background
+   * ([background]), which is the colour a tap on a finished picture is asking to take away. Tapping a
+   * cell that is already the background therefore does nothing.
    */
   fun paint(col: Int, row: Int, color: Color) {
     if (col !in 0 until columns || row !in 0 until rows) return
     val index = row * columns + col
     val current = pixels[index]
-    val previous = previousColors[index]
-    if (previous != null && current == color) {
+    if (current == color) {
+      val revert = previousColors[index] ?: background()
+      if (revert == current) return
       noteEdit()
-      pixels[index] = previous
+      pixels[index] = revert
       previousColors[index] = null
       revision++
       return
     }
-    if (current != color) {
-      noteEdit()
-      previousColors[index] = current
-      pixels[index] = color
-      revision++
-    }
+    noteEdit()
+    previousColors[index] = current
+    pixels[index] = color
+    revision++
   }
 
   /**
@@ -688,13 +792,22 @@ class PixelGridState(
     return changing.size
   }
 
+  /**
+   * Paints the whole drawing back to its background, as the clear tool does.
+   *
+   * The background, not [defaultColor]: clearing a sheet that was drawn on a warm paper has to leave the
+   * paper, and a palette whose darkest swatch is not the paper would otherwise turn the drawing black --
+   * or, worse, into the subject's own colour. Detected before anything changes, and the clear is a no-op
+   * when the drawing is already that colour.
+   */
   fun clear() {
     previousColors = arrayOfNulls(columns * rows)
-    if (pixels.all { it == defaultColor }) {
+    val background = background()
+    if (pixels.all { it == background }) {
       return
     }
     noteEdit()
-    for (i in pixels.indices) pixels[i] = defaultColor
+    for (i in pixels.indices) pixels[i] = background
     revision++
   }
 
@@ -767,9 +880,10 @@ class PixelGridState(
    * replaced by its nearest entry in the palette, so the picture keeps its structure but is drawn only
    * with colours the new palette has. The whole swap is one undo step.
    *
-   * [defaultColor] follows the new palette too, so a later [clear] or a cell revealed by erasing does
-   * not bring a colour from the old palette back. The per-cell revert colours are dropped: after the
-   * migration they refer to colours the drawing no longer uses.
+   * [defaultColor] follows the new palette too, so a cell revealed by erasing does not bring a colour
+   * from the old palette back -- and with it the background the clear tool paints, which is detected from
+   * the drawing and therefore moves with it. The per-cell revert colours are dropped: after the migration
+   * they refer to colours the drawing no longer uses.
    */
   fun migrateColors(palette: List<Color>): Int {
     if (palette.isEmpty()) return 0
@@ -836,11 +950,12 @@ class PixelGridState(
    * put a colour back into a cell that is now somewhere else.
    */
   fun rotateClockwise() {
+    val background = background()
     noteEdit()
     val old = pixels.toList()
     val newColumns = rows
     val newRows = columns
-    val turned = MutableList(newColumns * newRows) { defaultColor }
+    val turned = MutableList(newColumns * newRows) { background }
     for (row in 0 until rows) {
       for (col in 0 until columns) {
         val newCol = rows - 1 - row
@@ -859,10 +974,10 @@ class PixelGridState(
   /**
    * Moves what is inside [rect] by [dCol], [dRow] cells and reports whether anything moved.
    *
-   * The cells the selection leaves behind go back to [defaultColor], like [clear]: the drawing has no
-   * transparency, so a hole has to be filled with something. The destination is clamped so the whole
-   * selection stays inside the grid, and the source is read into a buffer first so a move that overlaps
-   * its own starting place does not smear.
+   * The cells the selection leaves behind go back to the drawing's background, like [clear]: the drawing
+   * has no transparency, so a hole has to be filled with something, and the paper is what was there
+   * before the move. The destination is clamped so the whole selection stays inside the grid, and the
+   * source is read into a buffer first so a move that overlaps its own starting place does not smear.
    */
   fun moveCells(rect: CellRect, dCol: Int, dRow: Int): Boolean {
     if (rect.width <= 0 || rect.height <= 0) return false
@@ -872,9 +987,10 @@ class PixelGridState(
     if (newLeft == rect.left && newTop == rect.top) return false
 
     val lifted = Array(rect.width * rect.height) { pixels[rect.top * columns + rect.left + it % rect.width + (it / rect.width) * columns] }
+    val background = background()
     noteEdit()
     for (row in rect.top..rect.bottom) {
-      for (col in rect.left..rect.right) pixels[row * columns + col] = defaultColor
+      for (col in rect.left..rect.right) pixels[row * columns + col] = background
     }
     for (row in 0 until rect.height) {
       for (col in 0 until rect.width) {
