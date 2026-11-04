@@ -770,6 +770,21 @@ class PixelGridState(
   }
 
   /**
+   * The colour a tap at ([col], [row]) would leave in the cell, without changing the grid.
+   *
+   * [paint] toggles: a cell already showing [color] goes back to the colour remembered before it, or
+   * the background when nothing was remembered. This answers that same question in advance, so a
+   * long-press stroke can start by flipping the first cell and then paint the rest with the colour the
+   * flip revealed.
+   */
+  fun toggleColor(col: Int, row: Int, color: Color): Color {
+    if (col !in 0 until columns || row !in 0 until rows) return color
+    val index = row * columns + col
+    val current = pixels[index]
+    return if (current == color) previousColors[index] ?: background() else color
+  }
+
+  /**
    * Sets a cell to [color] without the toggle in [paint].
    *
    * A stroke paints what it crosses, so dragging back over a cell that already shows the colour has to

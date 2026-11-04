@@ -560,12 +560,23 @@ fun ZoomablePixelCanvas(
               val stroke = HashSet<Int>()
               gridState.beginEdit()
 
+              // A hold starts by toggling its first cell exactly like a tap. The colour that tap
+              // revealed becomes the brush for the rest of the stroke, so holding a selected-colour
+              // cell flips it back and then keeps painting with the restored colour.
+              var strokeColor = selectedColor
+              tapToPixel(held.position)?.let { (col, row) ->
+                strokeColor = gridState.toggleColor(col, row, selectedColor)
+                gridState.paint(col, row, selectedColor)
+                stroke.add(row * gridState.columns + col)
+                onTap()
+              }
+
               fun paintAt(position: Offset) {
                 val (col, row) = tapToPixel(position) ?: return
                 // A cell is painted once per stroke, and painting it does not toggle: a stroke that
                 // crosses a cell already showing the colour must leave it as it is.
                 if (!stroke.add(row * gridState.columns + col)) return
-                gridState.paintOver(col, row, selectedColor)
+                gridState.paintOver(col, row, strokeColor)
                 onTap()
               }
 
@@ -612,11 +623,11 @@ fun ZoomablePixelCanvas(
       // opposite colour, so the outline of a shape can be seen whatever colour it is being drawn on.
       val previewCells = shapePreview
       if (previewCells.isNotEmpty()) {
-        val overlay = contrastColour(gridState.backgroundColor)
+        // The preview is a preview of the shape being painted, so it uses the paint colour itself.
         for (index in previewCells) {
           val col = index % gridState.columns
           val row = index / gridState.columns
-          drawRect(overlay, Offset(col * cs, row * cs), cellSize)
+          drawRect(selectedColor, Offset(col * cs, row * cs), cellSize)
         }
       }
 

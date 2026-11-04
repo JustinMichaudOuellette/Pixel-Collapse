@@ -107,6 +107,17 @@ class PixelGridStateTest {
   }
 
   @Test
+  fun toggleColorPredictsWhatATapWouldDoWithoutChangingTheGrid() {
+    val grid = PixelGridState()
+    val original = grid.getPixel(1, 1)
+    grid.paint(1, 1, red)
+
+    assertEquals("a tap on a red cell would put the original back", original, grid.toggleColor(1, 1, red))
+    assertEquals("asking must not change the cell", red, grid.getPixel(1, 1))
+    assertEquals("a tap on another cell would paint the selected colour", red, grid.toggleColor(2, 2, red))
+  }
+
+  @Test
   fun clearingResetsTheRevertState() {
     val grid = PixelGridState()
     val original = grid.getPixel(2, 2)
