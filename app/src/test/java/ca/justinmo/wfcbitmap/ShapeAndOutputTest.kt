@@ -15,8 +15,8 @@ import org.junit.Test
 import kotlin.math.abs
 
 /**
- * The shapes the Line, Rectangle and Ellipse tools would paint, and the output shapes the aspect menu
- * offers. Both are pure arithmetic, so they belong here rather than on a device.
+ * The shapes the Line, Rectangle, Ellipse and Triangle tools would paint, and the output shapes the
+ * aspect menu offers. Both are pure arithmetic, so they belong here rather than on a device.
  */
 class ShapeAndOutputTest {
 
@@ -28,6 +28,9 @@ class ShapeAndOutputTest {
 
   private fun ellipse(from: Pair<Int, Int>, to: Pair<Int, Int>, columns: Int = 5, rows: Int = 5) =
     shapeCells(EditorMode.Ellipse, from, to, columns, rows).toSet()
+
+  private fun triangle(from: Pair<Int, Int>, to: Pair<Int, Int>, columns: Int = 5, rows: Int = 5) =
+    shapeCells(EditorMode.Triangle, from, to, columns, rows).toSet()
 
   private fun index(col: Int, row: Int, columns: Int = 5) = row * columns + col
 
@@ -159,6 +162,64 @@ class ShapeAndOutputTest {
       val row = cell / 5
       assertTrue("($col, $row) has no mirror", index(4 - col, row) in cells)
       assertTrue("($col, $row) has no vertical mirror", index(col, 4 - row) in cells)
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Triangle
+  // ───────────────────────────────────────────────────────────────────────────
+
+  @Test
+  fun aTriangleStandsOnTheBottomEdgeOfItsBox() {
+    // Apex in the middle of the top edge, base along the bottom one, sides meeting it at its corners.
+    val cells = triangle(0 to 0, 4 to 4)
+
+    assertTrue("the apex", index(2, 0) in cells)
+    for (col in 0..4) assertTrue("the base is missing ($col,4)", index(col, 4) in cells)
+    assertTrue("the base's left corner", index(0, 4) in cells)
+    assertTrue("the base's right corner", index(4, 4) in cells)
+  }
+
+  @Test
+  fun aTriangleIsAnOutlineNotAFill() {
+    val cells = triangle(0 to 0, 4 to 4)
+
+    // Two cells inside it that the outline must leave alone.
+    assertFalse("(2,2) is inside the triangle", index(2, 2) in cells)
+    assertFalse("(2,3) is inside the triangle", index(2, 3) in cells)
+    // But the cells the sides pass through are there, so the outline is unbroken.
+    assertTrue(index(2, 1) in cells)
+    assertTrue(index(1, 2) in cells)
+    assertTrue(index(3, 2) in cells)
+    assertTrue(index(1, 3) in cells)
+    assertTrue(index(3, 3) in cells)
+  }
+
+  @Test
+  fun aTriangleIsSymmetricAboutItsMiddleColumn() {
+    val cells = triangle(0 to 0, 4 to 4)
+
+    for (cell in cells) {
+      val col = cell % 5
+      val row = cell / 5
+      assertTrue("($col, $row) has no mirror", index(4 - col, row) in cells)
+    }
+  }
+
+  @Test
+  fun aTriangleInAOneCellBoxIsThatOneCell() {
+    assertEquals(setOf(index(2, 2)), triangle(2 to 2, 2 to 2))
+  }
+
+  @Test
+  fun aTriangleStaysInsideTheGrid() {
+    val cells = triangle(0 to 0, 9 to 9)
+
+    assertTrue(cells.isNotEmpty())
+    for (cell in cells) {
+      val col = cell % 5
+      val row = cell / 5
+      assertTrue("($col, $row) is outside", col in 0 until 5 && row in 0 until 5)
     }
   }
 

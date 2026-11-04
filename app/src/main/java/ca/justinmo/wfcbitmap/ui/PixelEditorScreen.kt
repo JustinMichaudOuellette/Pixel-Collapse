@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.BookmarkAdd
+import androidx.compose.material.icons.filled.ChangeHistory
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Colorize
 import androidx.compose.material.icons.filled.ContentCopy
@@ -394,6 +395,12 @@ fun PixelEditorScreen(
       selected = mode == EditorMode.Ellipse,
     ) { arm(EditorMode.Ellipse) },
     EditorTool(
+      icon = Icons.Default.ChangeHistory,
+      contentDescription = "Draw a triangle",
+      explanation = "Drag out a box; a triangle standing on its bottom edge is painted as an outline.",
+      selected = mode == EditorMode.Triangle,
+    ) { arm(EditorMode.Triangle) },
+    EditorTool(
       icon = Icons.Default.CropFree,
       contentDescription = "Select an area to move",
       explanation = "Drag out a rectangle to select it, then drag inside it to move what it holds.",
@@ -429,10 +436,20 @@ fun PixelEditorScreen(
       onResize()
     },
 
+    /*
+     * The flips are off while the same mirror is being applied to every pattern. Mirroring the drawing
+     * as well would say the same thing twice -- the picture already has both orientations of everything
+     * -- and a button that looks live but cannot change the picture is worse than one that says so.
+     */
     EditorTool(
       icon = Icons.Default.Flip,
       contentDescription = "Mirror the drawing left to right",
-      explanation = "Flips the drawing horizontally, like a mirror held to one side.",
+      explanation = if (mirrorHorizontal) {
+        "Off while the patterns are mirrored left to right: the picture already has both orientations."
+      } else {
+        "Flips the drawing horizontally, like a mirror held to one side."
+      },
+      enabled = !mirrorHorizontal,
       startsGroup = true,
     ) {
       gridState.flipHorizontal()
@@ -441,7 +458,12 @@ fun PixelEditorScreen(
     EditorTool(
       icon = Icons.Default.Flip,
       contentDescription = "Mirror the drawing top to bottom",
-      explanation = "Flips the drawing vertically, like a mirror laid underneath.",
+      explanation = if (mirrorVertical) {
+        "Off while the patterns are mirrored top to bottom: the picture already has both orientations."
+      } else {
+        "Flips the drawing vertically, like a mirror laid underneath."
+      },
+      enabled = !mirrorVertical,
       iconRotationDegrees = 90f,
     ) {
       gridState.flipVertical()

@@ -686,6 +686,12 @@ class PixelGridState(
   }
 
   /**
+   * The drawing's own background colour, detected from its cells: the paper the clear and crop tools use
+   * and the colour the drag-out preview is drawn against.
+   */
+  val backgroundColor: Color get() = background()
+
+  /**
    * The colour a cell added at the edge starts as: the drawing's own background.
    *
    * Not [defaultColor], which is the palette's darkest swatch: that is the right answer for an empty

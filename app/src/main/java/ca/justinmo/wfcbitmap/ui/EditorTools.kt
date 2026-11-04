@@ -66,17 +66,19 @@ enum class EditorMode {
   Line,
   Rectangle,
   Ellipse,
+  Triangle,
   Select,
   ;
 
   /** True for the modes that draw a shape between the press and the release. */
-  val isShape: Boolean get() = this == Line || this == Rectangle || this == Ellipse
+  val isShape: Boolean
+    get() = this == Line || this == Rectangle || this == Ellipse || this == Triangle
 }
 
 /**
  * The cells a shape from [from] to [to] covers, as flat indices into a [columns] x [rows] grid.
  *
- * All three shapes are outlines, not fills: a solid area is what the fill tool is for, and an outline
+ * Every shape is an outline, not a fill: a solid area is what the fill tool is for, and an outline
  * leaves the cells inside it alone so the drawing keeps whatever was there.
  */
 internal fun shapeCells(
@@ -91,30 +93,31 @@ internal fun shapeCells(
     if (col in 0 until columns && row in 0 until rows) cells.add(row * columns + col)
   }
 
+  /**
+   * The cells a line from one point to another passes through.
+   *
+   * Returned rather than added so the triangle can mirror a side about its apex: rounding a column
+   * half-way between two cells rounds the same way for both sides, which drew a lopsided triangle.
+   */
+  fun lineCells(startCol: Int, startRow: Int, endCol: Int, endRow: Int): List<Pair<Int, Int>> {
+    val dCol = endCol - startCol
+    val dRow = endRow - startRow
+    val steps = maxOf(abs(dCol), abs(dRow))
+    if (steps == 0) return listOf(startCol to startRow)
+    return (0..steps).map { step ->
+      val fraction = step.toFloat() / steps
+      (startCol + dCol * fraction).roundToInt() to (startRow + dRow * fraction).roundToInt()
+    }
+  }
+
   val left = minOf(from.first, to.first)
   val right = maxOf(from.first, to.first)
   val top = minOf(from.second, to.second)
   val bottom = maxOf(from.second, to.second)
 
   when (mode) {
-    EditorMode.Line -> {
-      val startCol = from.first
-      val startRow = from.second
-      val dCol = to.first - startCol
-      val dRow = to.second - startRow
-      val steps = maxOf(abs(dCol), abs(dRow))
-      if (steps == 0) {
-        add(startCol, startRow)
-      } else {
-        for (step in 0..steps) {
-          val fraction = step.toFloat() / steps
-          add(
-            (startCol + dCol * fraction).roundToInt(),
-            (startRow + dRow * fraction).roundToInt(),
-          )
-        }
-      }
-    }
+    EditorMode.Line -> lineCells(from.first, from.second, to.first, to.second)
+      .forEach { (col, row) -> add(col, row) }
 
     EditorMode.Rectangle -> {
       for (col in left..right) {
@@ -154,6 +157,21 @@ internal fun shapeCells(
           add(col, (centreRow - half).roundToInt())
           add(col, (centreRow + half).roundToInt())
         }
+      }
+    }
+
+    /*
+     * Point up: the apex is the middle of the box's top edge and the base is its bottom edge. One side
+     * is drawn with the line tool's own arithmetic and the other is its mirror image about the apex,
+     * so the two sides are alike to the cell and both meet the base at its corners.
+     */
+    EditorMode.Triangle -> {
+      val apexCol = (left + right) / 2
+      for (col in left..right) add(col, bottom)
+      val side = lineCells(apexCol, top, left, bottom)
+      for ((col, row) in side) {
+        add(col, row)
+        add(apexCol + (apexCol - col), row)
       }
     }
 

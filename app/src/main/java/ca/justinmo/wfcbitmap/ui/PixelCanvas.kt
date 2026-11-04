@@ -138,7 +138,7 @@ fun VerticalDividerLine() {
  *   [onModeConsumed] lets the caller disarm the mode.
  * - [EditorMode.Duplicate]: drag out the area to copy, exactly as the select tool does, then drag the
  *   selection: a copy of it follows the finger while the original stays where it is.
- * - [EditorMode.Line], [EditorMode.Rectangle], [EditorMode.Ellipse]: press, drag to size, release to
+ * - [EditorMode.Line], [EditorMode.Rectangle], [EditorMode.Ellipse], [EditorMode.Triangle]: press, drag to size, release to
  *   commit, with the cells the shape would cover shown while dragging. The committed shape spends the
  *   tool, so a second shape means arming it again.
  * - [EditorMode.Select]: dragging outside the selection draws a new one, a tap clears it, and dragging
@@ -608,10 +608,11 @@ fun ZoomablePixelCanvas(
         }
       }
 
-      // The shape being dragged out: the cells it would paint, drawn over the grid.
+      // The shape being dragged out: the cells it would paint, drawn over the grid in the background's
+      // opposite colour, so the outline of a shape can be seen whatever colour it is being drawn on.
       val previewCells = shapePreview
       if (previewCells.isNotEmpty()) {
-        val overlay = Color.White.copy(alpha = 0.35f)
+        val overlay = contrastColour(gridState.backgroundColor)
         for (index in previewCells) {
           val col = index % gridState.columns
           val row = index / gridState.columns
