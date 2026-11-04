@@ -57,6 +57,7 @@ import androidx.compose.material.icons.filled.Redo
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.SwapVert
@@ -86,6 +87,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
@@ -147,6 +149,9 @@ fun PixelEditorScreen(
    * the caller closes itself rather than this screen reaching for a context to finish.
    */
   onExit: () -> Unit = {},
+  /** Size of the square tool and colour buttons, in dp; adjustable from the Settings tool. */
+  toolButtonSize: Int = BUTTON_SIZE_DP_INT,
+  onToolButtonSizeChange: (Int) -> Unit = {},
   output: OutputSettings = OutputSettings(),
   onOutputChange: (OutputSettings) -> Unit = {},
   /**
@@ -233,11 +238,15 @@ fun PixelEditorScreen(
 ) {
   // The first palette colour is selected on open, so the swatch strip starts with a highlighted
   // colour and a tap on the drawing already has something to paint with.
-  var selectedColor by remember { mutableStateOf(initialColor ?: activePalette.colors.first()) }
+  var selectedColor by remember {
+    mutableStateOf(
+      initialColor ?: activePalette.colors.minByOrNull { it.luminance() } ?: Color.Black,
+    )
+  }
 
   LaunchedEffect(activePalette) {
     if (selectedColor !in activePalette.colors) {
-      selectedColor = activePalette.colors.first()
+      selectedColor = activePalette.colors.minByOrNull { it.luminance() } ?: Color.Black
     }
   }
 
@@ -255,6 +264,7 @@ fun PixelEditorScreen(
   // The explanation of the app, over everything. It is the editor's own state like the menus are: reading
   // it changes nothing about the drawing or the picture, so it belongs here rather than to the caller.
   var infoOpen by remember { mutableStateOf(false) }
+  var settingsOpen by remember { mutableStateOf(false) }
 
 
   // Tapping the armed mode puts the drawing back to painting; tapping another one arms that. A
@@ -605,6 +615,13 @@ fun PixelEditorScreen(
       onResize()
     },
 
+    EditorTool(
+      icon = Icons.Default.Settings,
+      contentDescription = "Settings",
+      explanation = "Adjusts the size of the tool and colour buttons.",
+      startsGroup = true,
+    ) { settingsOpen = true },
+
     // What the app does, in its own words. Its own group, next to the close button: reading is not editing,
     // and the tools that change the drawing should not have to be passed on the way to it.
     EditorTool(
@@ -639,11 +656,13 @@ fun PixelEditorScreen(
     // The column is exactly as wide as the picture is drawn at this height, so nothing is left to pad
     // on either side of it. The panel is the same width, whatever the shape: a picture wider than the
     // screen's 9:16 slot still draws over the editor, which is what the drag is for.
-    val maxPreviewSlot = (maxWidth - PREVIEW_CHROME_WIDTH).coerceAtLeast(minPreviewWidth())
+    val toolButtonDp = toolButtonSize.dp
+    val maxPreviewSlot = (maxWidth - (toolButtonDp * 2 + 2.dp))
+      .coerceAtLeast(minPreviewWidth(toolButtonDp))
     val availableHeightPx = with(density) { maxHeight.toPx() }.toInt()
     val drawnPreviewWidthPx = previewColumnWidthPx(output.aspect, output.preview, availableHeightPx)
     val drawnPreviewWidth = with(density) { drawnPreviewWidthPx.toDp() }
-    val previewSlot = drawnPreviewWidth.coerceIn(minPreviewWidth(), maxPreviewSlot)
+    val previewSlot = drawnPreviewWidth.coerceIn(minPreviewWidth(toolButtonDp), maxPreviewSlot)
     val previewPanelWidth = maxOf(previewSlot, drawnPreviewWidth)
     val previewPanelWidthPx = with(density) { previewPanelWidth.toPx() }
     // Stop where the panel's right edge meets the editor's left edge: it may leave the editor, but it
@@ -671,7 +690,11 @@ fun PixelEditorScreen(
 
     // The menu hangs off the toolbar it is opened from, so it reads as part of it.
     Box {
-      EditorToolbar(tools = editorTools, onExplain = { explain(it) })
+      EditorToolbar(
+        tools = editorTools,
+        onExplain = { explain(it) },
+        buttonSize = toolButtonDp,
+      )
       OutputMenu(
         expanded = outputMenuOpen,
         output = output,
@@ -758,6 +781,7 @@ fun PixelEditorScreen(
         palette = activePalette,
         selectedColor = selectedColor,
         onColorSelected = { selectedColor = it },
+        buttonSize = toolButtonDp,
       )
     }
 
@@ -818,6 +842,13 @@ fun PixelEditorScreen(
           .padding(bottom = 76.dp),
       )
     }
+
+    EditorSettingsDialog(
+      open = settingsOpen,
+      buttonSize = toolButtonSize,
+      onButtonSizeChange = onToolButtonSizeChange,
+      onDismiss = { settingsOpen = false },
+    )
 
     // Last, so it covers the editor and the snackbar with it: it is a reading screen, and nothing under it
     // is meant to be touched while it is up.
@@ -1075,11 +1106,5 @@ private fun SizeRow(label: String, width: Int, height: Int) {
   }
 }
 
-/**
- * What the preview may not take from the editor beside it: the two toolbars and the two dividers between
- * the columns. Everything left over is the preview's, up to the width its aspect ratio asks for.
- */
-private val PREVIEW_CHROME_WIDTH = (BUTTON_SIZE_DP_INT * 2).dp + 2.dp
-
 /** Below this the preview would be a sliver rather than a picture, so the cap stops giving way here. */
-private fun minPreviewWidth(): Dp = (BUTTON_SIZE_DP_INT * 4).dp
+private fun minPreviewWidth(toolButtonSize: Dp): Dp = toolButtonSize * 4

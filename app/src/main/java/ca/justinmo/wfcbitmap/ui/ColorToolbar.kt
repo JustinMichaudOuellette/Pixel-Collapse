@@ -70,10 +70,11 @@ fun ColorToolbar(
   palette: Palette,
   selectedColor: Color,
   onColorSelected: (Color) -> Unit,
+  buttonSize: androidx.compose.ui.unit.Dp = BUTTON_SIZE,
 ) {
   Column(
     modifier = Modifier
-      .width(BUTTON_SIZE)
+      .width(buttonSize)
       .fillMaxHeight(),
   ) {
     // Color swatches

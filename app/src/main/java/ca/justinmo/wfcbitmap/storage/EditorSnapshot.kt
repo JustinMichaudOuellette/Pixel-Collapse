@@ -49,6 +49,11 @@ data class EditorSnapshot(
   val mirrorVertical: Boolean,
   /** The selected palette ID. */
   val paletteId: String = PaletteStore.DEFAULT_PALETTE_ID,
+  /**
+   * True when the drawing has been written to the gallery as a pattern and has not been edited since.
+   * On the next launch such a session opens blank instead of restoring the saved drawing.
+   */
+  val savedAsPattern: Boolean = false,
 ) {
 
   /** True when the snapshot describes a grid it could actually be loaded into. */
@@ -77,6 +82,7 @@ data class EditorSnapshot(
       out.writeBoolean(mirrorVertical)
       out.writeUTF(paletteId)
       out.writeUTF(kernelName)
+      out.writeBoolean(savedAsPattern)
     }
     return buffer.toByteArray()
   }
@@ -93,9 +99,10 @@ data class EditorSnapshot(
      * and so a setting the picture cannot be reproduced without. 4 split the one mirror setting into the two
      * the editor has: either of them changes the tile set, so a session cannot come back without both.
      * 5 added paletteId for palette selection. 6 added the pixel-art scaler used when saving. 7 added
-     * the tile-grouping kernel, which changes the tile set as much as the mirrors do.
+     * the tile-grouping kernel, which changes the tile set as much as the mirrors do. 8 added
+     * savedAsPattern, so a pattern that was not edited afterwards does not reopen.
      */
-    private const val VERSION = 7
+    private const val VERSION = 8
 
     private const val HEADER_BYTES = 128
 
@@ -143,6 +150,7 @@ data class EditorSnapshot(
           val mirrorVertical = input.readBoolean()
           val paletteId = if (version >= 5) input.readUTF() else PaletteStore.DEFAULT_PALETTE_ID
           val kernelName = if (version >= 7) input.readUTF() else KernelSize.Three.name
+          val savedAsPattern = version >= 8 && input.readBoolean()
 
           EditorSnapshot(
             columns = columns,
@@ -159,6 +167,7 @@ data class EditorSnapshot(
             mirrorHorizontal = mirrorHorizontal,
             mirrorVertical = mirrorVertical,
             paletteId = paletteId,
+            savedAsPattern = savedAsPattern,
           )
         }
       } catch (e: IOException) {
@@ -180,7 +189,8 @@ data class EditorSnapshot(
       wrapEdges == other.wrapEdges &&
       mirrorHorizontal == other.mirrorHorizontal &&
       mirrorVertical == other.mirrorVertical &&
-      paletteId == other.paletteId
+      paletteId == other.paletteId &&
+      savedAsPattern == other.savedAsPattern
   }
 
   override fun hashCode(): Int {
@@ -198,6 +208,7 @@ data class EditorSnapshot(
     result = 31 * result + mirrorHorizontal.hashCode()
     result = 31 * result + mirrorVertical.hashCode()
     result = 31 * result + paletteId.hashCode()
+    result = 31 * result + savedAsPattern.hashCode()
     return result
   }
 }

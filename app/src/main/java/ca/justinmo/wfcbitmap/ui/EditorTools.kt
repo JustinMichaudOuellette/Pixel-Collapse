@@ -218,23 +218,31 @@ class EditorTool(
  * @param onExplain called with a tool when its button is held down, for the caller to explain it.
  */
 @Composable
-fun EditorToolbar(tools: List<EditorTool>, onExplain: (EditorTool) -> Unit = {}) {
+fun EditorToolbar(
+  tools: List<EditorTool>,
+  onExplain: (EditorTool) -> Unit = {},
+  buttonSize: androidx.compose.ui.unit.Dp = BUTTON_SIZE,
+) {
   if (tools.isEmpty()) return
 
   LazyColumn(
     modifier = Modifier
-      .width(BUTTON_SIZE)
+      .width(buttonSize)
       .fillMaxHeight(),
   ) {
     items(tools) { tool ->
-      EditorToolButton(tool, onExplain)
+      EditorToolButton(tool, onExplain, buttonSize)
     }
   }
 }
 
 /** One icon button, wearing the same dark treatment as the canvas's resize buttons. */
 @Composable
-private fun EditorToolButton(tool: EditorTool, onExplain: (EditorTool) -> Unit) {
+private fun EditorToolButton(
+  tool: EditorTool,
+  onExplain: (EditorTool) -> Unit,
+  buttonSize: androidx.compose.ui.unit.Dp,
+) {
   val shape = RoundedCornerShape(2.dp)
   val armed = tool.selected == true
   Column {
@@ -247,7 +255,7 @@ private fun EditorToolButton(tool: EditorTool, onExplain: (EditorTool) -> Unit) 
     }
     Box(
       modifier = Modifier
-        .size(BUTTON_SIZE)
+        .size(buttonSize)
         .clip(shape)
         // An armed mode is lit up: it changes what the next gesture does, so it must not look like the
         // buttons around it.
@@ -285,15 +293,15 @@ private fun EditorToolButton(tool: EditorTool, onExplain: (EditorTool) -> Unit) 
         contentDescription = null,
         tint = if (tool.enabled) Color.White.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.15f),
         modifier = Modifier
-          .size(TOOL_ICON_SIZE)
+          .size(buttonSize * TOOL_ICON_RATIO)
           .rotate(tool.iconRotationDegrees),
       )
     }
   }
 }
 
-/** Glyph size inside a [BUTTON_SIZE] cell, small enough to leave the button a visible margin. */
-private val TOOL_ICON_SIZE = 20.dp
+/** Glyph size relative to the button, small enough to leave the button a visible margin. */
+private const val TOOL_ICON_RATIO = 20f / 38f
 
 /**
  * Calls [onPoint] for points spaced at most [step] apart along the straight line from [from] to [to],

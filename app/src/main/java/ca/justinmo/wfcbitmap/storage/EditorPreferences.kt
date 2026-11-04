@@ -8,6 +8,10 @@ import ca.justinmo.wfcbitmap.editor.*
 
 import android.content.Context
 
+/** The range offered for the tool and colour button size, in dp. */
+const val MIN_TOOL_BUTTON_SIZE = 38
+const val MAX_TOOL_BUTTON_SIZE = 44
+
 /**
  * The editor settings that outlive a drawing, kept in one small SharedPreferences file.
  *
@@ -122,6 +126,14 @@ class EditorPreferences(context: Context) {
     preferences.edit().putInt(KEY_EVOLVE_CELLS, value).apply()
   }
 
+  fun toolButtonSize(fallback: Int): Int =
+    preferences.getInt(KEY_TOOL_BUTTON_SIZE, fallback)
+      .coerceIn(MIN_TOOL_BUTTON_SIZE, MAX_TOOL_BUTTON_SIZE)
+
+  fun setToolButtonSize(value: Int) {
+    preferences.edit().putInt(KEY_TOOL_BUTTON_SIZE, value).apply()
+  }
+
   /**
    * The output settings, falling back per field.
    *
@@ -177,5 +189,6 @@ class EditorPreferences(context: Context) {
     const val KEY_VIDEO_MODE = "video_mode"
     const val KEY_SOLVE_ANIMATION = "solve_animation"
     const val KEY_EVOLVE_CELLS = "evolve_cells"
+    const val KEY_TOOL_BUTTON_SIZE = "tool_button_size"
   }
 }

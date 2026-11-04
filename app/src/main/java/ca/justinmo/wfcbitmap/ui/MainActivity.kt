@@ -40,6 +40,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -299,14 +300,14 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
 
   val gridState = remember(initialPalette) {
     PixelGridState(palette = initialPalette.colors).apply {
-      if (restored != null) {
+      if (restored != null && !restored.savedAsPattern) {
         restoreDrawing(
           restored.columns,
           restored.rows,
           restored.pixels,
           cellSize = startupKernel.cellSize,
         )
-      } else if (debugBuild) {
+      } else if (debugBuild && restored == null) {
         restoreDrawing(
           DebugTestPattern.columns,
           DebugTestPattern.rows,
@@ -349,6 +350,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   var videoExportLabel by remember { mutableStateOf("") }
   var videoExportJob by remember { mutableStateOf<Job?>(null) }
   val videoExportCancelled = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+  var toolButtonSize by remember {
+    mutableIntStateOf(preferences.toolButtonSize(fallback = BUTTON_SIZE_DP_INT))
+  }
   var savedPatterns by remember { mutableStateOf<List<SavedPattern>>(emptyList()) }
   /*
    * A loaded pattern may name a palette that is no longer in the assets. The pattern file carries the
@@ -368,7 +372,18 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * rest of the picture alone; tapping the preview advances it, which is how you ask for another
    * arrangement of the same drawing.
    */
-  var seed by remember { mutableIntStateOf(restored?.seed ?: PREVIEW_SEED) }
+  var seed by remember {
+    mutableIntStateOf(
+      if (restored?.savedAsPattern == true) PREVIEW_SEED else restored?.seed ?: PREVIEW_SEED,
+    )
+  }
+  /*
+   * True while the drawing on screen is exactly the one last written to the gallery as a pattern.
+   * The session snapshot carries it, so the next launch can start blank instead of reopening a drawing
+   * the person has already put in the gallery.
+   */
+  var patternClean by remember { mutableStateOf(restored?.savedAsPattern ?: false) }
+  var revisionsSeen by remember { mutableIntStateOf(0) }
   var output by remember { mutableStateOf<WfcGenerator.Output?>(null) }
   /*
    * Whether a solve is in flight, which is what the bar across the top of the preview reports.
@@ -506,13 +521,18 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(videoMode) { preferences.setVideoMode(videoMode) }
   LaunchedEffect(solveAnimation) { preferences.setSolveAnimation(solveAnimation) }
   LaunchedEffect(evolveCells) { preferences.setEvolveCells(evolveCells) }
+  LaunchedEffect(toolButtonSize) { preferences.setToolButtonSize(toolButtonSize) }
+  LaunchedEffect(gridState.revision) {
+    if (revisionsSeen > 0 && patternClean) patternClean = false
+    revisionsSeen++
+  }
 
   /*
    * The colour the paint tools are using. It lives in the screen, because the toolbar that picks it does;
    * it is mirrored here so the session snapshot can save it.
    */
   var drawingColor by remember {
-    mutableStateOf(restored?.let { Color(it.colorArgb) })
+    mutableStateOf(restored?.takeIf { !it.savedAsPattern }?.let { Color(it.colorArgb) })
   }
 
   /*
@@ -528,7 +548,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       rows = gridState.rows,
       pixels = IntArray(gridState.columns * gridState.rows) { gridState.pixels[it].toArgb() },
       seed = seed,
-      colorArgb = (drawingColor ?: activePalette.colors.first()).toArgb(),
+      colorArgb = (
+        drawingColor ?: activePalette.colors.minByOrNull { it.luminance() } ?: Color.Black
+        ).toArgb(),
       aspectName = outputSettings.aspect.name,
       previewName = outputSettings.preview.name,
       scaleName = outputSettings.scale.name,
@@ -538,6 +560,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       mirrorHorizontal = mirrorHorizontal,
       mirrorVertical = mirrorVertical,
       paletteId = activePalette.id,
+      savedAsPattern = patternClean,
     )
   }
 
@@ -1502,6 +1525,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       return
     }
     val snapshot = snapshotProvider()
+    val revisionAtSave = gridState.revision
     val width = preview.width
     val height = preview.height
     val pixels = IntArray(width * height)
@@ -1516,6 +1540,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         previewHeight = height,
       )
       message = if (saved != null) {
+        // Only call the session clean if nothing was edited while the file was being written.
+        if (gridState.revision == revisionAtSave) patternClean = true
         EditorMessage("Pattern saved to the gallery", "View") { viewPicture(saved) }
       } else {
         EditorMessage("Could not save that pattern")
@@ -1612,8 +1638,10 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onLoadPattern = { openPatternPicker() },
     onExportVideo = { videoExportOpen = true },
     onExit = { exitApp() },
+    toolButtonSize = toolButtonSize,
+    onToolButtonSizeChange = { toolButtonSize = it },
     // Only a restored session has a colour to start with; otherwise the palette's first swatch is it.
-    initialColor = restored?.let { Color(it.colorArgb) },
+    initialColor = restored?.takeIf { !it.savedAsPattern }?.let { Color(it.colorArgb) },
     onColorChange = { drawingColor = it },
     preview = {
       WfcPreview(
@@ -1710,6 +1738,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
             snapshot.pixels,
             cellSize = patternKernel.cellSize,
           )
+          patternClean = false
           seed = snapshot.seed
           outputSettings = OutputSettings(
             aspect = OutputAspect.entries.firstOrNull { it.name == snapshot.aspectName }

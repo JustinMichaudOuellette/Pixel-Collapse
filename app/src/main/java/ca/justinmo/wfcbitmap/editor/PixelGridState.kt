@@ -109,9 +109,12 @@ class PixelGridState(
   var defaultColor: Color = palette.minByOrNull { it.luminance() } ?: Color.Black
     private set
 
+  /** A blank sheet is paper: the lightest palette colour, not the palette's darkest ink. */
+  private val blankColor: Color = palette.maxByOrNull { it.luminance() } ?: Color.White
+
   /** One colour per cell, row-major. */
   val pixels = mutableStateListOf<Color>().apply {
-    repeat(columns * rows) { add(defaultColor) }
+    repeat(columns * rows) { add(blankColor) }
   }
 
   /**
