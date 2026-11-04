@@ -102,6 +102,15 @@ internal object WfcNative {
   /** The ARGB pixel a model tile shows. Valid only while the model is alive. */
   external fun modelTileCenter(model: Long, tile: Int): Int
 
+  /**
+   * Local Evolve: resample each cell in [cells] to a random tile compatible with its solved neighbours.
+   * [assignment] is updated in place; returns how many cells changed.
+   */
+  external fun modelEvolve(model: Long, assignment: IntArray, cells: IntArray, seed: Int): Int
+
+  /** Number of non-current tiles at [cell] that fit its current neighbours. Diagnostic. */
+  external fun modelCellAlternatives(model: Long, assignment: IntArray, cell: Int): Int
+
   external fun solverCreate(): Long
 
   external fun solverDestroy(solver: Long)

@@ -288,6 +288,8 @@ object WfcGenerator {
      * previous screen's diagonals instead of only its edge pixels.
      */
     val cellPatterns: IntArray? = null,
+    /** Model-tile index of every solved cell, row-major; local Evolve resamples from this. */
+    val assignment: IntArray? = null,
     /**
      * The native model's edge rule for this picture. [relaxedEdges] is the user-facing "the drawing's
      * border could not be kept" flag, which is false for a wrapped drawing even though its model also
@@ -299,6 +301,10 @@ object WfcGenerator {
      * capture the real search instead of revealing the finished bitmap in a shuffled order.
      */
     val packedTiles: IntArray? = null,
+    /** The grouped cell blocks, when the kernel is larger than 3x3, for replaying a solve. */
+    val blocks: List<IntArray>? = null,
+    /** One cell's side in drawing pixels, i.e. the kernel size. */
+    val cellSize: Int = 1,
   ) {
     /** What the preview draws: the generated image itself. */
     val image: ImageBitmap by lazy(LazyThreadSafetyMode.PUBLICATION) { bitmap.asImageBitmap() }
@@ -498,8 +504,11 @@ object WfcGenerator {
       extractMillis = extractNanos / 1_000_000,
       cellCenters = cellCenters,
       cellPatterns = cellPatterns,
+      assignment = assignment,
       modelRelaxedEdges = wrapEdges || relaxedEdges,
       packedTiles = packed,
+      blocks = grouped?.blocks,
+      cellSize = cell,
     )
     if (grouped == null && fixedCenters == null && fixedPatterns == null) {
       synchronized(cacheLock) {
@@ -731,20 +740,22 @@ internal data class GenerationPlan(
 /**
  * Works out one generation's shape.
  *
- * The output grid and its pixels-per-cell are the preview's, whatever the grouping: grouping changes
- * how many drawing pixels one cell is made from, not how many cells the picture has. Keeping the grid
- * fixed is what stops a 6x6 recipe from shrinking the whole picture to a quarter of its resolution.
+ * The picture is exactly the preview's pixel size whatever the grouping, and the square a cell is drawn
+ * in is chosen to make that true ([previewStep]): a whole number of the cell's own pixels where the
+ * preview allows it, which is what stops the drawing being resampled, and otherwise the largest step
+ * that divides the preview rather than one that leaves the bitmap a few pixels short.
  */
 internal fun generationPlan(
   aspect: OutputAspect,
   preview: PreviewScale,
   kernel: KernelSize,
 ): GenerationPlan {
-  val grid = previewGrid(aspect, preview)
+  val (width, height) = previewPixelSize(aspect, preview)
+  val pixelsPerCell = previewStep(width, height, kernel.cellSize)
   return GenerationPlan(
-    columns = grid.columns,
-    rows = grid.rows,
-    pixelsPerCell = grid.pixelsPerCell,
+    columns = (width / pixelsPerCell).coerceAtLeast(1),
+    rows = (height / pixelsPerCell).coerceAtLeast(1),
+    pixelsPerCell = pixelsPerCell,
     cellSize = kernel.cellSize,
   )
 }
@@ -805,6 +816,20 @@ private class BlockKey(val pixels: IntArray) {
 }
 
 /**
+ * Which pixel of a [cell]-sized block output pixel [pixel] of a [scale]-sized square shows.
+ *
+ * Sampled at the output pixel's **centre**, i.e. `(pixel + 0.5) * cell / scale`. That is what makes a
+ * block resample evenly: 3 pixels into 4 output pixels doubles the middle one, 8 into 4 keeps the
+ * pixels nearest the centre. Truncating `pixel * cell / scale` instead doubles the *first* pixel of
+ * every block, which drags each tile half a pixel up and to the left and, at the 9x9 kernel (3-pixel
+ * cells, the first size that does not divide the 4-pixel square), makes the tiles look torn.
+ *
+ * Exact when [scale] is a multiple of [cell] (6x6, 12x12), where both formulas agree.
+ */
+internal fun blockSourcePixel(pixel: Int, cell: Int, scale: Int): Int =
+  ((2 * pixel + 1) * cell) / (2 * scale)
+
+/**
  * Draws a solved grid into [pixels], row-major [width].
  *
  * Without [blocks] each cell is one colour. With them, a cell names a whole [cell]-sized block and the
@@ -841,10 +866,51 @@ internal fun renderSolvedCells(
       } else {
         val block = blocks[centres[solved]]
         for (dy in 0 until scale) {
-          val sourceRow = (dy * cell / scale) * cell
+          val sourceRow = blockSourcePixel(dy, cell, scale) * cell
           val base = (pixelY + dy) * width + pixelX
           for (dx in 0 until scale) {
-            pixels[base + dx] = block[sourceRow + dx * cell / scale]
+            pixels[base + dx] = block[sourceRow + blockSourcePixel(dx, cell, scale)]
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Draws a grid that is already reduced to one centre value per cell, row-major.
+ *
+ * Evolve holds these per-cell centres for every frame instead of a full bitmap; this is the render step
+ * that turns one back into pixels, preserving grouped-cell blocks when [blocks] is present.
+ */
+internal fun renderCellCenters(
+  pixels: IntArray,
+  width: Int,
+  columns: Int,
+  rows: Int,
+  scale: Int,
+  centres: IntArray,
+  blocks: List<IntArray>?,
+  cell: Int,
+) {
+  for (y in 0 until rows) {
+    val rowBase = y * columns
+    val pixelY = y * scale
+    for (x in 0 until columns) {
+      val centre = centres[rowBase + x]
+      val pixelX = x * scale
+      if (blocks == null) {
+        for (dy in 0 until scale) {
+          val base = (pixelY + dy) * width + pixelX
+          for (dx in 0 until scale) pixels[base + dx] = centre
+        }
+      } else {
+        val block = blocks[centre]
+        for (dy in 0 until scale) {
+          val sourceRow = blockSourcePixel(dy, cell, scale) * cell
+          val base = (pixelY + dy) * width + pixelX
+          for (dx in 0 until scale) {
+            pixels[base + dx] = block[sourceRow + blockSourcePixel(dx, cell, scale)]
           }
         }
       }

@@ -209,6 +209,7 @@ struct wfc_solver {
   int trace_initial_count;
 
   uint32_t rng;
+
   int decisions;
   int64_t revises;
   /*
@@ -855,6 +856,86 @@ int wfc_model_tile_center(const wfc_model *model, int tile) {
 int wfc_model_tile_source(const wfc_model *model, int tile) {
   if (model == NULL || tile < 0 || tile >= model->tile_count) return -1;
   return model->source[tile];
+}
+
+/* True when [tile] at [cell] is compatible with every solved neighbour around that cell. */
+static int tile_fits_assignment(const wfc_model *m, const int32_t *assignment, int cell, int tile) {
+  int present = m->present[cell];
+  for (int d = 0; d < WFC_DIRS; d++) {
+    if (((present >> d) & 1) == 0) continue;
+    int neighbour = cell + m->step_offset[d];
+    int other = assignment[neighbour];
+    if (other < 0 || other >= m->tile_count) return 0;
+    const uint64_t *row =
+      m->compat + ((size_t)d * m->tile_count + tile) * m->word_count;
+    if ((row[other >> 6] & (1ull << (other & 63))) == 0) return 0;
+  }
+  return 1;
+}
+
+int wfc_model_cell_alternatives(const wfc_model *m, const int32_t *assignment, int cell) {
+  if (m == NULL || assignment == NULL || cell < 0 || cell >= m->variable_count) return 0;
+  int current = assignment[cell];
+  int current_centre = m->tiles[current].centre;
+  int count = 0;
+  for (int tile = 0; tile < m->tile_count; tile++) {
+    if (tile == current) continue;
+    if (m->tiles[tile].centre == current_centre) continue;
+    if (tile_fits_assignment(m, assignment, cell, tile)) count++;
+  }
+  return count;
+}
+
+int wfc_model_evolve(const wfc_model *m, int32_t *assignment, const int32_t *cells, int count,
+                     uint32_t seed) {
+  if (m == NULL || assignment == NULL || cells == NULL || count <= 0) return 0;
+  int changed = 0;
+  for (int index = 0; index < count; index++) {
+    int cell = cells[index];
+    if (cell < 0 || cell >= m->variable_count) continue;
+    int current = assignment[cell];
+    int current_centre = m->tiles[current].centre;
+    int candidates[1024];
+    int weights[1024];
+    int alternatives = 0;
+    uint32_t total_weight = 0;
+    for (int tile = 0; tile < m->tile_count; tile++) {
+      if (tile == current) continue;
+      if (!tile_fits_assignment(m, assignment, cell, tile)) continue;
+      /*
+       * A different tile with the same centre would keep the picture identical at cell resolution.
+       * Evolve exists to move visible pixels, so only centre-changing alternatives count.
+       */
+      if (m->tiles[tile].centre == current_centre) continue;
+      int weight = m->tiles[tile].weight;
+      if (weight < 1) weight = 1;
+      candidates[alternatives] = tile;
+      weights[alternatives] = weight;
+      total_weight += (uint32_t)weight;
+      alternatives++;
+    }
+    if (alternatives == 0 || total_weight == 0) continue;
+    /*
+     * A per-cell random stream: the same resample seed still picks different alternatives for
+     * different cells, and the implementation is independent of the main solver RNG.
+     */
+    uint32_t rng = seed ^ ((uint32_t)cell * 0x9E3779B9u);
+    if (rng == 0) rng = 0x9E3779B9u;
+    uint32_t pick = rng_next(&rng) % total_weight;
+    int chosen = candidates[alternatives - 1];
+    for (int i = 0; i < alternatives; i++) {
+      if (pick < (uint32_t)weights[i]) {
+        chosen = candidates[i];
+        break;
+      }
+      pick -= (uint32_t)weights[i];
+    }
+    if (chosen != current) {
+      assignment[cell] = chosen;
+      changed++;
+    }
+  }
+  return changed;
 }
 
 int wfc_model_variable_count(const wfc_model *model) {

@@ -59,10 +59,12 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.roundToInt
 
 /**
- * The live bitmap generated from the drawing, filling the column left of the grid edge to edge.
+ * The live bitmap generated from the drawing, drawn in the column left of the grid edge.
  *
  * Nothing else is drawn here on purpose: no caption, no controls, no padding. Two things earn an
  * exception. One is the bar across the top while [isGenerating], which says the picture showing is a
@@ -70,9 +72,10 @@ import kotlin.math.roundToInt
  * a sentence about this drawing is still about the drawing, and the column is the only place the editor
  * has to say it at the size the picture would be.
  *
- * What is drawn here is the generated bitmap, fitted to fill the column and resampled with nearest neighbour:
- * `FilterQuality.None` keeps the pattern's pixels as blocks instead of smearing them. The size is worked out
- * by [previewDrawSize].
+ * What is drawn here is the generated bitmap, at a whole-number magnification and with nearest-neighbour
+ * resampling: `FilterQuality.None` keeps the pattern's pixels as blocks, and the whole number is what
+ * stops them being blocks of different sizes. The leftover column is padding around the picture, which
+ * is centred in it. The size is worked out by [previewDrawSize].
  *
  * @param output the last generated bitmap, or null before the first one is ready, or after a generation
  *   that failed. Holding on to the previous output is what keeps the preview steady while a newer edit is
@@ -163,15 +166,14 @@ fun WfcPreview(
           // Says to a screen reader what the picture is; the drawing itself has no text to give it.
           .semantics { contentDescription = PREVIEW_DESCRIPTION },
       ) {
-        val (baseWidth, baseHeight) = previewDrawSize(
+        val (width, height) = previewDrawSize(
           bitmapWidth = picture.width,
           bitmapHeight = picture.height,
           columnWidth = size.width.toInt(),
           columnHeight = size.height.toInt(),
+          zoom = zoom,
         )
-        if (baseWidth <= 0 || baseHeight <= 0) return@Canvas
-        val width = (baseWidth * zoom).roundToInt().coerceAtLeast(1)
-        val height = (baseHeight * zoom).roundToInt().coerceAtLeast(1)
+        if (width <= 0 || height <= 0) return@Canvas
         val maxPanX = ((width - size.width) / 2f).coerceAtLeast(0f)
         val maxPanY = ((height - size.height) / 2f).coerceAtLeast(0f)
         // Centred at 1x; while zoomed, the pinch's pan moves the picture but never past its edges.
@@ -289,26 +291,37 @@ private fun scaledPreview(source: Bitmap, scaler: PixelArtScaler): ImageBitmap {
 /**
  * The size the generated picture is drawn at inside a preview column of [columnWidth] x [columnHeight].
  *
- * The picture always fills the column, whichever preview size was generated: it is fitted to the column,
- * up or down, keeping its shape, and drawn with nearest-neighbour resampling so its pixels stay blocks.
- * Nothing is left small in the middle of the column, and nothing is cropped.
+ * Drawn at a **whole-number** magnification, never a fraction. A 540-pixel picture fitted to a 598-pixel
+ * column would be scaled by 1.107, which draws some of its pixels one screen pixel wide and some two --
+ * the stretch-and-duplicate that a pixel picture must not have. The largest whole magnification that fits
+ * is used instead, and the column's leftover is padding around the picture, which is centred in it.
  *
- * The result is in whole pixels so the blocks stay even, and it is centred: fitting a 9:16 picture to a
- * column of very slightly different shape leaves a pixel or two over, and they belong on both sides, not
- * on one.
+ * A picture larger than the column is sampled down by a whole divisor for the same reason: every picture
+ * pixel then stands for one screen pixel of a k-by-k block rather than a fraction of one.
+ *
+ * [zoom] is the pinch magnification. It multiplies the whole-number step and is rounded to one, so the
+ * picture stays exact at every zoom instead of smearing between two of them.
  */
 internal fun previewDrawSize(
   bitmapWidth: Int,
   bitmapHeight: Int,
   columnWidth: Int,
   columnHeight: Int,
+  zoom: Float = 1f,
 ): Pair<Int, Int> {
   if (bitmapWidth <= 0 || bitmapHeight <= 0 || columnWidth <= 0 || columnHeight <= 0) return 0 to 0
-  val scale = minOf(
+  val fit = minOf(
     columnWidth.toDouble() / bitmapWidth,
     columnHeight.toDouble() / bitmapHeight,
   )
-  return (bitmapWidth * scale).toInt().coerceAtLeast(1) to (bitmapHeight * scale).toInt().coerceAtLeast(1)
+  if (fit >= 1.0) {
+    val base = floor(fit).toInt().coerceAtLeast(1)
+    val scale = (base * zoom).roundToInt().coerceAtLeast(1)
+    return bitmapWidth * scale to bitmapHeight * scale
+  }
+  // Smaller than the column: whole-number division, so each k-by-k block of picture pixels is one pixel.
+  val divisor = ceil(1.0 / fit).toInt().coerceAtLeast(1)
+  return (bitmapWidth / divisor).coerceAtLeast(1) to (bitmapHeight / divisor).coerceAtLeast(1)
 }
 
 /** A hairline over the picture rather than a band across it: the preview is the point, not the bar. */

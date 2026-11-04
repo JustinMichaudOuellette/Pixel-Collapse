@@ -50,9 +50,11 @@ import ca.justinmo.wfcbitmap.PixelCollapseApplication
 import ca.justinmo.wfcbitmap.editor.DebugTestPattern
 import ca.justinmo.wfcbitmap.editor.LatencyMeter
 import ca.justinmo.wfcbitmap.editor.PixelGridState
+import ca.justinmo.wfcbitmap.generation.TileEvolver
 import ca.justinmo.wfcbitmap.generation.WfcGenerator
 import ca.justinmo.wfcbitmap.generation.edgeRuleNotice
 import ca.justinmo.wfcbitmap.generation.generationPlan
+import ca.justinmo.wfcbitmap.generation.renderCellCenters
 import ca.justinmo.wfcbitmap.output.EditorMessage
 import ca.justinmo.wfcbitmap.output.ImageSaver
 import ca.justinmo.wfcbitmap.output.KernelSize
@@ -74,9 +76,11 @@ import ca.justinmo.wfcbitmap.ui.theme.WFCBitmapTheme
 import ca.justinmo.wfcbitmap.video.GifEncoder
 import ca.justinmo.wfcbitmap.video.GifSaver
 import ca.justinmo.wfcbitmap.video.LOOP_SEAM_CELLS
+import ca.justinmo.wfcbitmap.video.MAX_EVOLVE_CELLS
 import ca.justinmo.wfcbitmap.video.MAX_MP4_FPS
 import ca.justinmo.wfcbitmap.video.MAX_PANORAMA_CELLS
 import ca.justinmo.wfcbitmap.video.MAX_VIDEO_FPS
+import ca.justinmo.wfcbitmap.video.MIN_EVOLVE_CELLS
 import ca.justinmo.wfcbitmap.video.MIN_VIDEO_FPS
 import ca.justinmo.wfcbitmap.video.Mp4Encoder
 import ca.justinmo.wfcbitmap.video.Mp4Saver
@@ -86,6 +90,7 @@ import ca.justinmo.wfcbitmap.video.SolveAnimationFrames
 import ca.justinmo.wfcbitmap.video.VideoFormat
 import ca.justinmo.wfcbitmap.video.VideoMode
 import ca.justinmo.wfcbitmap.video.cropFrame
+import ca.justinmo.wfcbitmap.video.evolveUndoPlan
 import ca.justinmo.wfcbitmap.video.scaleFrame
 import ca.justinmo.wfcbitmap.video.stitchScreen
 import ca.justinmo.wfcbitmap.video.videoFramePlan
@@ -117,7 +122,14 @@ class MainActivity : ComponentActivity() {
   override fun onStop() {
     super.onStop()
     val snapshot = editorState.snapshot?.invoke() ?: return
-    DrawingStore.forDirectory(filesDir).save(snapshot)
+    val saved = DrawingStore.forDirectory(filesDir).save(snapshot)
+    if (saved) {
+      Log.i(TAG, "Saved the session: ${snapshot.columns}x${snapshot.rows} drawing")
+    } else {
+      // Nothing else reports this: the write is best-effort, so an unwritable file would otherwise look
+      // exactly like the drawing never having been saved at all.
+      Log.w(TAG, "Could not save the session: ${snapshot.columns}x${snapshot.rows} drawing")
+    }
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -257,32 +269,52 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
 
   /*
    * Whether this build is debuggable, read from the installed application rather than `BuildConfig.DEBUG`
-   * because the module does not enable `buildConfig`. A debug build opens on AGENTS.md's canonical test
-   * pattern instead of the restored session, so whatever is being looked at in the editor is reproducible
-   * from the moment the app starts; a release build is unaffected.
+   * because the module does not enable `buildConfig`. A debug build with nothing saved opens on AGENTS.md's
+   * canonical test pattern, so a fresh install is reproducible from the moment the app starts; a session
+   * that was saved is always restored, in every build, because it is the user's drawing and not a default.
    */
   val debugBuild = remember {
     val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     if (debuggable) {
-      Log.i(
-        TAG,
-        "Debug build: opening on the canonical ${DebugTestPattern.columns}x${DebugTestPattern.rows} test pattern",
-      )
+      Log.i(TAG, "Debug build: the canonical test pattern is the default drawing")
     }
     debuggable
   }
 
+  /*
+   * The grouping the session opens with, read before the grid is built: a grouped kernel only works on
+   * a drawing that is a whole number of its cells wide and tall, so the restored drawing has to know
+   * which cells it is being restored under.
+   */
+  val startupKernel = remember {
+    val fallback = OutputSettings(
+      kernel = restored?.kernelName?.let { name ->
+        KernelSize.entries.firstOrNull { it.name == name }
+      } ?: KernelSize.Three,
+    )
+    preferences.outputSettings(fallback).kernel
+  }
+
   val gridState = remember(initialPalette) {
     PixelGridState(palette = initialPalette.colors).apply {
-      if (debugBuild) {
+      if (restored != null) {
+        restoreDrawing(
+          restored.columns,
+          restored.rows,
+          restored.pixels,
+          cellSize = startupKernel.cellSize,
+        )
+      } else if (debugBuild) {
         restoreDrawing(
           DebugTestPattern.columns,
           DebugTestPattern.rows,
           DebugTestPattern.pixelsFor(initialPalette.colors),
+          cellSize = startupKernel.cellSize,
         )
-      } else {
-        restored?.let { restoreDrawing(it.columns, it.rows, it.pixels) }
       }
+      // The empty start is sized by the default, which a grouped kernel may not divide; doing it here
+      // covers that case and is a no-op for the two above, which were restored already fitted.
+      fitCells(startupKernel.cellSize)
     }
   }
 
@@ -306,6 +338,10 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   // How a solve video depicts the search: the real decision order, or the real domain/entropy state.
   var solveAnimation by remember {
     mutableStateOf(preferences.solveAnimation(fallback = SolveAnimation.Collapse))
+  }
+  // Evolve: how many cells each frame resamples.
+  var evolveCells by remember {
+    mutableIntStateOf(preferences.evolveCells(fallback = 1))
   }
   var exportingVideo by remember { mutableStateOf(false) }
   var videoExportProgress by remember { mutableStateOf<Float?>(null) }
@@ -468,6 +504,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(videoFormat) { preferences.setVideoFormat(videoFormat) }
   LaunchedEffect(videoMode) { preferences.setVideoMode(videoMode) }
   LaunchedEffect(solveAnimation) { preferences.setSolveAnimation(solveAnimation) }
+  LaunchedEffect(evolveCells) { preferences.setEvolveCells(evolveCells) }
 
   /*
    * The colour the paint tools are using. It lives in the screen, because the toolbar that picks it does;
@@ -883,9 +920,169 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     }
   }
 
+  /**
+   * Evolve: each frame re-solves [cells] cells against their fixed neighbours, so the picture drifts
+   * locally instead of becoming a completely different tiling. One model and one cumulative assignment
+   * serve the whole video, so no frame re-runs the full search.
+   *
+   * The clip is in two passes. The first evolves the picture; the second takes those same changes back
+   * one at a time, newest first, so the last frame is one change away from the first and the clip loops.
+   */
+  fun exportEvolveAnimation(format: VideoFormat, cells: Int) {
+    if (exportingVideo) return
+    val base = output
+    if (base == null) {
+      Toast.makeText(context, "There is no solved picture to evolve yet", Toast.LENGTH_SHORT).show()
+      return
+    }
+    val width = base.bitmap.width
+    val height = base.bitmap.height
+    val baseCenters = base.cellCenters
+    if (baseCenters == null) {
+      Toast.makeText(context, "There is no solved picture to evolve yet", Toast.LENGTH_SHORT).show()
+      return
+    }
+    val basePixels = IntArray(width * height)
+    base.bitmap.getPixels(basePixels, 0, width, 0, 0, width, height)
+    val steps = (videoFps * 2).coerceIn(24, 90)
+    val baseSeed = seed
+    val count = cells.coerceIn(MIN_EVOLVE_CELLS, MAX_EVOLVE_CELLS)
+    val gifPalette = if (format == VideoFormat.Gif) {
+      GifEncoder.paletteFor(
+        basePixels,
+        extraColors = activePalette.colors.map { it.toArgb() }.toIntArray(),
+      )
+    } else {
+      IntArray(0)
+    }
+    val scale = (width / base.columns).coerceAtLeast(1)
+
+    videoExportOpen = false
+    message = null
+    generation.job?.cancel()
+    exportingVideo = true
+    videoExportLabel = "Evolving ${format.label}…"
+    videoExportProgress = 0f
+    videoExportCancelled.set(false)
+    videoExportJob = application.exportScope.launch {
+      try {
+        // Evolve all unique frames once, as cell centres. That keeps the encoder from re-solving
+        // everything, and is far smaller than holding bitmaps for every frame.
+        val evolvedCenters = arrayOfNulls<IntArray>(steps)
+        evolvedCenters[0] = baseCenters
+        // One model and one cumulative assignment for the whole video: no per-frame re-solve.
+        val evolver = TileEvolver(base, count)
+        val undoReversions: List<Int>
+        try {
+          for (frame in 1 until steps) {
+            if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
+            videoExportProgress = 0.01f + 0.49f * frame / steps
+            evolvedCenters[frame] = evolver.nextFrame(baseSeed * 31 + frame * 101)
+          }
+          // What the second pass has to take back, and how many changes each of its frames reverts.
+          undoReversions = evolveUndoPlan(evolver.changeCount)
+        } finally {
+          // Closing frees the native model; the recorded changes are plain data, so the undo pass can
+          // still ask the evolver for its pictures afterwards.
+          evolver.close()
+        }
+        val total = steps + undoReversions.size
+
+        fun frameAt(index: Int): IntArray {
+          if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
+          val centres = if (index < steps) {
+            evolvedCenters[index] ?: baseCenters
+          } else {
+            evolver.pictureAfterUndoing(undoReversions[index - steps])
+          }
+          val pixels = IntArray(width * height)
+          renderCellCenters(
+            pixels = pixels,
+            width = width,
+            columns = base.columns,
+            rows = base.rows,
+            scale = scale,
+            centres = centres,
+            blocks = base.blocks,
+            cell = base.cellSize,
+          )
+          return pixels
+        }
+
+        videoExportLabel = "Encoding ${format.label}…"
+        videoExportProgress = 0.5f
+        val (uri, viewUri) = if (format == VideoFormat.Mp4) {
+          val bytes = withContext(Dispatchers.Default) {
+            Mp4Encoder.encode(
+              context = context,
+              width = width,
+              height = height,
+              frameCount = total,
+              fps = videoFps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS),
+            ) { index ->
+              mainHandler.post { videoExportProgress = 0.5f + 0.49f * index / total }
+              frameAt(index)
+            }
+          }
+          val saved = Mp4Saver.save(context, bytes)
+          saved to viewCopy(bytes, ".mp4")
+        } else {
+          val gifDelay = (100f / videoFps.coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS))
+            .roundToInt()
+            .coerceIn(1, 100)
+          val temp = File.createTempFile("wfc-evolve-", ".gif", context.cacheDir)
+          try {
+            withContext(Dispatchers.Default) {
+              temp.outputStream().buffered().use { out ->
+                GifEncoder.encodeTo(
+                  out = out,
+                  width = width,
+                  height = height,
+                  palette = gifPalette,
+                  frameCount = total,
+                  delayForFrame = { gifDelay },
+                ) { index ->
+                  mainHandler.post { videoExportProgress = 0.5f + 0.49f * index / total }
+                  frameAt(index)
+                }
+              }
+            }
+            val saved = GifSaver.save(context, temp)
+            saved to viewCopy(temp, ".gif")
+          } finally {
+            temp.delete()
+          }
+        }
+        videoExportProgress = 1f
+        message = EditorMessage("${format.label} saved", "View") {
+          val target = viewUri ?: uri
+          if (format == VideoFormat.Mp4) viewMp4(target) else viewVideo(target)
+        }
+      } catch (e: CancellationException) {
+        if (videoExportCancelled.get()) {
+          message = EditorMessage("Export cancelled")
+        }
+        throw e
+      } catch (e: Exception) {
+        Log.w(TAG, "Could not make the evolve video", e)
+        message = EditorMessage("Could not make the evolve video")
+      } finally {
+        exportingVideo = false
+        videoExportProgress = null
+        videoExportJob = null
+        videoExportCancelled.set(false)
+        requestGeneration()
+      }
+    }
+  }
+
   fun exportVideo(format: VideoFormat) {
     if (videoMode == VideoMode.Solve) {
       exportSolveAnimation(format, solveAnimation)
+      return
+    }
+    if (videoMode == VideoMode.Evolve) {
+      exportEvolveAnimation(format, evolveCells)
       return
     }
     if (exportingVideo) return
@@ -1386,7 +1583,12 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       videoExportJob?.cancel()
     },
     output = outputSettings,
-    onOutputChange = { outputSettings = it },
+    onOutputChange = { next ->
+      // A bigger grouping needs the drawing to be whole cells wide and tall; picking one adds the space
+      // it needs rather than leaving a strip at the edge that the solver never sees.
+      if (next.kernel != outputSettings.kernel) gridState.fitCells(next.kernel.cellSize)
+      outputSettings = next
+    },
     // The wrap setting belongs to whoever builds the picture, so the screen reports the tap and this side
     // owns the answer: setting it is what rebuilds the picture (see the effect above).
     wrapEdges = wrapEdges,
@@ -1465,6 +1667,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     format = videoFormat,
     mode = videoMode,
     solveAnimation = solveAnimation,
+    evolveCells = evolveCells,
     screens = videoScreens,
     fps = videoFps,
     pixelsPerFrame = videoPixelsPerFrame,
@@ -1478,6 +1681,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onScreensChange = { videoScreens = it },
     onModeChange = { videoMode = it },
     onSolveAnimationChange = { solveAnimation = it },
+    onEvolveCellsChange = { evolveCells = it },
     onFpsChange = { videoFps = it },
     onPixelsPerFrameChange = { videoPixelsPerFrame = it },
     onFormatChange = { videoFormat = it },
@@ -1538,7 +1742,16 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           }
 
           val snapshot = saved.snapshot
-          gridState.restoreDrawing(snapshot.columns, snapshot.rows, snapshot.pixels)
+          val patternKernel = KernelSize.entries.firstOrNull { it.name == snapshot.kernelName }
+            ?: outputSettings.kernel
+          // Restored under its own grouping: a pattern saved at 9x9 and loaded while 15x15 is chosen
+          // grows to whole 5-pixel cells, which is what picking that grouping does to any drawing.
+          gridState.restoreDrawing(
+            snapshot.columns,
+            snapshot.rows,
+            snapshot.pixels,
+            cellSize = patternKernel.cellSize,
+          )
           seed = snapshot.seed
           outputSettings = OutputSettings(
             aspect = OutputAspect.entries.firstOrNull { it.name == snapshot.aspectName }
@@ -1549,8 +1762,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
               ?: outputSettings.scale,
             scaler = PixelArtScaler.entries.firstOrNull { it.name == snapshot.scalerName }
               ?: outputSettings.scaler,
-            kernel = KernelSize.entries.firstOrNull { it.name == snapshot.kernelName }
-              ?: outputSettings.kernel,
+            kernel = patternKernel,
           ).withSupportedScale()
           wrapEdges = snapshot.wrapEdges
           mirrorHorizontal = snapshot.mirrorHorizontal

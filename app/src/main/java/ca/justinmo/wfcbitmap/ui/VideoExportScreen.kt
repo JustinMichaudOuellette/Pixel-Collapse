@@ -1,10 +1,4 @@
 package ca.justinmo.wfcbitmap.ui
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -42,6 +36,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import ca.justinmo.wfcbitmap.video.MAX_EVOLVE_CELLS
+import ca.justinmo.wfcbitmap.video.MAX_GIF_DELAY_CENTISECONDS
+import ca.justinmo.wfcbitmap.video.MAX_LOOP_SCREENS
+import ca.justinmo.wfcbitmap.video.MAX_MP4_FPS
+import ca.justinmo.wfcbitmap.video.MAX_VIDEO_FPS
+import ca.justinmo.wfcbitmap.video.MIN_EVOLVE_CELLS
+import ca.justinmo.wfcbitmap.video.MIN_GIF_DELAY_CENTISECONDS
+import ca.justinmo.wfcbitmap.video.MIN_LOOP_SCREENS
+import ca.justinmo.wfcbitmap.video.MIN_VIDEO_FPS
+import ca.justinmo.wfcbitmap.video.SolveAnimation
+import ca.justinmo.wfcbitmap.video.VideoFormat
+import ca.justinmo.wfcbitmap.video.VideoMode
+import ca.justinmo.wfcbitmap.video.estimatedVideoBytes
+import ca.justinmo.wfcbitmap.video.formatByteSize
+import ca.justinmo.wfcbitmap.video.videoPlan
 import kotlin.math.roundToInt
 
 /**
@@ -64,6 +73,7 @@ fun VideoExportScreen(
   format: VideoFormat,
   mode: VideoMode = VideoMode.Panorama,
   solveAnimation: SolveAnimation = SolveAnimation.Collapse,
+  evolveCells: Int = 1,
   screens: Int,
   fps: Int,
   pixelsPerFrame: Int = 2,
@@ -77,6 +87,7 @@ fun VideoExportScreen(
   onScreensChange: (Int) -> Unit,
   onModeChange: (VideoMode) -> Unit = {},
   onSolveAnimationChange: (SolveAnimation) -> Unit = {},
+  onEvolveCellsChange: (Int) -> Unit = {},
   onFpsChange: (Int) -> Unit,
   onPixelsPerFrameChange: (Int) -> Unit = {},
   onFormatChange: (VideoFormat) -> Unit,
@@ -90,6 +101,8 @@ fun VideoExportScreen(
     pixelsPerFrame = pixelsPerFrame,
     outputWidth = outputWidth, outputHeight = outputHeight,
   )
+  val solveSteps = (fps * 2).coerceIn(24, 90)
+  val solveTotal = if (format == VideoFormat.Gif) solveSteps * 2 - 1 else solveSteps
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -156,12 +169,17 @@ fun VideoExportScreen(
             .padding(horizontal = 16.dp),
         ) {
           Text(
-            if (mode == VideoMode.Panorama) {
-              "A wide picture pans left to right and loops back to its start. Every frame moves the window " +
-                "one pixel, so the loop is smooth by construction."
-            } else {
-              "A replay of the real solver, not a reveal of the finished bitmap. A GIF runs the replay " +
-                "backwards so it loops; an MP4 stops on the finished picture."
+            when (mode) {
+              VideoMode.Panorama ->
+                "A wide picture pans left to right and loops back to its start. Every frame moves the " +
+                  "window one pixel, so the loop is smooth by construction."
+              VideoMode.Solve ->
+                "A replay of the real solver, not a reveal of the finished bitmap. A GIF runs the replay " +
+                  "backwards so it loops; an MP4 stops on the finished picture."
+              VideoMode.Evolve ->
+                "Evolve nudges the picture a few cells at a time: a small patch is re-solved on each " +
+                  "frame with the cells around it held in place. Then those changes are taken back one " +
+                  "at a time, so the clip ends where it started."
             },
             color = MENU_TEXT_COLOR.copy(alpha = 0.6f),
             fontSize = 12.sp,
@@ -203,6 +221,35 @@ fun VideoExportScreen(
             Spacer(Modifier.height(6.dp))
             Text(
               solveAnimation.description,
+              color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+              fontSize = 11.sp,
+              lineHeight = 15.sp,
+            )
+          }
+
+          if (mode == VideoMode.Evolve) {
+            Spacer(Modifier.height(18.dp))
+            SettingLabel("Cells per frame", "$evolveCells")
+            Slider(
+              value = evolveCells.toFloat(),
+              onValueChange = {
+                onEvolveCellsChange(
+                  it.roundToInt().coerceIn(MIN_EVOLVE_CELLS, MAX_EVOLVE_CELLS),
+                )
+              },
+              valueRange = MIN_EVOLVE_CELLS.toFloat()..MAX_EVOLVE_CELLS.toFloat(),
+              steps = (MAX_EVOLVE_CELLS - MIN_EVOLVE_CELLS - 1) / 8,
+              colors = SliderDefaults.colors(
+                thumbColor = MENU_TEXT_COLOR,
+                activeTrackColor = MENU_TEXT_COLOR,
+                inactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.25f),
+              ),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+              "A small local patch is re-solved each frame with its boundary pinned. If the drawing " +
+                "has no local alternative, the patch keeps its current tiling. The second half of the " +
+                "clip undoes the changes one at a time, back to the starting picture.",
               color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
               fontSize = 11.sp,
               lineHeight = 15.sp,
@@ -284,19 +331,35 @@ fun VideoExportScreen(
           }
 
           Spacer(Modifier.height(12.dp))
-          Text(
-            "${plan.outputWidth}×${plan.outputHeight} · ${plan.frameCount} frames · " +
-              "${formatOneDecimal(plan.loopSeconds)} s per loop · ${plan.pixelsPerFrame} px per frame",
-            color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
-            fontSize = 11.sp,
-            lineHeight = 15.sp,
-          )
-          Text(
-            "Estimated size ≈ ${formatByteSize(estimatedVideoBytes(plan, format))}",
-            color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
-            fontSize = 11.sp,
-            lineHeight = 15.sp,
-          )
+          if (mode == VideoMode.Panorama) {
+            Text(
+              "${plan.outputWidth}×${plan.outputHeight} · ${plan.frameCount} frames · " +
+                "${formatOneDecimal(plan.loopSeconds)} s per loop · ${plan.pixelsPerFrame} px per frame",
+              color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+              fontSize = 11.sp,
+              lineHeight = 15.sp,
+            )
+            Text(
+              "Estimated size ≈ ${formatByteSize(estimatedVideoBytes(plan, format))}",
+              color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+              fontSize = 11.sp,
+              lineHeight = 15.sp,
+            )
+          } else {
+            Text(
+              // Evolve's undo pass is as long as the number of cells that changed, which only the solve
+              // knows, so its frame count is not quoted here.
+              if (mode == VideoMode.Evolve) {
+                "${frameColumns * pixelsPerCell}×${frameRows * pixelsPerCell} · " +
+                  "$solveSteps evolving frames, then one undo frame per changed cell"
+              } else {
+                "${frameColumns * pixelsPerCell}×${frameRows * pixelsPerCell} · $solveTotal frames"
+              },
+              color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+              fontSize = 11.sp,
+              lineHeight = 15.sp,
+            )
+          }
 
           if (mode == VideoMode.Panorama) {
             Spacer(Modifier.height(16.dp))

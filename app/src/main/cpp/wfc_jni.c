@@ -59,6 +59,50 @@ Java_ca_justinmo_wfcbitmap_generation_WfcNative_modelTileCenter(JNIEnv *env, job
   return (jint)wfc_model_tile_center((const wfc_model *)from_handle(model), (int)tile);
 }
 
+JNIEXPORT jint JNICALL
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_modelCellAlternatives(JNIEnv *env, jobject thiz,
+                                                           jlong model, jintArray assignment,
+                                                           jint cell) {
+  (void)thiz;
+  const wfc_model *native_model = (const wfc_model *)from_handle(model);
+  if (native_model == NULL || assignment == NULL) return 0;
+  int variables = wfc_model_variable_count(native_model);
+  if ((*env)->GetArrayLength(env, assignment) < variables) return 0;
+  jint *values = (*env)->GetIntArrayElements(env, assignment, NULL);
+  if (values == NULL) return 0;
+  int count = wfc_model_cell_alternatives(native_model, (const int32_t *)values, (int)cell);
+  (*env)->ReleaseIntArrayElements(env, assignment, values, JNI_ABORT);
+  return count;
+}
+
+JNIEXPORT jint JNICALL
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_modelEvolve(JNIEnv *env, jobject thiz, jlong model,
+                                                 jintArray assignment, jintArray cells,
+                                                 jint seed) {
+  (void)thiz;
+  const wfc_model *native_model = (const wfc_model *)from_handle(model);
+  if (native_model == NULL || assignment == NULL || cells == NULL) return 0;
+  int variables = wfc_model_variable_count(native_model);
+  int cell_count = (*env)->GetArrayLength(env, cells);
+  if ((*env)->GetArrayLength(env, assignment) < variables) return 0;
+  jint *assignment_values = (*env)->GetIntArrayElements(env, assignment, NULL);
+  jint *cell_values = (*env)->GetIntArrayElements(env, cells, NULL);
+  if (assignment_values == NULL || cell_values == NULL) {
+    if (assignment_values != NULL) {
+      (*env)->ReleaseIntArrayElements(env, assignment, assignment_values, JNI_ABORT);
+    }
+    if (cell_values != NULL) {
+      (*env)->ReleaseIntArrayElements(env, cells, cell_values, JNI_ABORT);
+    }
+    return 0;
+  }
+  int changed = wfc_model_evolve(native_model, (int32_t *)assignment_values,
+                                 (const int32_t *)cell_values, cell_count, (uint32_t)seed);
+  (*env)->ReleaseIntArrayElements(env, assignment, assignment_values, 0);
+  (*env)->ReleaseIntArrayElements(env, cells, cell_values, JNI_ABORT);
+  return changed;
+}
+
 JNIEXPORT void JNICALL
 Java_ca_justinmo_wfcbitmap_generation_WfcNative_modelDestroy(JNIEnv *env, jobject thiz, jlong model) {
   (void)env;

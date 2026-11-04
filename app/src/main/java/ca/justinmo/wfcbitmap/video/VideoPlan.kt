@@ -1,11 +1,11 @@
 package ca.justinmo.wfcbitmap.video
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
+import ca.justinmo.wfcbitmap.generation.GenerationPlan
+import ca.justinmo.wfcbitmap.generation.generationPlan
+import ca.justinmo.wfcbitmap.output.KernelSize
+import ca.justinmo.wfcbitmap.output.OutputAspect
+import ca.justinmo.wfcbitmap.output.PreviewScale
+import ca.justinmo.wfcbitmap.video.*
 import kotlin.math.roundToInt
 
 /**
@@ -58,10 +58,11 @@ enum class VideoFormat(val label: String) {
   Mp4("MP4"),
 }
 
-/** What the video shows: a pan across a stitched panorama, or the solve revealing the picture. */
+/** What the video shows: a pan, the solve revealing the picture, or a picture nudged patch by patch. */
 enum class VideoMode(val label: String) {
   Panorama("Panorama"),
   Solve("Solve"),
+  Evolve("Evolve"),
 }
 
 /**
@@ -86,6 +87,45 @@ enum class SolveAnimation(val label: String, val description: String) {
 /** Smallest and largest loop the export offers, in frame widths. */
 internal const val MIN_LOOP_SCREENS = 2
 internal const val MAX_LOOP_SCREENS = 6
+
+/** How many cells Evolve resamples per frame. */
+internal const val MIN_EVOLVE_CELLS = 1
+internal const val MAX_EVOLVE_CELLS = 256
+
+/**
+ * The longest an evolve clip's undo pass may get, in frames.
+ *
+ * The pass takes the changes back one at a time, so its length is the number of cells that changed. A
+ * high cells-per-frame setting makes that number large; the cap spreads the same changes over at most
+ * this many frames instead of turning a few seconds of evolution into thousands of frames.
+ */
+internal const val MAX_EVOLVE_UNDO_FRAMES = 600
+
+/**
+ * The changes an evolve clip's second pass has taken back by the end of each of its frames.
+ *
+ * Entry `i` is a cumulative count: undo frame `i` reverts that many of the recorded cell changes, newest
+ * first, so the picture visibly unwinds instead of snapping back a frame at a time. When the log is
+ * longer than [MAX_EVOLVE_UNDO_FRAMES] the changes are spread over that many frames, which is why an
+ * entry can step by more than one.
+ *
+ * The final full reversal is left out on purpose: the last undo frame then holds a picture exactly one
+ * change away from the clip's first frame, so looping back to the start is one more step of the same
+ * undo rather than the starting picture held for two frames.
+ */
+internal fun evolveUndoPlan(changeCount: Int): List<Int> {
+  if (changeCount <= 0) return emptyList()
+  val frames = changeCount.coerceAtMost(MAX_EVOLVE_UNDO_FRAMES)
+  val perFrame = (changeCount + frames - 1) / frames
+  val plan = ArrayList<Int>(frames)
+  var reverted = 0
+  while (reverted < changeCount) {
+    reverted = minOf(reverted + perFrame, changeCount)
+    plan.add(reverted)
+  }
+  if (plan.isNotEmpty() && plan[plan.lastIndex] >= changeCount) plan.removeAt(plan.lastIndex)
+  return plan
+}
 
 /** The frame rate MP4 offers: 10–60 fps. GIF can go to 100 fps (1 cs), so the internal cap is wider. */
 internal const val MIN_VIDEO_FPS = 10

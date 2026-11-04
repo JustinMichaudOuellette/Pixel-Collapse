@@ -9,6 +9,7 @@ import ca.justinmo.wfcbitmap.editor.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import net.akachaki.processing.engine.array.IntArray2D
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.BitmapWaveFunctionCell
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -137,6 +138,60 @@ class SolveTraceTest {
       }
     }
     println("wave frame 0 edge=$edge inside=$inside")
+  }
+
+  @Test
+  fun localResampleChangesOnlyThePickedCells() = runBlocking {
+    val base = WfcGenerator.generate(
+      pixels = ringsPixels(),
+      sourceWidth = width,
+      sourceHeight = height,
+      seed = 1,
+      columns = 48,
+      rows = 64,
+      wrapEdges = true,
+      pixelsPerCell = 1,
+    )
+    val before = base.cellCenters!!.copyOf()
+    val diagnosticModel = WfcNative.modelCreate(
+      base.packedTiles!!,
+      base.packedTiles!!.size / WfcNative.PACKED_TILE_INTS,
+      base.columns,
+      base.rows,
+      relaxedEdges = base.modelRelaxedEdges,
+    )
+    if (diagnosticModel != 0L) {
+      val assignment = base.assignment!!
+      val alternatives = assignment.indices.map {
+        WfcNative.modelCellAlternatives(diagnosticModel, assignment, it)
+      }
+      println(
+        "local resample diagnostic: ${alternatives.count { it > 0 }} cells with alternatives, " +
+          "max ${alternatives.maxOrNull() ?: 0}",
+      )
+      WfcNative.modelDestroy(diagnosticModel)
+    }
+    val evolver = TileEvolver(output = base, cellsPerFrame = 20)
+    try {
+      val after = evolver.nextFrame(seed = 11)
+      println("local resample: ${evolver.lastChanged} changed of 20 picked cells")
+      assertTrue("twenty resamples changed too many cells", evolver.lastChanged <= 20)
+      val visibleChanged = before.indices.count { before[it] != after[it] }
+      println("local resample: $visibleChanged visible cells changed")
+      assertTrue(
+        "the visible frame changed more cells than were resampled",
+        visibleChanged <= 20,
+      )
+      // The undo pass has to arrive at the starting picture exactly, or the evolve clip's loop is a
+      // jump of however many cells the bookkeeping missed.
+      assertArrayEquals(
+        "undoing every change must return the starting picture",
+        before,
+        evolver.pictureAfterUndoing(evolver.changeCount),
+      )
+    } finally {
+      evolver.close()
+    }
   }
 
   @Test

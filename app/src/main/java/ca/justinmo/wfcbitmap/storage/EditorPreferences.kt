@@ -115,6 +115,13 @@ class EditorPreferences(context: Context) {
     preferences.edit().putString(KEY_SOLVE_ANIMATION, value.name).apply()
   }
 
+  fun evolveCells(fallback: Int): Int =
+    preferences.getInt(KEY_EVOLVE_CELLS, fallback).coerceIn(MIN_EVOLVE_CELLS, MAX_EVOLVE_CELLS)
+
+  fun setEvolveCells(value: Int) {
+    preferences.edit().putInt(KEY_EVOLVE_CELLS, value).apply()
+  }
+
   /**
    * The output settings, falling back per field.
    *
@@ -169,5 +176,6 @@ class EditorPreferences(context: Context) {
     const val KEY_VIDEO_FORMAT = "video_format"
     const val KEY_VIDEO_MODE = "video_mode"
     const val KEY_SOLVE_ANIMATION = "solve_animation"
+    const val KEY_EVOLVE_CELLS = "evolve_cells"
   }
 }

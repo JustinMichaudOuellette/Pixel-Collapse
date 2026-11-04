@@ -14,9 +14,11 @@ import org.junit.Test
 /**
  * How big the generated picture is drawn in the preview column.
  *
- * The column is always filled, whatever preview size was generated: the picture is fitted to it, up or
- * down, keeping its shape. A smaller preview is scaled up, one source pixel to a block of them, and a
- * picture too big for the column is fitted to it rather than cropped.
+ * It has to be pixel perfect: every picture pixel is drawn as a whole number of screen pixels, so the
+ * picture is magnified by a whole number or sampled down by a whole divisor. Fitting it to the column
+ * with a fraction -- 1.107 for a 540-pixel picture in a 598-pixel column -- draws some pixels one screen
+ * pixel wide and some two, which is the stretch that a pixel picture must not have. The column's leftover
+ * is padding around the picture instead.
  */
 class PreviewDrawSizeTest {
 
@@ -25,42 +27,61 @@ class PreviewDrawSizeTest {
   private val columnHeight = 1080
 
   @Test
-  fun everyPreviewSizeFillsTheColumn() {
+  fun everyPreviewSizeIsDrawnAtAWholeNumberOfScreenPixelsPerPixel() {
     for (preview in PreviewScale.entries) {
-      val (bitmapWidth, bitmapHeight) = previewPixelSize(
-        OutputAspect.Portrait9x16,
-        preview,
-      )
+      val (bitmapWidth, bitmapHeight) = previewPixelSize(OutputAspect.Portrait9x16, preview)
       val (width, height) = previewDrawSize(bitmapWidth, bitmapHeight, columnWidth, columnHeight)
-      // One of the two sides reaches the column's edge, and neither goes past it.
       assertTrue(
-        "${preview.label} fills the column: ${width}x$height in ${columnWidth}x$columnHeight",
-        (width == columnWidth || height == columnHeight) &&
-          width <= columnWidth && height <= columnHeight,
+        "${preview.label}: ${bitmapWidth}x$bitmapHeight drawn as ${width}x$height is not a whole " +
+          "magnification or a whole division",
+        width % bitmapWidth == 0 || bitmapWidth % width == 0,
       )
-      // And it keeps its shape, to within a pixel: a squashed picture is not a fitted one.
+      // Never stretched past the column, and never distorted: the picture keeps its shape exactly.
+      assertTrue("${preview.label} fits", width <= columnWidth && height <= columnHeight)
       assertEquals(
         "${preview.label} keeps its proportions",
         bitmapWidth.toDouble() / bitmapHeight,
         width.toDouble() / height,
-        0.01,
+        0.0,
       )
     }
   }
 
   @Test
-  fun aSmallerPreviewIsScaledUpToFill() {
-    // 1x is 270x480; fitted to the column it is drawn larger than its own size, not left small.
+  fun aSmallerPreviewIsMagnifiedByAWholeNumber() {
+    // 1x is 270x480: two screen pixels per picture pixel fits the column, three does not.
     val (width, height) = previewDrawSize(270, 480, columnWidth, columnHeight)
-    assertEquals("it fills the column's width", columnWidth, width)
-    assertTrue("and nearly all of its height: $height", height > columnHeight * 0.95)
+    assertEquals(540, width)
+    assertEquals(960, height)
   }
 
   @Test
-  fun aPictureTooBigForTheColumnIsFittedToIt() {
+  fun theLeftoverColumnIsPaddingNotStretch() {
+    val (width, height) = previewDrawSize(540, 960, columnWidth, columnHeight)
+    assertEquals(540, width)
+    assertEquals(960, height)
+    // The column is wider and taller than the picture: that difference is the padding.
+    assertTrue("horizontal padding", columnWidth - width > 0)
+    assertTrue("vertical padding", columnHeight - height > 0)
+  }
+
+  @Test
+  fun aPictureTooBigForTheColumnIsSampledDownByAWholeStep() {
+    // 1216x2160 in a 598x1080 column: a third of it fits, a half does not, so every third picture
+    // pixel stands for one screen pixel.
     val (width, height) = previewDrawSize(1216, 2160, columnWidth, columnHeight)
+    assertEquals(1216 / 3, width)
+    assertEquals(2160 / 3, height)
     assertTrue("it fits: ${width}x$height", width <= columnWidth && height <= columnHeight)
-    assertTrue("it is as large as it can be", width >= columnWidth - 1 || height >= columnHeight - 1)
+  }
+
+  @Test
+  fun pinchZoomStepsByWholeMultiples() {
+    // Zooming must not reintroduce the fraction the rest of this test file is about.
+    assertEquals(540 to 960, previewDrawSize(540, 960, columnWidth, columnHeight, zoom = 1f))
+    assertEquals(1080 to 1920, previewDrawSize(540, 960, columnWidth, columnHeight, zoom = 2f))
+    assertEquals(1080 to 1920, previewDrawSize(540, 960, columnWidth, columnHeight, zoom = 1.6f))
+    assertEquals(1620 to 2880, previewDrawSize(540, 960, columnWidth, columnHeight, zoom = 3f))
   }
 
   @Test

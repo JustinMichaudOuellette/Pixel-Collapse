@@ -140,9 +140,9 @@ private fun maxPreviewSize(aspect: OutputAspect): Pair<Int, Int> = when (aspect)
 /**
  * The solver grid and pixels-per-cell that draw [aspect] at [preview]'s exact pixel size.
  *
- * The pixels-per-cell is the largest whole divisor of both preview sides, up to the scale factor:
- * 4× 9:16 is 270×480 cells at 4 pixels each, while 4× 4:3 is 360×270 cells at 3 pixels each because
- * 810 is not divisible by 4.
+ * The step is chosen so the bitmap is exactly the preview's size: four pixels a cell when four divides
+ * both sides, otherwise the largest divisor of both that does. 4× 9:16 is 270×480 cells at 4 pixels;
+ * 1× 9:16 is 90×160 cells at 3 because 270 is not divisible by 4.
  */
 internal data class PreviewGrid(
   val columns: Int,
@@ -150,14 +150,56 @@ internal data class PreviewGrid(
   val pixelsPerCell: Int,
 )
 
+/** The classic step: four output pixels per cell, i.e. one drawing pixel per kernel cell at four. */
+internal const val CLASSIC_PIXELS_PER_CELL = 4
+
+/**
+ * The square a cell is drawn in, so that the bitmap measures exactly the preview's pixel size.
+ *
+ * Preference order:
+ *
+ *  1. A step of at most four pixels that divides **both** sides and is a whole number of cells. Four
+ *     pixels is the classic look and it is used wherever it fits: 3x3 and 6x6 draw one and two pixel
+ *     cells at four, 12x12 draws four-pixel cells one to one.
+ *  2. The smallest step above four that is a whole number of cells and divides both sides: 9x9 is three
+ *     pixels, 15x15 five, 18x18 six.
+ *  3. When no whole-cell step divides the preview, a step smaller than the cell -- the picture is the
+ *     right size and a block gives up some of its pixels. Downsampling is uniform, so the tiling stays
+ *     intact; stretching a block up to a step it does not divide tears it away from its neighbours.
+ *  4. Only when even that is impossible is the cell itself kept, leaving the bitmap up to `cell - 1`
+ *     pixels short: a whole-cell picture that is a pixel narrow beats one that is the right size and
+ *     smeared.
+ */
+internal fun previewStep(width: Int, height: Int, cellSize: Int): Int {
+  val cell = cellSize.coerceAtLeast(1)
+  fun divides(step: Int) = step > 0 && width % step == 0 && height % step == 0
+
+  for (step in CLASSIC_PIXELS_PER_CELL downTo 1) {
+    if (divides(step) && step % cell == 0) return step
+  }
+  var multiple = ((CLASSIC_PIXELS_PER_CELL / cell) + 1) * cell
+  val limit = minOf(width, height)
+  while (multiple <= limit) {
+    if (divides(multiple)) return multiple
+    multiple += cell
+  }
+  for (step in CLASSIC_PIXELS_PER_CELL downTo 1) {
+    if (divides(step) && step <= cell) return step
+  }
+  return cell
+}
+
 internal fun previewGrid(aspect: OutputAspect, preview: PreviewScale): PreviewGrid {
   val (width, height) = previewPixelSize(aspect, preview)
   // Each step solves a quarter of the width/height of the one above it: 4× is the full preview grid,
-  // 3× three quarters, 2× half and 1× a quarter. Drawing each cell at four pixels keeps the bitmap near
-  // the preview's pixel size while making the lower steps visibly blockier (and much cheaper).
-  val columns = (width / 4).coerceAtLeast(1)
-  val rows = (height / 4).coerceAtLeast(1)
-  return PreviewGrid(columns = columns, rows = rows, pixelsPerCell = 4)
+  // 3× three quarters, 2× half and 1× a quarter. The step keeps the bitmap exactly the preview's size
+  // while making the lower steps visibly blockier (and much cheaper).
+  val step = previewStep(width, height, cellSize = 1)
+  return PreviewGrid(
+    columns = (width / step).coerceAtLeast(1),
+    rows = (height / step).coerceAtLeast(1),
+    pixelsPerCell = step,
+  )
 }
 
 /**

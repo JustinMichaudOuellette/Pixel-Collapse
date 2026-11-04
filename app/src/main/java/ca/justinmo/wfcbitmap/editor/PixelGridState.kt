@@ -30,6 +30,9 @@ import androidx.compose.ui.semantics.selected
 /** Smallest grid allowed in either axis, in cells. */
 const val MIN_GRID_SIZE = 7
 
+/** Largest grid allowed in either axis, in cells. */
+const val MAX_GRID_SIZE = 500
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Data model
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,6 +92,17 @@ class PixelGridState(
     private set
 
   /**
+   * How many drawing pixels one grouped cell is, i.e. the kernel's cell size; 1 when the drawing is not
+   * grouped.
+   *
+   * Every resize moves the grid by whole cells, so the drawing always stays a whole number of cells wide
+   * and tall. Anything else leaves a strip at the edge that the solver never groups: with 3-pixel cells a
+   * 28-wide drawing has a ninth cell that is one pixel wide, and every pattern in it is a fragment.
+   */
+  var cellSize: Int = 1
+    private set
+
+  /**
    * The colour new cells start as, and the one [clear] paints the whole drawing with. It follows the
    * active palette whenever the drawing is migrated to that palette.
    */
@@ -124,7 +138,7 @@ class PixelGridState(
   private var previousColors = arrayOfNulls<Color>(columns * rows)
 
   /** The editor state at one moment. Colours are packed ARGB; the app only ever uses opaque palette colours. */
-  private class Snapshot(val columns: Int, val rows: Int, val argb: IntArray)
+  private class Snapshot(val columns: Int, val rows: Int, val cellSize: Int, val argb: IntArray)
 
   private val undoStack = ArrayDeque<Snapshot>()
   private val redoStack = ArrayDeque<Snapshot>()
@@ -135,10 +149,38 @@ class PixelGridState(
   /** Whether the open edit has changed anything yet, so a no-op edit can give its snapshot back. */
   private var editChanged = false
 
-  fun canAddColumn(): Boolean = columns < 500
-  fun canRemoveColumn(): Boolean = columns > MIN_GRID_SIZE
-  fun canAddRow(): Boolean = rows < 500
-  fun canRemoveRow(): Boolean = rows > MIN_GRID_SIZE
+  /** One grouped cell, in drawing pixels; never zero. */
+  private val cellStep: Int get() = cellSize.coerceAtLeast(1)
+
+  fun canAddColumn(): Boolean = columns + cellStep <= MAX_GRID_SIZE
+  fun canRemoveColumn(): Boolean = columns - cellStep >= smallestSide()
+  fun canAddRow(): Boolean = rows + cellStep <= MAX_GRID_SIZE
+  fun canRemoveRow(): Boolean = rows - cellStep >= smallestSide()
+
+  /**
+   * The smallest side this grouping allows: [MIN_GRID_SIZE] whole cells in each direction.
+   *
+   * [MIN_GRID_SIZE] is a count of cells, not of pixels. Without grouping the two are the same number,
+   * which is why it reads as one; under a 9x9 kernel a cell is 3 pixels, so the smallest legal drawing is
+   * 7 cells = 21 pixels, and a 9-pixel one would be only three cells across.
+   */
+  private fun smallestSide(): Int = MIN_GRID_SIZE * cellStep
+
+  /**
+   * [value] rounded up to a whole number of [step]-sized cells, kept between the editor's smallest grid
+   * and its largest.
+   *
+   * The floor is [MIN_GRID_SIZE] *cells*, i.e. `MIN_GRID_SIZE * step` pixels: a drawing has to hold at
+   * least seven cells each way whatever the grouping, because that is the count the ungrouped minimum has
+   * always meant. Rounding only upwards would leave a drawing below it wherever the starting grid was
+   * already small, and a 9x9 grouping on a 9-pixel drawing would leave three cells rather than seven.
+   */
+  private fun alignUp(value: Int, step: Int): Int {
+    val rounded = ((value + step - 1) / step) * step
+    val floor = MIN_GRID_SIZE * step
+    // A grid already at the limit gives up its last partial cell rather than growing past the limit.
+    return minOf(maxOf(rounded, floor), (MAX_GRID_SIZE / step) * step)
+  }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // History
@@ -252,16 +294,31 @@ class PixelGridState(
    * and there is nothing behind it to undo *to*. A size that disagrees with the pixel count is ignored,
    * because a half-restored grid is worse than a fresh one.
    */
-  fun restoreDrawing(columns: Int, rows: Int, pixels: IntArray) {
+  /**
+   * Replaces the drawing with a saved one, with no history behind it.
+   *
+   * The history is cleared rather than continued: the saved drawing was saved when the app was closed,
+   * and there is nothing behind it to undo *to*. A size that disagrees with the pixel count is ignored,
+   * because a half-restored grid is worse than a fresh one.
+   *
+   * [cellSize] is the grouping the drawing is being restored under: a saved drawing whose saved grouping
+   * had been changed since is grown to a whole number of the new cells, exactly as picking that grouping
+   * in the editor does. Nothing that was drawn is lost; the extra cells are blank.
+   */
+  fun restoreDrawing(columns: Int, rows: Int, pixels: IntArray, cellSize: Int = 1) {
     if (columns < MIN_GRID_SIZE || rows < MIN_GRID_SIZE) return
     if (pixels.size < columns * rows) return
     clearHistory()
-    this.columns = columns
-    this.rows = rows
-    this.pixels.clear()
-    this.pixels.addAll(List(columns * rows) { Color(pixels[it]) })
+    this.cellSize = cellSize.coerceAtLeast(1)
     previousColors = arrayOfNulls(columns * rows)
-    revision++
+    val source = List(columns * rows) { Color(pixels[it]) }
+    replaceGrid(
+      newColumns = alignUp(columns, this.cellSize),
+      newRows = alignUp(rows, this.cellSize),
+      sourceColumns = columns,
+      sourceRows = rows,
+      source = source,
+    )
   }
 
   /** Records the state before a change; a no-op inside an open edit, which already recorded it. */
@@ -292,11 +349,14 @@ class PixelGridState(
   }
 
   private fun snapshot(): Snapshot =
-    Snapshot(columns, rows, IntArray(pixels.size) { pixels[it].toArgb() })
+    Snapshot(columns, rows, cellSize, IntArray(pixels.size) { pixels[it].toArgb() })
 
   private fun restore(step: Snapshot) {
     columns = step.columns
     rows = step.rows
+    // The grouping is part of the shape: undoing a resize that a bigger grouping caused has to put the
+    // cells back too, or the grid would be left not a whole number of them wide.
+    cellSize = step.cellSize
     val restored = step.argb.map { Color(it) }
     pixels.clear()
     pixels.addAll(restored)
@@ -328,17 +388,17 @@ class PixelGridState(
 
   fun addColumnLeft() {
     if (!canAddColumn()) return
+    val count = cellStep
     noteEdit()
-    val newCols = columns + 1
+    val newCols = columns + count
     val newPixels = mutableListOf<Color>()
     val newPrevious = arrayOfNulls<Color>(newCols * rows)
     for (r in 0 until rows) {
-      newPixels.add(defaultColor)
-      newPrevious[r * newCols] = null
+      repeat(count) { newPixels.add(defaultColor) }
       for (c in 0 until columns) {
         val oldIdx = r * columns + c
         newPixels.add(pixels[oldIdx])
-        newPrevious[r * newCols + (c + 1)] = previousColors[oldIdx]
+        newPrevious[r * newCols + (c + count)] = previousColors[oldIdx]
       }
     }
     columns = newCols
@@ -350,8 +410,9 @@ class PixelGridState(
 
   fun addColumnRight() {
     if (!canAddColumn()) return
+    val count = cellStep
     noteEdit()
-    val newCols = columns + 1
+    val newCols = columns + count
     val newPixels = mutableListOf<Color>()
     val newPrevious = arrayOfNulls<Color>(newCols * rows)
     for (r in 0 until rows) {
@@ -360,8 +421,7 @@ class PixelGridState(
         newPixels.add(pixels[oldIdx])
         newPrevious[r * newCols + c] = previousColors[oldIdx]
       }
-      newPixels.add(defaultColor)
-      newPrevious[r * newCols + columns] = null
+      repeat(count) { newPixels.add(defaultColor) }
     }
     columns = newCols
     pixels.clear()
@@ -372,13 +432,14 @@ class PixelGridState(
 
   fun removeColumnLeft() {
     if (!canRemoveColumn()) return
+    val count = cellStep
     noteEdit()
-    val newCols = columns - 1
+    val newCols = columns - count
     val newPixels = mutableListOf<Color>()
     val newPrevious = arrayOfNulls<Color>(newCols * rows)
     for (r in 0 until rows) {
       for (c in 0 until newCols) {
-        val oldIdx = r * columns + (c + 1)
+        val oldIdx = r * columns + (c + count)
         newPixels.add(pixels[oldIdx])
         newPrevious[r * newCols + c] = previousColors[oldIdx]
       }
@@ -392,8 +453,9 @@ class PixelGridState(
 
   fun removeColumnRight() {
     if (!canRemoveColumn()) return
+    val count = cellStep
     noteEdit()
-    val newCols = columns - 1
+    val newCols = columns - count
     val newPixels = mutableListOf<Color>()
     val newPrevious = arrayOfNulls<Color>(newCols * rows)
     for (r in 0 until rows) {
@@ -412,19 +474,17 @@ class PixelGridState(
 
   fun addRowTop() {
     if (!canAddRow()) return
+    val count = cellStep
     noteEdit()
-    val newRows = rows + 1
+    val newRows = rows + count
     val newPixels = mutableListOf<Color>()
     val newPrevious = arrayOfNulls<Color>(columns * newRows)
-    for (c in 0 until columns) {
-      newPixels.add(defaultColor)
-      newPrevious[c] = null
-    }
+    repeat(count) { newPixels.addAll(List(columns) { defaultColor }) }
     for (r in 0 until rows) {
       for (c in 0 until columns) {
         val oldIdx = r * columns + c
         newPixels.add(pixels[oldIdx])
-        newPrevious[(r + 1) * columns + c] = previousColors[oldIdx]
+        newPrevious[(r + count) * columns + c] = previousColors[oldIdx]
       }
     }
     rows = newRows
@@ -436,8 +496,9 @@ class PixelGridState(
 
   fun addRowBottom() {
     if (!canAddRow()) return
+    val count = cellStep
     noteEdit()
-    val newRows = rows + 1
+    val newRows = rows + count
     val newPixels = mutableListOf<Color>()
     val newPrevious = arrayOfNulls<Color>(columns * newRows)
     for (r in 0 until rows) {
@@ -447,10 +508,7 @@ class PixelGridState(
         newPrevious[r * columns + c] = previousColors[oldIdx]
       }
     }
-    for (c in 0 until columns) {
-      newPixels.add(defaultColor)
-      newPrevious[rows * columns + c] = null
-    }
+    repeat(count) { newPixels.addAll(List(columns) { defaultColor }) }
     rows = newRows
     pixels.clear()
     pixels.addAll(newPixels)
@@ -460,13 +518,14 @@ class PixelGridState(
 
   fun removeRowTop() {
     if (!canRemoveRow()) return
+    val count = cellStep
     noteEdit()
-    val newRows = rows - 1
+    val newRows = rows - count
     val newPixels = mutableListOf<Color>()
     val newPrevious = arrayOfNulls<Color>(columns * newRows)
     for (r in 0 until newRows) {
       for (c in 0 until columns) {
-        val oldIdx = (r + 1) * columns + c
+        val oldIdx = (r + count) * columns + c
         newPixels.add(pixels[oldIdx])
         newPrevious[r * columns + c] = previousColors[oldIdx]
       }
@@ -480,8 +539,9 @@ class PixelGridState(
 
   fun removeRowBottom() {
     if (!canRemoveRow()) return
+    val count = cellStep
     noteEdit()
-    val newRows = rows - 1
+    val newRows = rows - count
     val newPixels = mutableListOf<Color>()
     val newPrevious = arrayOfNulls<Color>(columns * newRows)
     for (r in 0 until newRows) {
@@ -491,6 +551,60 @@ class PixelGridState(
         newPrevious[r * columns + c] = previousColors[oldIdx]
       }
     }
+    rows = newRows
+    pixels.clear()
+    pixels.addAll(newPixels)
+    previousColors = newPrevious
+    revision++
+  }
+
+  /**
+   * Takes on a grouping of [size] pixels per cell, growing the drawing to a whole number of those cells
+   * when it is not one already.
+   *
+   * This is the "add space if needed" half of grouping: a 27x20 drawing under 5-pixel cells is 5.4 x 4
+   * cells, and the strip past the last whole cell is part of the drawing the solver would never see.
+   * Rather than drop it, the drawing grows to 30x20 -- on the right and the bottom, where nothing that
+   * was drawn moves -- so every pixel drawn stays in a cell that gets grouped. A side that already is a
+   * whole number of cells is left alone, which is why switching between 6x6 and 12x12 never resizes
+   * anything.
+   */
+  fun fitCells(size: Int) {
+    val step = size.coerceAtLeast(1)
+    val newColumns = alignUp(columns, step)
+    val newRows = alignUp(rows, step)
+    cellSize = step
+    if (newColumns == columns && newRows == rows) return
+    noteEdit()
+    replaceGrid(newColumns, newRows, columns, rows, pixels.toList())
+  }
+
+  /**
+   * Replaces the grid with [newColumns] x [newRows], copying [source] into its top-left corner and
+   * filling the rest with [defaultColor]. Cells the source does not cover are new, so they have no
+   * previous colour to toggle back to.
+   */
+  private fun replaceGrid(
+    newColumns: Int,
+    newRows: Int,
+    sourceColumns: Int,
+    sourceRows: Int,
+    source: List<Color>,
+  ) {
+    val newPixels = ArrayList<Color>(newColumns * newRows)
+    val newPrevious = arrayOfNulls<Color>(newColumns * newRows)
+    for (r in 0 until newRows) {
+      for (c in 0 until newColumns) {
+        if (r < sourceRows && c < sourceColumns) {
+          val oldIdx = r * sourceColumns + c
+          newPixels.add(source[oldIdx])
+          newPrevious[r * newColumns + c] = previousColors.getOrNull(oldIdx)
+        } else {
+          newPixels.add(defaultColor)
+        }
+      }
+    }
+    columns = newColumns
     rows = newRows
     pixels.clear()
     pixels.addAll(newPixels)

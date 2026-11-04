@@ -147,6 +147,19 @@ int wfc_model_tile_source(const wfc_model *model, int tile);
 /* The ARGB pixel a model tile shows (its window centre). */
 int wfc_model_tile_center(const wfc_model *model, int tile);
 
+/*
+ * Evolve, local resample: for each cell in [cells], replace its tile with a weighted random tile that
+ * is compatible with all of its eight solved neighbours. [assignment] is the model-tile index of every
+ * cell and is updated in place. Returns how many cells actually changed.
+ *
+ * This holds the tiling valid without a global re-solve, and changes only the chosen cells.
+ */
+int wfc_model_evolve(const wfc_model *model, int32_t *assignment, const int32_t *cells, int count,
+                     uint32_t seed);
+
+/* How many non-current tiles at [cell] are compatible with its current neighbours. */
+int wfc_model_cell_alternatives(const wfc_model *model, const int32_t *assignment, int cell);
+
 /* Phase timers of the last solve, in nanoseconds: 0 setup, 1 initial propagation, 2 search,
  * 3 variable selection (inside search), 4 tile ordering (inside search). */
 enum {
