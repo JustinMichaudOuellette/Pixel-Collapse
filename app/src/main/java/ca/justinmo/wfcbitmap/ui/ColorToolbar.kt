@@ -92,6 +92,31 @@ fun ColorToolbar(
   }
 }
 
+/** The same palette laid out along a row, for the portrait editor. */
+@Composable
+fun ColorStrip(
+  palette: Palette,
+  selectedColor: Color,
+  onColorSelected: (Color) -> Unit,
+  buttonSize: androidx.compose.ui.unit.Dp = BUTTON_SIZE,
+) {
+  androidx.compose.foundation.lazy.LazyRow(
+    modifier = Modifier
+      .fillMaxWidth()
+      .height(buttonSize),
+  ) {
+    items(palette.colors) { color ->
+      Box(modifier = Modifier.width(buttonSize).fillMaxHeight()) {
+        ColorSwatch(
+          color = color,
+          isSelected = color == selectedColor,
+          onClick = { onColorSelected(color) },
+        )
+      }
+    }
+  }
+}
+
 @Composable
 internal fun PaletteMenu(
   expanded: Boolean,

@@ -126,9 +126,7 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 ## TODOs
 
 - **Info screen** explain the basics, point to the git repo
-- **Settings** increase button size
 - **Improve launcher icon** make it full bleed, improve pattern
-- **Portrait support** adapt the ui for portrait mode
 - **More video styles** — change direction
 - **Onboarding** tutorial and info for the app
 

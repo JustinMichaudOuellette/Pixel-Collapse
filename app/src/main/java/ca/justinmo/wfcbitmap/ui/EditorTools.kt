@@ -21,11 +21,13 @@ import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -209,29 +211,45 @@ class EditorTool(
 )
 
 /**
- * Vertical strip of editor tools, scrolled: there are more tools than fit on a phone in landscape.
+ * Strip or grid of editor tools, scrolled: there are more tools than fit on a phone in one column.
  *
  * An empty list draws nothing rather than an empty strip, so a screen with no tools keeps the drawing
  * as wide as it would be without the toolbar.
  *
- * @param tools drawn top to bottom in list order.
+ * @param tools drawn in list order.
  * @param onExplain called with a tool when its button is held down, for the caller to explain it.
+ * @param columns 1 is the landscape strip; 4 is the portrait grid.
  */
 @Composable
 fun EditorToolbar(
   tools: List<EditorTool>,
   onExplain: (EditorTool) -> Unit = {},
   buttonSize: androidx.compose.ui.unit.Dp = BUTTON_SIZE,
+  columns: Int = 1,
 ) {
   if (tools.isEmpty()) return
+  val columnCount = columns.coerceAtLeast(1)
 
-  LazyColumn(
-    modifier = Modifier
-      .width(buttonSize)
-      .fillMaxHeight(),
-  ) {
-    items(tools) { tool ->
-      EditorToolButton(tool, onExplain, buttonSize)
+  if (columnCount == 1) {
+    LazyColumn(
+      modifier = Modifier
+        .width(buttonSize)
+        .fillMaxHeight(),
+    ) {
+      items(tools) { tool ->
+        EditorToolButton(tool, onExplain, buttonSize, showSeparators = true)
+      }
+    }
+  } else {
+    LazyVerticalGrid(
+      columns = GridCells.Fixed(columnCount),
+      modifier = Modifier
+        .width(buttonSize * columnCount.toFloat())
+        .fillMaxHeight(),
+    ) {
+      gridItems(tools) { tool ->
+        EditorToolButton(tool, onExplain, buttonSize, showSeparators = false)
+      }
     }
   }
 }
@@ -242,14 +260,14 @@ private fun EditorToolButton(
   tool: EditorTool,
   onExplain: (EditorTool) -> Unit,
   buttonSize: androidx.compose.ui.unit.Dp,
+  showSeparators: Boolean,
 ) {
   val shape = RoundedCornerShape(2.dp)
   val armed = tool.selected == true
   Column {
-    if (tool.startsGroup) {
+    if (showSeparators && tool.startsGroup) {
       HorizontalDivider(
-        modifier = Modifier.padding(vertical = 4.dp, horizontal = 3.dp),
-        thickness = 1.dp,
+        thickness = 3.dp,
         color = Color.White.copy(alpha = 0.15f),
       )
     }

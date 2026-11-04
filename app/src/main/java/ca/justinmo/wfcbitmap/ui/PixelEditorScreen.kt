@@ -681,6 +681,117 @@ fun PixelEditorScreen(
       }
     }
 
+    @Composable
+    fun ToolArea(columns: Int = 1) {
+      // The menu hangs off the toolbar it is opened from, so it reads as part of it.
+      Box {
+        EditorToolbar(
+          tools = editorTools,
+          onExplain = { explain(it) },
+          buttonSize = toolButtonDp,
+          columns = columns,
+        )
+        OutputMenu(
+          expanded = outputMenuOpen,
+          output = output,
+          onDismiss = { outputMenuOpen = false },
+          onOutputChange = {
+            onOutputChange(it.withSupportedScale())
+            outputMenuOpen = false
+          },
+        )
+        KernelMenu(
+          expanded = kernelMenuOpen,
+          current = output.kernel,
+          onDismiss = { kernelMenuOpen = false },
+          onKernelChange = { kernel ->
+            onOutputChange(output.copy(kernel = kernel))
+            kernelMenuOpen = false
+          },
+        )
+        ScalerMenu(
+          expanded = scalerMenuOpen,
+          aspect = output.aspect,
+          preview = output.preview,
+          current = output.scaler,
+          currentScale = output.scale,
+          onDismiss = { scalerMenuOpen = false },
+          onSelect = { scaler, scale ->
+            onOutputChange(output.copy(scaler = scaler, scale = scale))
+          },
+        )
+        PaletteMenu(
+          expanded = paletteMenuOpen,
+          palettes = palettes,
+          currentPalette = activePalette,
+          autoMigrateColors = autoMigrateColors,
+          onAutoMigrateColorsChange = onAutoMigrateColorsChange,
+          onDismiss = { paletteMenuOpen = false },
+          onPaletteSelected = { palette ->
+            // Keep the paint tools on a colour the new palette actually has. The caller migrates the
+            // drawing itself; this is the same rule for the one colour that lives in the editor.
+            if (autoMigrateColors) {
+              selectedColor = palette.closestColor(selectedColor)
+            }
+            onPaletteChange(palette)
+            paletteMenuOpen = false
+          },
+        )
+      }
+    }
+
+    if (maxWidth < maxHeight) {
+      // The portrait preview is 960 physical pixels tall, capped only when the screen is genuinely too
+      // short to leave the colour strip and drawing any room.
+      val portraitPreviewHeight = (960f / density.density).dp
+        .coerceAtMost(maxHeight * 0.65f)
+      Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+          modifier = Modifier
+            .height(portraitPreviewHeight)
+            .fillMaxWidth(),
+        ) {
+          Box(
+            modifier = Modifier
+              .weight(1f)
+              .fillMaxHeight()
+              .background(PREVIEW_BACKGROUND),
+          ) {
+            preview()
+          }
+          VerticalDividerLine()
+          ToolArea(columns = 4)
+        }
+        HorizontalDivider(color = MENU_DIVIDER_COLOR)
+        ColorStrip(
+          palette = activePalette,
+          selectedColor = selectedColor,
+          onColorSelected = { selectedColor = it },
+          buttonSize = toolButtonDp,
+        )
+        HorizontalDivider(color = MENU_DIVIDER_COLOR)
+        Box(
+          modifier = Modifier
+            .weight(1f)
+            .fillMaxWidth(),
+        ) {
+          ZoomablePixelCanvas(
+            gridState = gridState,
+            selectedColor = selectedColor,
+            mode = mode,
+            selection = selection,
+            baseCellSizePx = LocalDensity.current.run { BUTTON_SIZE.toPx().roundToInt() },
+            gridStep = if (output.kernel.grouped) output.kernel.cellSize else 1,
+            marksEdgeBand = showsEdgeBand(edgeRuleKept, wrapEdges),
+            onSelectionChange = { selection = it },
+            onColorPicked = { selectedColor = it },
+            onModeConsumed = { mode = EditorMode.Paint },
+            onTap = onTap,
+            onResize = onResize,
+          )
+        }
+      }
+    } else {
     Row(modifier = Modifier.fillMaxSize()) {
       // The slot the 9:16 preview occupies. A wider aspect draws over the part of the editor to the
       // right of it instead of taking width away from the drawing.
@@ -688,60 +799,7 @@ fun PixelEditorScreen(
 
     VerticalDividerLine()
 
-    // The menu hangs off the toolbar it is opened from, so it reads as part of it.
-    Box {
-      EditorToolbar(
-        tools = editorTools,
-        onExplain = { explain(it) },
-        buttonSize = toolButtonDp,
-      )
-      OutputMenu(
-        expanded = outputMenuOpen,
-        output = output,
-        onDismiss = { outputMenuOpen = false },
-        onOutputChange = {
-          onOutputChange(it.withSupportedScale())
-          outputMenuOpen = false
-        },
-      )
-      KernelMenu(
-        expanded = kernelMenuOpen,
-        current = output.kernel,
-        onDismiss = { kernelMenuOpen = false },
-        onKernelChange = { kernel ->
-          onOutputChange(output.copy(kernel = kernel))
-          kernelMenuOpen = false
-        },
-      )
-      ScalerMenu(
-        expanded = scalerMenuOpen,
-        aspect = output.aspect,
-        preview = output.preview,
-        current = output.scaler,
-        currentScale = output.scale,
-        onDismiss = { scalerMenuOpen = false },
-        onSelect = { scaler, scale ->
-          onOutputChange(output.copy(scaler = scaler, scale = scale))
-        },
-      )
-      PaletteMenu(
-        expanded = paletteMenuOpen,
-        palettes = palettes,
-        currentPalette = activePalette,
-        autoMigrateColors = autoMigrateColors,
-        onAutoMigrateColorsChange = onAutoMigrateColorsChange,
-        onDismiss = { paletteMenuOpen = false },
-        onPaletteSelected = { palette ->
-          // Keep the paint tools on a colour the new palette actually has. The caller migrates the
-          // drawing itself; this is the same rule for the one colour that lives in the editor.
-          if (autoMigrateColors) {
-            selectedColor = palette.closestColor(selectedColor)
-          }
-          onPaletteChange(palette)
-          paletteMenuOpen = false
-        },
-      )
-    }
+    ToolArea()
 
     VerticalDividerLine()
 
@@ -805,6 +863,7 @@ fun PixelEditorScreen(
         },
     ) {
       preview()
+    }
     }
 
     // Over the drawing rather than beside it: the explanation is about a button still under the finger,

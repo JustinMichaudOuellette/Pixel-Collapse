@@ -790,10 +790,15 @@ fun ZoomablePixelCanvas(
           .offset(x = with(LocalDensity.current) { (-cs).toDp() }, y = with(LocalDensity.current) { (leftPlusRow * cs).toDp() })
       )
 
-      // Right side (- and + next to right edge at x = columns * cs)
+      // Right side (- and + next to right edge at x = columns * cs). Resizing panning the canvas by the
+      // same screen distance keeps the edge buttons under the finger instead of sliding away.
       SubtleCellButton(
         text = "-",
-        onClick = { gridState.removeColumnRight(); onResize() },
+        onClick = {
+          gridState.removeColumnRight()
+          offset = Offset(offset.x + cs * scale, offset.y)
+          onResize()
+        },
         enabled = gridState.canRemoveColumn(),
         modifier = Modifier
           .size(cellDp)
@@ -801,7 +806,11 @@ fun ZoomablePixelCanvas(
       )
       SubtleCellButton(
         text = "+",
-        onClick = { gridState.addColumnRight(); onResize() },
+        onClick = {
+          gridState.addColumnRight()
+          offset = Offset(offset.x - cs * scale, offset.y)
+          onResize()
+        },
         enabled = gridState.canAddColumn(),
         modifier = Modifier
           .size(cellDp)
@@ -826,10 +835,14 @@ fun ZoomablePixelCanvas(
           .offset(x = with(LocalDensity.current) { (topPlusCol * cs).toDp() }, y = with(LocalDensity.current) { (-cs).toDp() })
       )
 
-      // Bottom side (- and + next to bottom edge at y = rows * cs)
+      // Bottom side (- and + next to bottom edge at y = rows * cs), anchored the same way.
       SubtleCellButton(
         text = "-",
-        onClick = { gridState.removeRowBottom(); onResize() },
+        onClick = {
+          gridState.removeRowBottom()
+          offset = Offset(offset.x, offset.y + cs * scale)
+          onResize()
+        },
         enabled = gridState.canRemoveRow(),
         modifier = Modifier
           .size(cellDp)
@@ -837,7 +850,11 @@ fun ZoomablePixelCanvas(
       )
       SubtleCellButton(
         text = "+",
-        onClick = { gridState.addRowBottom(); onResize() },
+        onClick = {
+          gridState.addRowBottom()
+          offset = Offset(offset.x, offset.y - cs * scale)
+          onResize()
+        },
         enabled = gridState.canAddRow(),
         modifier = Modifier
           .size(cellDp)
