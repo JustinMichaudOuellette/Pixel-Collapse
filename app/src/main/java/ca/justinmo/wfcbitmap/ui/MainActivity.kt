@@ -1,5 +1,6 @@
 package ca.justinmo.wfcbitmap.ui
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
@@ -8,6 +9,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -70,7 +72,7 @@ import ca.justinmo.wfcbitmap.palette.Palette
 import ca.justinmo.wfcbitmap.storage.DrawingStore
 import ca.justinmo.wfcbitmap.storage.EditorSnapshot
 import ca.justinmo.wfcbitmap.storage.EditorStateHolder
-import ca.justinmo.wfcbitmap.storage.PatternStore
+import ca.justinmo.wfcbitmap.storage.PatternGallery
 import ca.justinmo.wfcbitmap.storage.SavedPattern
 import ca.justinmo.wfcbitmap.ui.theme.WFCBitmapTheme
 import ca.justinmo.wfcbitmap.video.GifEncoder
@@ -318,8 +320,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     }
   }
 
-  val patternStore = remember(context) { PatternStore.forDirectory(context.filesDir) }
-  var savePatternDialogOpen by remember { mutableStateOf(false) }
+  val patternGallery = remember(context) { PatternGallery(context) }
   var loadPatternDialogOpen by remember { mutableStateOf(false) }
   var videoExportOpen by remember { mutableStateOf(false) }
   var videoPreviewOpen by remember { mutableStateOf(false) }
@@ -660,14 +661,12 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(mirrorVertical) { requestGeneration() }
 
   /*
-   * Saving and sharing write the picture that is on screen, which is the generated bitmap.
+   * Sharing writes the picture that is on screen, which is the generated bitmap.
    *
    * The bitmap is copied here, on the main thread, before the write: the generator reuses its render
    * targets, so the live bitmap can be repainted by the next generation while the encoder is reading
    * it. A 304x540 copy is cheap enough to belong on the main thread.
    */
-  var pictureToSave by remember { mutableStateOf<Bitmap?>(null) }
-
   /** The picture at the output size that was chosen, copied off the generator's reusable bitmap. */
   fun currentPicture(): Bitmap? = output?.bitmap?.copy(Bitmap.Config.ARGB_8888, false)
 
@@ -1459,82 +1458,6 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   fun savedSize(): Pair<Int, Int> =
     savedPixelSize(outputSettings.aspect, outputSettings.scale, outputSettings.preview)
 
-  fun writePicture(picture: Bitmap) {
-    scope.launch {
-      val (width, height) = savedSize()
-      Log.i(
-        TAG,
-        "Saving ${picture.width}x${picture.height} as ${width}x${height} " +
-          "(${outputSettings.aspect.label}, preview ${outputSettings.preview.label}, " +
-          "size ${outputSettings.scale.label})",
-      )
-      val outcome = runCatching {
-        ImageSaver.saveToGallery(
-          context,
-          picture,
-          width = width,
-          height = height,
-          scaler = outputSettings.scaler,
-          scaleFactor = outputSettings.scale.factor.toInt(),
-        )
-      }
-      outcome.fold(
-        onSuccess = { saved ->
-          val viewUri = runCatching {
-            ImageSaver.prepareShare(
-              context = context,
-              bitmap = picture,
-              width = width,
-              height = height,
-              scaler = outputSettings.scaler,
-              scaleFactor = outputSettings.scale.factor.toInt(),
-            )
-          }.getOrNull()
-          message = EditorMessage(
-            text = "Saved to the gallery",
-            actionLabel = "View",
-            onAction = { viewPicture(viewUri ?: saved) },
-          )
-        },
-        onFailure = { error ->
-          Log.w(TAG, "Could not save the picture", error)
-          // No button: the reason is the whole of the news, and there is nothing to open.
-          message = EditorMessage(tooBigMessage(error) ?: "Could not save the picture")
-        },
-      )
-    }
-  }
-
-  // Only reached on API 26-28; from 29 the write needs no permission and never gets here.
-  val writePermission = rememberLauncherForActivityResult(
-    ActivityResultContracts.RequestPermission()
-  ) { granted ->
-    val picture = pictureToSave
-    pictureToSave = null
-    if (granted && picture != null) {
-      writePicture(picture)
-    } else {
-      Toast.makeText(context, "Saving needs permission to write pictures", Toast.LENGTH_SHORT).show()
-    }
-  }
-
-  fun savePicture() {
-    val picture = currentPicture()
-    if (picture == null) {
-      Toast.makeText(context, nothingToUse(), Toast.LENGTH_SHORT).show()
-      return
-    }
-    val needsPermission = ImageSaver.needsLegacyWritePermission() &&
-      ContextCompat.checkSelfPermission(context, ImageSaver.LEGACY_WRITE_PERMISSION) !=
-      PackageManager.PERMISSION_GRANTED
-    if (needsPermission) {
-      pictureToSave = picture
-      writePermission.launch(ImageSaver.LEGACY_WRITE_PERMISSION)
-    } else {
-      writePicture(picture)
-    }
-  }
-
   /*
    * Sharing hands the same picture to whatever app will take it. It goes through the app's cache and the
    * FileProvider declared in the manifest, which is why this needs no permission and cannot expose
@@ -1565,6 +1488,69 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         val reason = cause?.let { tooBigMessage(it) } ?: "Could not share the picture"
         Toast.makeText(context, reason, Toast.LENGTH_SHORT).show()
       }
+    }
+  }
+
+  /**
+   * The single Save: the PNG is the current generated preview, the pattern (drawing, palette and
+   * settings) travels in its JSON metadata, and the file name is generated for the gallery.
+   */
+  fun savePattern() {
+    val preview = currentPicture()
+    if (preview == null) {
+      Toast.makeText(context, nothingToUse(), Toast.LENGTH_SHORT).show()
+      return
+    }
+    val snapshot = snapshotProvider()
+    val width = preview.width
+    val height = preview.height
+    val pixels = IntArray(width * height)
+    preview.getPixels(pixels, 0, width, 0, 0, width, height)
+    preview.recycle()
+    scope.launch {
+      val saved = patternGallery.save(
+        palette = activePalette,
+        snapshot = snapshot,
+        previewPixels = pixels,
+        previewWidth = width,
+        previewHeight = height,
+      )
+      message = if (saved != null) {
+        EditorMessage("Pattern saved to the gallery", "View") { viewPicture(saved) }
+      } else {
+        EditorMessage("Could not save that pattern")
+      }
+    }
+  }
+
+  fun loadPatterns() {
+    scope.launch {
+      savedPatterns = patternGallery.list()
+      loadPatternDialogOpen = true
+    }
+  }
+
+  // Reading the pattern images from the gallery album is a media read on every supported API level.
+  val readMediaPermission = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestPermission()
+  ) { granted ->
+    if (granted) {
+      loadPatterns()
+    } else {
+      Toast.makeText(context, "The pattern picker needs access to gallery images", Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  fun openPatternPicker() {
+    val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      Manifest.permission.READ_MEDIA_IMAGES
+    } else {
+      Manifest.permission.READ_EXTERNAL_STORAGE
+    }
+    if (ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED) {
+      loadPatterns()
+    } else {
+      readMediaPermission.launch(permission)
     }
   }
 
@@ -1621,17 +1607,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onResize = {
       requestGeneration()
     },
-    onSave = { savePicture() },
+    onSave = { savePattern() },
     onShare = { sharePicture() },
-    onSavePattern = { savePatternDialogOpen = true },
-    onLoadPattern = {
-      scope.launch {
-        savedPatterns = withContext(Dispatchers.IO) {
-          patternStore.list().mapNotNull { patternStore.load(it.id) }
-        }
-        loadPatternDialogOpen = true
-      }
-    },
+    onLoadPattern = { openPatternPicker() },
     onExportVideo = { videoExportOpen = true },
     onExit = { exitApp() },
     // Only a restored session has a colour to start with; otherwise the palette's first swatch is it.
@@ -1708,26 +1686,6 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onDismiss = { videoPreviewOpen = false },
   )
 
-  if (savePatternDialogOpen) {
-    SavePatternDialog(
-      onDismiss = { savePatternDialogOpen = false },
-      onSave = { name ->
-        val snapshot = snapshotProvider()
-        savePatternDialogOpen = false
-        scope.launch {
-          val saved = withContext(Dispatchers.IO) {
-            patternStore.save(name, activePalette, snapshot)
-          }
-          message = if (saved != null) {
-            EditorMessage("Pattern saved")
-          } else {
-            EditorMessage("Could not save that pattern")
-          }
-        }
-      },
-    )
-  }
-
   if (loadPatternDialogOpen) {
     LoadPatternDialog(
       patterns = savedPatterns,
@@ -1735,7 +1693,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       onLoad = { metadata ->
         loadPatternDialogOpen = false
         scope.launch {
-          val saved = withContext(Dispatchers.IO) { patternStore.load(metadata.id) }
+          val saved = savedPatterns.firstOrNull { it.metadata.id == metadata.id }
           if (saved == null) {
             message = EditorMessage("Could not load that pattern")
             return@launch
@@ -1793,10 +1751,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       },
       onDelete = { metadata ->
         scope.launch {
-          val deleted = withContext(Dispatchers.IO) { patternStore.delete(metadata.id) }
-          savedPatterns = withContext(Dispatchers.IO) {
-            patternStore.list().mapNotNull { patternStore.load(it.id) }
-          }
+          val deleted = patternGallery.delete(metadata.id)
+          savedPatterns = patternGallery.list()
           message = if (deleted) {
             EditorMessage("Pattern deleted")
           } else {

@@ -35,7 +35,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AutoFixHigh
-import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.ChangeHistory
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Colorize
@@ -46,12 +45,12 @@ import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.Flip
-import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Palette as PaletteIcon
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Redo
@@ -133,16 +132,13 @@ fun PixelEditorScreen(
   onTap: () -> Unit = {},
   onResize: () -> Unit = {},
   /**
-   * Called when the Save tool is tapped: the caller owns the generated bitmap, so writing it out is
-   * the caller's job. A drawing that has not produced a picture yet is still a valid save request;
-   * what to say about that is also the caller's call.
+   * Called when the Save tool is tapped: it writes the pattern PNG with its JSON metadata into the
+   * gallery. The caller owns the snapshot and the naming dialog.
    */
   onSave: () -> Unit = {},
   /** Called when the Share tool is tapped; the caller owns the bitmap and the chooser. */
   onShare: () -> Unit = {},
-  /** Called when the Save pattern tool is tapped. */
-  onSavePattern: () -> Unit = {},
-  /** Called when the Load pattern tool is tapped. */
+  /** Called when the pattern picker tool is tapped. */
   onLoadPattern: () -> Unit = {},
   /** Called when the Video export tool is tapped. */
   onExportVideo: () -> Unit = {},
@@ -567,18 +563,14 @@ fun PixelEditorScreen(
       onClick = { onMirrorVerticalChange(!mirrorVertical) },
     ),
 
-    // A pattern is the drawing plus its palette, kept inside the app so it can be loaded again instead
-    // of being written out as a picture.
+    // The single save writes the pattern, not a flattened picture: the PNG carries the drawing and its
+    // JSON description, and the picker reads it back from the gallery.
     EditorTool(
-      icon = Icons.Default.BookmarkAdd,
-      contentDescription = "Save the drawing as a pattern",
-      explanation = "Saves this drawing and its palette inside the app so you can load it again later.",
+      icon = Icons.Default.PhotoLibrary,
+      contentDescription = "Choose a pattern from the gallery",
+      explanation = "Opens the app's pattern picker over the gallery and loads the drawing, palette and " +
+        "settings from the selected pattern.",
       startsGroup = true,
-    ) { onSavePattern() },
-    EditorTool(
-      icon = Icons.Default.FolderOpen,
-      contentDescription = "Load a saved pattern",
-      explanation = "Brings back a saved drawing and the palette it was made with.",
     ) { onLoadPattern() },
 
     // A movie of the drawing: a wide panorama is generated and a frame-sized window pans across it, looping.
@@ -592,8 +584,9 @@ fun PixelEditorScreen(
 
     EditorTool(
       icon = Icons.Default.Save,
-      contentDescription = "Save the picture to the gallery",
-      explanation = "Writes the picture as it is on the left to your gallery.",
+      contentDescription = "Save the pattern to the gallery",
+      explanation = "Writes the drawing, its palette and its generation settings into the gallery as a " +
+        "PNG with an extensible JSON description. This is the single save for the app.",
       startsGroup = true,
     ) { onSave() },
     EditorTool(

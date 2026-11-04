@@ -1,36 +1,28 @@
 package ca.justinmo.wfcbitmap.ui
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import android.graphics.Bitmap
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -49,23 +41,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import ca.justinmo.wfcbitmap.storage.EditorSnapshot
+import ca.justinmo.wfcbitmap.storage.PatternMetadata
+import ca.justinmo.wfcbitmap.storage.SavedPattern
 
 /** Asks for a name and saves the current drawing as a pattern. */
 @OptIn(ExperimentalComposeUiApi::class)
@@ -156,7 +147,7 @@ internal fun LoadPatternDialog(
           verticalAlignment = Alignment.CenterVertically,
         ) {
           Text(
-            text = "Load pattern",
+            text = "Choose a pattern",
             color = Color.White,
             fontSize = 20.sp,
             modifier = Modifier.weight(1f),
@@ -177,7 +168,10 @@ internal fun LoadPatternDialog(
               .fillMaxWidth(),
             contentAlignment = Alignment.Center,
           ) {
-            Text("No saved patterns yet.", color = Color.White)
+            Text(
+              "No patterns in the gallery yet.\nUse Save pattern to put one there.",
+              color = Color.White,
+            )
           }
         } else {
           LazyVerticalGrid(
@@ -193,7 +187,7 @@ internal fun LoadPatternDialog(
               PatternCell(
                 pattern = pattern,
                 onClick = { onLoad(pattern.metadata) },
-                onDelete = { pendingDelete = pattern.metadata },
+                onLongClick = { pendingDelete = pattern.metadata },
               )
             }
           }
@@ -208,15 +202,15 @@ internal fun LoadPatternDialog(
       containerColor = Color.Black,
       titleContentColor = Color.White,
       textContentColor = Color.White,
-      title = { Text("Delete pattern") },
-      text = { Text("Delete \"${pattern.name}\"? This cannot be undone.") },
+      title = { Text("Delete pattern?") },
+      text = { Text("This cannot be undone.") },
       confirmButton = {
         TextButton(
           onClick = {
             pendingDelete = null
             onDelete(pattern)
           },
-          colors = ButtonDefaults.textButtonColors(contentColor = Color.White),
+          colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFFF5252)),
         ) { Text("Delete") }
       },
       dismissButton = {
@@ -229,21 +223,34 @@ internal fun LoadPatternDialog(
   }
 }
 
-/** One pattern cell: the drawing fills the cell, with its name and delete action over it. */
+/** One pattern cell: the preview fills the cell; long-press is the delete action. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PatternCell(
   pattern: SavedPattern,
   onClick: () -> Unit,
-  onDelete: () -> Unit,
+  onLongClick: () -> Unit,
 ) {
-  val image = remember(pattern.snapshot) { pattern.snapshot.toImageBitmap() }
+  val image = remember(pattern.snapshot, pattern.previewPixels) {
+    val preview = pattern.previewPixels
+    if (preview != null && pattern.previewWidth > 0 && pattern.previewHeight > 0) {
+      Bitmap.createBitmap(
+        preview,
+        pattern.previewWidth,
+        pattern.previewHeight,
+        Bitmap.Config.ARGB_8888,
+      ).asImageBitmap()
+    } else {
+      pattern.snapshot.toImageBitmap()
+    }
+  }
 
   Box(
     modifier = Modifier
       .fillMaxWidth()
       .aspectRatio(1f)
       .clip(RoundedCornerShape(6.dp))
-      .clickable(onClick = onClick)
+      .combinedClickable(onClick = onClick, onLongClick = onLongClick)
       .background(Color.Black),
   ) {
     Image(
@@ -253,52 +260,6 @@ private fun PatternCell(
       contentScale = ContentScale.Crop,
       filterQuality = FilterQuality.None,
     )
-    Column(
-      modifier = Modifier
-        .align(Alignment.BottomStart)
-        .fillMaxWidth()
-        .padding(horizontal = 8.dp, vertical = 6.dp),
-    ) {
-      Text(
-        text = pattern.metadata.name,
-        color = Color.White,
-        fontSize = 12.sp,
-        maxLines = 1,
-        style = TextStyle(
-          shadow = Shadow(
-            color = Color.Black,
-            offset = Offset(1f, 1f),
-            blurRadius = 3f,
-          ),
-        ),
-      )
-    }
-    // The icon carries its own shadow instead of a badge: a blurred black copy underneath the white
-    // glyph, with no circle behind it.
-    Box(
-      modifier = Modifier
-        .align(Alignment.TopEnd)
-        .padding(4.dp)
-        .size(26.dp)
-        .clickable(onClick = onDelete),
-      contentAlignment = Alignment.Center,
-    ) {
-      Icon(
-        Icons.Default.Delete,
-        contentDescription = null,
-        tint = Color.Black.copy(alpha = 0.8f),
-        modifier = Modifier
-          .size(15.dp)
-          .offset(x = 1.dp, y = 1.dp)
-          .blur(2.dp),
-      )
-      Icon(
-        Icons.Default.Delete,
-        contentDescription = "Delete ${pattern.metadata.name}",
-        tint = Color.White,
-        modifier = Modifier.size(15.dp),
-      )
-    }
   }
 }
 

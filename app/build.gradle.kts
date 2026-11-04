@@ -1,6 +1,7 @@
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
+  alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -83,6 +84,7 @@ dependencies {
   // Toolbar glyphs (Save, Clear, ...). The extended set is large, but R8 removes the icons nothing
   // references, so only the handful used here reach the release APK.
   implementation(libs.androidx.compose.material.icons.extended)
+  implementation(libs.kotlinx.serialization.json)
   testImplementation(libs.junit)
   // Compose *testing* support: it was on the app's main classpath, which dragged the whole AR/XR
   // runtime (about 7 MB of native libraries) into the APK and made R8 fail on the XR extension

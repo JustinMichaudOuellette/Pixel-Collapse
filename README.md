@@ -129,7 +129,6 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 - **Settings** increase button size
 - **Improve launcher icon** make it full bleed, improve pattern
 - **Portrait support** adapt the ui for portrait mode
-- **No Bookmarks** instead rely on the pattern saved in the gallery folder. make sure the pattern is extensible so write it as a json or something similar which would be better. We will need to implement a custom in app photo picker for this.
 - **More video styles** — change direction
 - **Onboarding** tutorial and info for the app
 

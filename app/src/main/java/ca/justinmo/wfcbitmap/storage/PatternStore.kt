@@ -29,10 +29,13 @@ data class PatternMetadata(
   val savedAtMillis: Long,
 )
 
-/** A saved pattern with its full drawing snapshot. */
+/** A saved pattern with its full drawing snapshot and the PNG preview shown in the picker. */
 data class SavedPattern(
   val metadata: PatternMetadata,
   val snapshot: EditorSnapshot,
+  val previewPixels: IntArray? = null,
+  val previewWidth: Int = snapshot.columns,
+  val previewHeight: Int = snapshot.rows,
 )
 
 /**

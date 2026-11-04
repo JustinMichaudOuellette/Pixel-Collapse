@@ -6,10 +6,8 @@ import ca.justinmo.wfcbitmap.storage.*
 import ca.justinmo.wfcbitmap.palette.*
 import ca.justinmo.wfcbitmap.editor.*
 
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import java.io.ByteArrayOutputStream
-import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.util.Base64
 import java.util.zip.CRC32
@@ -31,8 +29,6 @@ import java.util.zip.Inflater
  */
 internal object PatternPng {
 
-  private const val MAGIC = 0x57464350 // "WFCP"
-  private const val VERSION = 3
   private const val KEYWORD = "PixelCollapsePattern"
   private const val COLOR_TYPE_RGBA = 6
   private const val BYTES_PER_PIXEL = 4
@@ -41,13 +37,25 @@ internal object PatternPng {
     0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
   )
 
-  /** Encodes [snapshot] as a PNG, with [metadata] in its `tEXt` chunk. */
-  fun encode(metadata: PatternMetadata, snapshot: EditorSnapshot): ByteArray {
+  /**
+   * Encodes [previewPixels] as the PNG image, with [snapshot] (the pattern) and [metadata] in the
+   * `tEXt` chunk.
+   *
+   * The defaults draw the pattern itself at one pixel per cell; the gallery save passes the editor's
+   * generated preview instead, and the pattern travels in the JSON.
+   */
+  fun encode(
+    metadata: PatternMetadata,
+    snapshot: EditorSnapshot,
+    previewPixels: IntArray = snapshot.pixels,
+    previewWidth: Int = snapshot.columns,
+    previewHeight: Int = snapshot.rows,
+  ): ByteArray {
     val out = ByteArrayOutputStream()
     out.write(SIGNATURE)
-    out.write(chunk("IHDR", headerData(snapshot.columns, snapshot.rows)))
+    out.write(chunk("IHDR", headerData(previewWidth, previewHeight)))
     out.write(chunk("tEXt", textData(metadata, snapshot)))
-    out.write(chunk("IDAT", compressedPixels(snapshot)))
+    out.write(chunk("IDAT", compressedPixels(previewPixels, previewWidth, previewHeight)))
     out.write(chunk("IEND", ByteArray(0)))
     return out.toByteArray()
   }
@@ -59,11 +67,15 @@ internal object PatternPng {
   /** Reads the image and the metadata into a pattern. */
   fun decode(bytes: ByteArray, id: String): SavedPattern? {
     val parsed = parse(bytes, id) ?: return null
-    val pixels = inflatePixels(parsed.compressed, parsed.width, parsed.height) ?: return null
+    val previewPixels = inflatePixels(parsed.compressed, parsed.width, parsed.height) ?: return null
     val payload = parsed.payload
+    val pixels = payload.pixels ?: previewPixels
+    val columns = payload.metadata.columns
+    val rows = payload.metadata.rows
+    if (pixels.size != columns * rows) return null
     val snapshot = EditorSnapshot(
-      columns = parsed.width,
-      rows = parsed.height,
+      columns = columns,
+      rows = rows,
       pixels = pixels,
       seed = payload.seed,
       colorArgb = payload.colorArgb,
@@ -78,31 +90,23 @@ internal object PatternPng {
       paletteId = payload.metadata.paletteId,
     )
     if (!snapshot.isValid) return null
-    return SavedPattern(payload.metadata, snapshot)
+    return SavedPattern(
+      metadata = payload.metadata,
+      snapshot = snapshot,
+      previewPixels = previewPixels,
+      previewWidth = parsed.width,
+      previewHeight = parsed.height,
+    )
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Reading
   // ─────────────────────────────────────────────────────────────────────────────
 
-  private class Payload(
-    val metadata: PatternMetadata,
-    val seed: Int,
-    val colorArgb: Int,
-    val aspectName: String,
-    val previewName: String,
-    val scaleName: String,
-    val scalerName: String,
-    val kernelName: String,
-    val wrapEdges: Boolean,
-    val mirrorHorizontal: Boolean,
-    val mirrorVertical: Boolean,
-  )
-
   private class Parsed(
     val width: Int,
     val height: Int,
-    val payload: Payload,
+    val payload: PatternPayload,
     val compressed: ByteArray,
   )
 
@@ -115,7 +119,7 @@ internal object PatternPng {
     var width = 0
     var height = 0
     var sawHeader = false
-    var payload: Payload? = null
+    var payload: PatternPayload? = null
     val compressed = ByteArrayOutputStream()
     var offset = 8
 
@@ -144,8 +148,7 @@ internal object PatternPng {
           val compression = bytes[dataStart + 10].toInt() and 0xFF
           val filter = bytes[dataStart + 11].toInt() and 0xFF
           val interlace = bytes[dataStart + 12].toInt() and 0xFF
-          if (width !in EditorSnapshot.MIN_SIDE..EditorSnapshot.MAX_SIDE) return null
-          if (height !in EditorSnapshot.MIN_SIDE..EditorSnapshot.MAX_SIDE) return null
+          if (width <= 0 || height <= 0 || width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE) return null
           if (bitDepth != 8 || colourType != COLOR_TYPE_RGBA) return null
           if (compression != 0 || filter != 0 || interlace != 0) return null
           sawHeader = true
@@ -178,7 +181,7 @@ internal object PatternPng {
     id: String,
     width: Int,
     height: Int,
-  ): Payload? {
+  ): PatternPayload? {
     val separator = (start until start + length).firstOrNull { bytes[it] == 0.toByte() }
       ?: return null
     val keyword = String(bytes, start, separator - start, Charsets.US_ASCII)
@@ -189,77 +192,12 @@ internal object PatternPng {
       start + length - (separator + 1),
       Charsets.US_ASCII,
     )
-    val payload = try {
-      Base64.getDecoder().decode(encoded)
+    val json = try {
+      String(Base64.getDecoder().decode(encoded), Charsets.UTF_8)
     } catch (_: IllegalArgumentException) {
       return null
     }
-    return decodePayload(payload, id, width, height)
-  }
-
-  private fun decodePayload(
-    bytes: ByteArray,
-    id: String,
-    width: Int,
-    height: Int,
-  ): Payload? {
-    return try {
-      DataInputStream(bytes.inputStream()).use { input ->
-        if (input.readInt() != MAGIC) return null
-        val version = input.readInt()
-        if (version !in 1..VERSION) return null
-        val name = input.readUTF()
-        val paletteId = input.readUTF()
-        val paletteName = input.readUTF()
-        val colourCount = input.readInt()
-        if (colourCount !in 0..MAX_COLORS) return null
-        val colours = ArrayList<Color>(colourCount)
-        repeat(colourCount) { colours.add(Color(input.readInt())) }
-        val savedAt = input.readLong()
-        val seed = input.readInt()
-        val colorArgb = input.readInt()
-        val aspectName = input.readUTF()
-        val previewName = input.readUTF()
-        val scaleName = input.readUTF()
-        val scalerName = if (version >= 2) {
-          input.readUTF()
-        } else {
-          PixelArtScaler.Nearest.name
-        }
-        val kernelName = if (version >= 3) {
-          input.readUTF()
-        } else {
-          KernelSize.Three.name
-        }
-        val wrapEdges = input.readBoolean()
-        val mirrorHorizontal = input.readBoolean()
-        val mirrorVertical = input.readBoolean()
-        Payload(
-          metadata = PatternMetadata(
-            id = id,
-            name = name,
-            paletteId = paletteId,
-            paletteName = paletteName,
-            paletteColors = colours,
-            columns = width,
-            rows = height,
-            savedAtMillis = savedAt,
-          ),
-          seed = seed,
-          colorArgb = colorArgb,
-          aspectName = aspectName,
-          previewName = previewName,
-          scaleName = scaleName,
-          scalerName = scalerName,
-          kernelName = kernelName,
-          wrapEdges = wrapEdges,
-          mirrorHorizontal = mirrorHorizontal,
-          mirrorVertical = mirrorVertical,
-        )
-      }
-    } catch (_: Exception) {
-      null
-    }
+    return PatternJson.decode(json, id, width, height)
   }
 
   private fun inflatePixels(compressed: ByteArray, width: Int, height: Int): IntArray? {
@@ -365,41 +303,19 @@ internal object PatternPng {
   }
 
   private fun textData(metadata: PatternMetadata, snapshot: EditorSnapshot): ByteArray {
-    val payload = ByteArrayOutputStream()
-    DataOutputStream(payload).use { out ->
-      out.writeInt(MAGIC)
-      out.writeInt(VERSION)
-      out.writeUTF(metadata.name)
-      out.writeUTF(metadata.paletteId)
-      out.writeUTF(metadata.paletteName)
-      out.writeInt(metadata.paletteColors.size)
-      for (colour in metadata.paletteColors) out.writeInt(colour.toArgb())
-      out.writeLong(metadata.savedAtMillis)
-      out.writeInt(snapshot.seed)
-      out.writeInt(snapshot.colorArgb)
-      out.writeUTF(snapshot.aspectName)
-      out.writeUTF(snapshot.previewName)
-      out.writeUTF(snapshot.scaleName)
-      out.writeUTF(snapshot.scalerName)
-      out.writeUTF(snapshot.kernelName)
-      out.writeBoolean(snapshot.wrapEdges)
-      out.writeBoolean(snapshot.mirrorHorizontal)
-      out.writeBoolean(snapshot.mirrorVertical)
-    }
-    val encoded = Base64.getEncoder().encode(payload.toByteArray())
+    val encoded = Base64.getEncoder()
+      .encode(PatternJson.encode(metadata, snapshot).toByteArray(Charsets.UTF_8))
     val keyword = KEYWORD.toByteArray(Charsets.US_ASCII)
     return keyword + byteArrayOf(0) + encoded
   }
 
-  private fun compressedPixels(snapshot: EditorSnapshot): ByteArray {
-    val width = snapshot.columns
-    val height = snapshot.rows
+  private fun compressedPixels(pixels: IntArray, width: Int, height: Int): ByteArray {
     val stride = width * BYTES_PER_PIXEL + 1
     val raw = ByteArray(stride * height)
     for (row in 0 until height) {
       raw[row * stride] = 0 // filter: None
       for (column in 0 until width) {
-        val argb = snapshot.pixels[row * width + column]
+        val argb = pixels[row * width + column]
         val at = row * stride + 1 + column * BYTES_PER_PIXEL
         raw[at] = (argb ushr 16).toByte()
         raw[at + 1] = (argb ushr 8).toByte()
@@ -445,5 +361,6 @@ internal object PatternPng {
       ((bytes[offset + 2].toInt() and 0xFF) shl 8) or
       (bytes[offset + 3].toInt() and 0xFF)
 
-  private const val MAX_COLORS = 4096
+  /** The preview PNG can be larger than the drawing; the drawing's own limit is checked in JSON. */
+  private const val MAX_IMAGE_SIDE = 4096
 }
