@@ -7,4 +7,11 @@
     <cache-path
         name="shared_pictures"
         path="shared/" />
+    <!--
+        The camera app needs a writable URI for the full-size photo. The file lives in this app's
+        cache/camera folder and is read back immediately, so nothing outside the app can reach it.
+    -->
+    <cache-path
+        name="camera_photos"
+        path="camera/" />
 </paths>

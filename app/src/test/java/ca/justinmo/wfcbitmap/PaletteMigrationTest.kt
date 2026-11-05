@@ -98,4 +98,21 @@ class PaletteMigrationTest {
     assertEquals(nearRed, grid.getPixel(0, 0))
     assertFalse(grid.canUndo())
   }
+
+  @Test
+  fun adoptingAPaletteKeepsTheDrawingAndAddsNoUndoStep() {
+    // The camera tool's commit: the photo already holds the palette's own colours, so nothing is
+    // recoloured -- only the colour a revealed cell falls back to moves to that palette.
+    val grid = PixelGridState(palette = listOf(Color.Black), initialColumns = 2, initialRows = 1)
+    grid.paintOver(0, 0, nearRed)
+    grid.paintOver(1, 0, nearBlue)
+    grid.clearHistory()
+
+    grid.adoptPalette(listOf(red, blue))
+
+    assertEquals("no cell was recoloured", nearRed, grid.getPixel(0, 0))
+    assertEquals(nearBlue, grid.getPixel(1, 0))
+    assertEquals("the darkest of the adopted palette", blue, grid.defaultColor)
+    assertFalse("nothing was drawn, so there is nothing to undo", grid.canUndo())
+  }
 }

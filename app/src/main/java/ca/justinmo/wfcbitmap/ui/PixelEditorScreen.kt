@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Palette as PaletteIcon
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -142,6 +143,8 @@ fun PixelEditorScreen(
   onShare: () -> Unit = {},
   /** Called when the pattern picker tool is tapped. */
   onLoadPattern: () -> Unit = {},
+  /** Called when the camera-photo tool is tapped. */
+  onCameraPhoto: () -> Unit = {},
   /** Called when the Video export tool is tapped. */
   onExportVideo: () -> Unit = {},
   /**
@@ -582,6 +585,16 @@ fun PixelEditorScreen(
         "settings from the selected pattern.",
       startsGroup = true,
     ) { onLoadPattern() },
+
+    // A photo as a new drawing: downscale, posterise to the selected palette, dither, then generate.
+    EditorTool(
+      icon = Icons.Default.PhotoCamera,
+      contentDescription = "Use a camera photo as the drawing",
+      explanation = "Takes a photo, reduces it to a small grid, posterises it to the selected palette, " +
+        "dithers it, and uses that as the drawing to generate from. You can adjust each step before " +
+        "applying it.",
+      startsGroup = true,
+    ) { onCameraPhoto() },
 
     // A movie of the drawing: a wide panorama is generated and a frame-sized window pans across it, looping.
     EditorTool(

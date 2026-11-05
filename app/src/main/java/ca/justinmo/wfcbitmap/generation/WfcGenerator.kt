@@ -140,6 +140,17 @@ object WfcGenerator {
   /** Ceiling: a solve may never run long enough to be a wait, whatever the last generation cost. */
   private const val MAX_SOLVE_BUDGET_MS = 4_000L
 
+  /**
+   * What a generation gets when the one before it found no picture, in milliseconds.
+   *
+   * Deliberately above [MAX_SOLVE_BUDGET_MS]. A failed generation measures nothing, so [lastSolveMillis]
+   * still describes the last picture that *worked* -- usually a fast one -- and four times that can be
+   * shorter than the search that just ran out of time. Retrying then hands the search the very budget
+   * that failed, so a drawing that timed out once times out every time. A retry is the person asking
+   * again: it gets a fixed five seconds, long enough for a collapse that is slow rather than impossible.
+   */
+  private const val RETRY_BUDGET_MS = 5_000L
+
   /** Longest the hedge may grow to; beyond this a long solve should have hedged much earlier. */
   private const val MAX_HEDGE_MS = 400L
 
@@ -179,6 +190,16 @@ object WfcGenerator {
    * inside one when the next starts.
    */
   private var lastSolveMillis: Long = 0
+
+  /**
+   * Whether the last generation ended without a picture, which is what a retry is answering.
+   *
+   * Only a generation that got as far as the search counts: an empty drawing or one with too many
+   * patterns fails before any time is spent, and handing the next drawing five seconds because of that
+   * would only make a genuinely untileable one slower to report. A cancelled generation never counts --
+   * it was replaced, not attempted. Guarded by [cacheLock] like the rest of the generation state.
+   */
+  private var lastGenerationFailed: Boolean = false
 
   /*
    * Incremental extraction and result reuse.
@@ -231,15 +252,31 @@ object WfcGenerator {
    * at both ends: the floor stops a hiccup from declaring a drawing untileable when it tiles perfectly
    * well, and the ceiling stops one pathological generation from making the next one wait ages for it.
    *
+   * A generation that follows a failed one is the exception: there is nothing to measure against, so it
+   * gets [RETRY_BUDGET_MS] outright -- see that constant for why a retry must not inherit the budget that
+   * just ran out.
+   *
    * @param previousSolveMillis how long the last picture's own solve took; 0 or less when none has been
    *   measured yet, which is the first generation after launch.
+   * @param lastGenerationFailed whether the last generation ended without a picture.
    */
-  internal fun solveBudgetMillis(previousSolveMillis: Long): Long =
-    (if (previousSolveMillis <= 0) FIRST_SOLVE_BUDGET_MS
-    else previousSolveMillis * SOLVE_BUDGET_FACTOR)
+  internal fun solveBudgetMillis(
+    previousSolveMillis: Long,
+    lastGenerationFailed: Boolean = false,
+  ): Long = when {
+    lastGenerationFailed -> RETRY_BUDGET_MS
+    previousSolveMillis <= 0 -> FIRST_SOLVE_BUDGET_MS
+    else -> (previousSolveMillis * SOLVE_BUDGET_FACTOR)
       .coerceIn(MIN_SOLVE_BUDGET_MS, MAX_SOLVE_BUDGET_MS)
+  }
 
   private fun previousSolveMillis(): Long = synchronized(cacheLock) { lastSolveMillis }
+
+  private fun previousGenerationFailed(): Boolean = synchronized(cacheLock) { lastGenerationFailed }
+
+  private fun noteGenerationFailed() {
+    synchronized(cacheLock) { lastGenerationFailed = true }
+  }
 
   /** The solver packs tile domains into 64-bit words and a 4-bit word index; this is its ceiling. */
   private const val MAX_TILES = 1024
@@ -393,6 +430,8 @@ object WfcGenerator {
         cachedWrapEdges == wrapEdges && cachedMirrorHorizontal == mirrorHorizontal &&
         cachedMirrorVertical == mirrorVertical && cachedPixelsPerCell == renderScale
       ) {
+        // The picture from the cache is a picture: whatever failed before is no longer the last answer.
+        lastGenerationFailed = false
         return@withContext reusable
       }
     }
@@ -421,12 +460,19 @@ object WfcGenerator {
      * around it, so it is shown and the notice line says what happened and what to change.
      *
      * The two attempts have different budgets on purpose. The edge rule gets four times what the last
-     * solve cost (see [solveBudgetMillis]) because it is worth waiting for a little; the relaxed attempt
-     * gets the full [TIMEOUT_NANOS], because by then the alternative is no picture at all.
+     * solve cost (see [solveBudgetMillis]) because it is worth waiting for a little -- and a fixed five
+     * seconds when the previous generation found no picture at all, because then there is no cost to
+     * measure and the retry must not inherit the budget that just ran out; the relaxed attempt gets the
+     * full [TIMEOUT_NANOS], because by then the alternative is no picture at all.
      */
     val scope = this
     val shouldAbort = { !scope.isActive }
-    val budgetMillis = timeoutMillis?.coerceAtLeast(1) ?: solveBudgetMillis(previousSolveMillis())
+    val isRetry = timeoutMillis == null && previousGenerationFailed()
+    val budgetMillis = timeoutMillis?.coerceAtLeast(1)
+      ?: solveBudgetMillis(previousSolveMillis(), isRetry)
+    if (isRetry) {
+      Log.i(TAG, "The last generation found no picture: retrying with a $budgetMillis ms budget")
+    }
     val dropEdgeRule = wrapEdges || forceRelaxedEdges
     var relaxedEdges = forceRelaxedEdges
     var tier = solveTier(
@@ -459,10 +505,16 @@ object WfcGenerator {
       relaxedEdges = tier?.result?.assignment != null
     }
     if (tier == null) {
+      noteGenerationFailed()
       throw GenerationException("No pattern in this drawing can touch another, so it cannot be tiled.")
     }
     val assignment = tier.result.assignment
-      ?: throw GenerationException(noTilingMessage(columns, rows, wrapEdges))
+    if (assignment == null) {
+      // The search ran out of budget or proved that nothing fits: either way this drawing did not come
+      // back with a picture, so the next attempt is a retry and gets the retry budget.
+      noteGenerationFailed()
+      throw GenerationException(noTilingMessage(columns, rows, wrapEdges))
+    }
     val millis = System.currentTimeMillis() - startedAt
     // A model tile's centre colour is exactly the pixel the cell represents (the model kept the packed
     // kernels), and the compatibility table guarantees every neighbour relation in the result holds in
@@ -522,6 +574,9 @@ object WfcGenerator {
         lastSolveMillis = solveMillis
       }
     }
+    // A picture came back: the next generation is measured against this solve again, not against the
+    // retry budget a failure would have bought.
+    synchronized(cacheLock) { lastGenerationFailed = false }
     output
   }
 

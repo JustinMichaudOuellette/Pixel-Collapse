@@ -339,6 +339,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
 
   val patternGallery = remember(context) { PatternGallery(context) }
   var loadPatternDialogOpen by remember { mutableStateOf(false) }
+  var cameraToolOpen by remember { mutableStateOf(false) }
   var videoExportOpen by remember { mutableStateOf(false) }
   var videoPreviewOpen by remember { mutableStateOf(false) }
   // The loop's two knobs: how many frame widths it covers, and how many frames a second it plays at.
@@ -1814,6 +1815,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onSave = { savePattern() },
     onShare = { sharePicture() },
     onLoadPattern = { openPatternPicker() },
+    onCameraPhoto = { cameraToolOpen = true },
     onExportVideo = { videoExportOpen = true },
     onExit = { exitApp() },
     toolButtonSize = toolButtonSize,
@@ -1903,6 +1905,38 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onDismiss = { videoExportOpen = false },
     onExport = { exportVideo(videoFormat) },
   )
+  CameraPatternScreen(
+    open = cameraToolOpen,
+    palettes = availablePalettes,
+    aspect = outputSettings.aspect.ratio,
+    cellSize = outputSettings.kernel.cellSize,
+    palette = activePalette,
+    onDismiss = { cameraToolOpen = false },
+    onApply = { pattern, usedPalette ->
+      // The pattern is drawn in the palette chosen on the posterize screen, so the editor moves to it:
+      // the colour strip and the generator both take their colours from the active palette. There is
+      // nothing to migrate -- the drawing is replaced whole rather than recoloured.
+      if (usedPalette.id != activePalette.id) {
+        activePalette = usedPalette
+        if (usedPalette.id != patternPalette?.id) patternPalette = null
+        gridState.adoptPalette(usedPalette.colors)
+        Log.i(TAG, "Camera pattern came from ${usedPalette.name}, now the active palette")
+      }
+      // Replace the drawing as one undoable edit: the photo was already reduced to the grid, so the
+      // history can take it back without losing the drawing that was there.
+      gridState.replaceDrawing(
+        columns = pattern.columns,
+        rows = pattern.rows,
+        pixels = pattern.pixels,
+        cellSize = outputSettings.kernel.cellSize,
+      )
+      patternClean = false
+      cameraToolOpen = false
+      requestGeneration()
+      message = EditorMessage("Camera pattern applied")
+    },
+  )
+
   val previewFps = if (videoFormat == VideoFormat.Gif) {
     val delay = (100f / videoFps.coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS))
       .roundToInt()

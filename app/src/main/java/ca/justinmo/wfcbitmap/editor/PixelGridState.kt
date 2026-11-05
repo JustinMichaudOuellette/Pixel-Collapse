@@ -324,6 +324,30 @@ class PixelGridState(
     )
   }
 
+  /**
+   * Replaces every cell with [pixels] as one undoable edit.
+   *
+   * This is the camera tool's commit: the photo has already been reduced to the grid, so the drawing
+   * becomes the photo's pixel pattern. Unlike [restoreDrawing], the previous drawing stays in the undo
+   * history -- a photo that looked better before the downscale can be taken back without losing it.
+   *
+   * [columns] and [rows] are grown to whole [cellSize] cells exactly as any other resize is, and the
+   * extra cells are background. A size that cannot hold [pixels] is ignored, because half a photo is
+   * worse than the drawing that was already there.
+   */
+  fun replaceDrawing(columns: Int, rows: Int, pixels: IntArray, cellSize: Int = this.cellSize) {
+    if (columns < MIN_GRID_SIZE || rows < MIN_GRID_SIZE) return
+    if (pixels.size < columns * rows) return
+    val step = cellSize.coerceAtLeast(1)
+    val newColumns = alignUp(columns, step)
+    val newRows = alignUp(rows, step)
+    noteEdit()
+    this.cellSize = step
+    previousColors = arrayOfNulls<Color>(newColumns * newRows)
+    val source = List(columns * rows) { Color(pixels[it]) }
+    replaceGrid(newColumns, newRows, columns, rows, source)
+  }
+
   /** Records the state before a change; a no-op inside an open edit, which already recorded it. */
   private fun pushUndo() {
     if (editOpen) return
@@ -932,6 +956,20 @@ class PixelGridState(
     previousColors = arrayOfNulls(columns * rows)
     revision++
     return changed
+  }
+
+  /**
+   * Takes on [palette]'s colour conventions without touching the drawing.
+   *
+   * This is the camera tool's commit: the photo was already mapped to the palette chosen in the tool, so
+   * every cell already holds one of its colours and there is nothing to migrate -- but the colour a
+   * revealed cell falls back to has to come from that palette, not from the one the drawing was made on.
+   * No undo step, because nothing was drawn.
+   */
+  fun adoptPalette(palette: List<Color>) {
+    if (palette.isEmpty()) return
+    defaultColor = palette.minByOrNull { it.luminance() } ?: defaultColor
+    revision++
   }
 
   fun flipHorizontal() {

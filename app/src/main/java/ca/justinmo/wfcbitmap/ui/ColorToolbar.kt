@@ -350,7 +350,7 @@ private fun PaletteRow(
  * `Row` made opening the picker expensive for a strip that is 200dp wide.
  */
 @Composable
-private fun PaletteBand(colors: List<Color>, modifier: Modifier = Modifier) {
+internal fun PaletteBand(colors: List<Color>, modifier: Modifier = Modifier) {
   Canvas(modifier = modifier) {
     if (colors.isEmpty()) return@Canvas
     var left = 0f

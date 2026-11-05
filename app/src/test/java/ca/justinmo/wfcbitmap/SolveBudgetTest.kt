@@ -15,8 +15,9 @@ import org.junit.Test
  *
  * The rule is that a solve gets four times what the last one cost, not a fixed timeout: a search that has
  * already run that long, against recent evidence of how fast this device solves, is not going to produce a
- * picture while the drawing is still being looked at. These tests pin the multiple and the two clamps,
- * which are the whole of the policy -- the search itself is in C and cannot run here.
+ * picture while the drawing is still being looked at. A generation that follows a failed one is exempt --
+ * there is no picture to measure, so it gets a fixed five seconds. These tests pin the multiple, the two
+ * clamps and the retry, which are the whole of the policy -- the search itself is in C and cannot run here.
  */
 class SolveBudgetTest {
 
@@ -61,5 +62,23 @@ class SolveBudgetTest {
       assertTrue("budget fell from $previous to $budget at $millis ms", budget >= previous)
       previous = budget
     }
+  }
+
+  @Test
+  fun aRetryAfterAFailedGenerationGetsFiveSeconds() {
+    // A failure measures nothing, so the last solve still describes the picture that did work -- here a
+    // fast one, whose four-times budget is what just ran out. Retrying that drawing has to be a real
+    // second chance rather than the same short wait, so it gets a fixed five seconds whatever the
+    // measurement says, including past the ordinary ceiling.
+    assertEquals("after a 20 ms solve", 5_000L, WfcGenerator.solveBudgetMillis(5, lastGenerationFailed = true))
+    assertEquals("with nothing measured yet", 5_000L, WfcGenerator.solveBudgetMillis(0, lastGenerationFailed = true))
+    assertEquals("after a slow solve", 5_000L, WfcGenerator.solveBudgetMillis(60_000, lastGenerationFailed = true))
+  }
+
+  @Test
+  fun aSuccessfulGenerationPutsTheBudgetBackOnTheMeasurement() {
+    // A retry is once: the next generation after a picture goes back to four times what that picture cost.
+    assertEquals(1_000L, WfcGenerator.solveBudgetMillis(250, lastGenerationFailed = false))
+    assertEquals(320L, WfcGenerator.solveBudgetMillis(80, lastGenerationFailed = false))
   }
 }

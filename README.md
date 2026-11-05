@@ -24,6 +24,10 @@ anything invented.
   gives the solver more shapes to arrange, and so more possible pictures from the same drawing.
 * **Pick the output**: shape (9:16, 3:4, 1:1, 4:3, 16:9), the size the picture is generated at (1x, 2x, 4x,
   shown in pixels), and the size it is saved at (1x to 16x, from 304x540 up to 4864x8640).
+* **Start from a photo**: take one or choose one from the gallery, then walk it through *Downscale*,
+  *Posterize* and *Dither* on a screen each. Posterize picks the palette and how many of its colours to
+  keep. Applying the result replaces the drawing as one undoable edit, and the palette it was made in
+  becomes the active one.
 * **Save and share** through MediaStore and a FileProvider. A save says what it did in a snackbar with a
   *View* button that opens the file it just wrote.
 * **Come back to it**: the drawing, seed and settings are saved when the app goes to the background and
@@ -47,7 +51,8 @@ drawing (cells) ─► 3x3 window tally ─► packed tile set ─► native sol
   runs several workers on the same model and takes the first that finishes.
 * [`WfcGenerator`](app/src/main/java/ca/justinmo/wfcbitmap/WfcGenerator.kt) owns the whole pipeline, the
   per-drawing caches, and the two-attempt strategy: the edge rule first with a budget of four times the last
-  solve, then, if it cannot be held, the same drawing relaxed with a much longer deadline.
+  solve (five seconds after a generation that found no picture, since a failure measures nothing), then, if
+  it cannot be held, the same drawing relaxed with a much longer deadline.
 * **The editor** is split by what each part is for, so every file can be read on its own. The Compose code
   lives in the `ui` package:
   [`PixelEditorScreen`](app/src/main/java/ca/justinmo/wfcbitmap/ui/PixelEditorScreen.kt) holds the screen, the
@@ -117,17 +122,10 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 | `app/src/androidTest/` | Device tests, including the solver benchmarks |
 | `design/` | The script and candidates used to pick the launcher icon out of generated pictures |
 
-## Ideas
-
-- **3D rendering output** — stand the picture up as a solid scene, one block per cell, and export it as a
-  rotating shot through the video output above or as a model file another tool can open.
-- **Photo input** — take a photo, downscale it, posterize it, dither it and use it as input for a pattern
-
 ## TODOs
 
 - **Info screen** explain the basics, point to the git repo
 - **Improve launcher icon** make it full bleed, improve pattern
-- **More video styles** — change direction
 - **Onboarding** tutorial and info for the app
 
 ## License
