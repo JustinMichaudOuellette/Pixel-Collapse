@@ -111,6 +111,77 @@ class EditorPreferences(context: Context) {
     preferences.edit().putString(KEY_VIDEO_MODE, value.name).apply()
   }
 
+  fun scrollDirection(fallback: ScrollDirection): ScrollDirection =
+    enumByName(preferences.getString(KEY_SCROLL_DIRECTION, null), ScrollDirection.entries)
+      ?: fallback
+
+  fun setScrollDirection(value: ScrollDirection) {
+    preferences.edit().putString(KEY_SCROLL_DIRECTION, value.name).apply()
+  }
+
+  fun videoLook(fallback: VideoLook): VideoLook =
+    enumByName(preferences.getString(KEY_VIDEO_LOOK, null), VideoLook.entries)
+      ?: fallback
+
+  fun setVideoLook(value: VideoLook) {
+    preferences.edit().putString(KEY_VIDEO_LOOK, value.name).apply()
+  }
+
+  /**
+   * The metal controls, field by field.
+   *
+   * Each value falls back independently, so a preference file written by an older build (which knew
+   * fewer controls) still opens with the documented defaults for the rest.
+   */
+  fun metalSettings(fallback: MetalSettings = MetalSettings()): MetalSettings {
+    val d = fallback
+    return MetalSettings(
+      finish = enumByName(preferences.getString(KEY_METAL_FINISH, null), MetalFinish.entries)
+        ?: d.finish,
+      emboss = preferences.getFloat(KEY_METAL_EMBOSS, d.emboss),
+      metallic = preferences.getFloat(KEY_METAL_METALLIC, d.metallic),
+      roughness = preferences.getFloat(KEY_METAL_ROUGHNESS, d.roughness),
+      baseColor = preferences.getInt(KEY_METAL_BASE_COLOR, d.baseColor),
+      textureTint = preferences.getFloat(KEY_METAL_TEXTURE_TINT, d.textureTint),
+      lightIntensity = preferences.getFloat(KEY_METAL_LIGHT_INTENSITY, d.lightIntensity),
+      lightColor = preferences.getInt(KEY_METAL_LIGHT_COLOR, d.lightColor),
+      lightAzimuthDegrees = preferences.getFloat(KEY_METAL_LIGHT_AZIMUTH, d.lightAzimuthDegrees),
+      lightElevationDegrees = preferences.getFloat(KEY_METAL_LIGHT_ELEVATION, d.lightElevationDegrees),
+      animateLight = preferences.getBoolean(KEY_METAL_ANIMATE_LIGHT, d.animateLight),
+      lightTurnsPerLoop = preferences.getFloat(KEY_METAL_LIGHT_SPEED, d.lightTurnsPerLoop),
+      environmentRotationDegrees = preferences.getFloat(KEY_METAL_ENV_ROTATION,
+        d.environmentRotationDegrees),
+      environmentIntensity = preferences.getFloat(KEY_METAL_ENV_INTENSITY, d.environmentIntensity),
+      parallax = preferences.getFloat(KEY_METAL_PARALLAX, d.parallax),
+      anisotropy = preferences.getFloat(KEY_METAL_ANISOTROPY, d.anisotropy),
+      brushAngleDegrees = preferences.getFloat(KEY_METAL_BRUSH_ANGLE, d.brushAngleDegrees),
+      exposure = preferences.getFloat(KEY_METAL_EXPOSURE, d.exposure),
+    ).sanitised()
+  }
+
+  fun setMetalSettings(settings: MetalSettings) {
+    preferences.edit()
+      .putString(KEY_METAL_FINISH, settings.finish.name)
+      .putFloat(KEY_METAL_EMBOSS, settings.emboss)
+      .putFloat(KEY_METAL_METALLIC, settings.metallic)
+      .putFloat(KEY_METAL_ROUGHNESS, settings.roughness)
+      .putInt(KEY_METAL_BASE_COLOR, settings.baseColor)
+      .putFloat(KEY_METAL_TEXTURE_TINT, settings.textureTint)
+      .putFloat(KEY_METAL_LIGHT_INTENSITY, settings.lightIntensity)
+      .putInt(KEY_METAL_LIGHT_COLOR, settings.lightColor)
+      .putFloat(KEY_METAL_LIGHT_AZIMUTH, settings.lightAzimuthDegrees)
+      .putFloat(KEY_METAL_LIGHT_ELEVATION, settings.lightElevationDegrees)
+      .putBoolean(KEY_METAL_ANIMATE_LIGHT, settings.animateLight)
+      .putFloat(KEY_METAL_LIGHT_SPEED, settings.lightTurnsPerLoop)
+      .putFloat(KEY_METAL_ENV_ROTATION, settings.environmentRotationDegrees)
+      .putFloat(KEY_METAL_ENV_INTENSITY, settings.environmentIntensity)
+      .putFloat(KEY_METAL_PARALLAX, settings.parallax)
+      .putFloat(KEY_METAL_ANISOTROPY, settings.anisotropy)
+      .putFloat(KEY_METAL_BRUSH_ANGLE, settings.brushAngleDegrees)
+      .putFloat(KEY_METAL_EXPOSURE, settings.exposure)
+      .apply()
+  }
+
   fun solveAnimation(fallback: SolveAnimation): SolveAnimation =
     enumByName(preferences.getString(KEY_SOLVE_ANIMATION, null), SolveAnimation.entries)
       ?: fallback
@@ -187,6 +258,26 @@ class EditorPreferences(context: Context) {
     const val KEY_VIDEO_PIXELS_PER_FRAME = "video_pixels_per_frame"
     const val KEY_VIDEO_FORMAT = "video_format"
     const val KEY_VIDEO_MODE = "video_mode"
+    const val KEY_SCROLL_DIRECTION = "scroll_direction"
+    const val KEY_VIDEO_LOOK = "video_look"
+    const val KEY_METAL_FINISH = "metal_finish"
+    const val KEY_METAL_EMBOSS = "metal_emboss"
+    const val KEY_METAL_METALLIC = "metal_metallic"
+    const val KEY_METAL_ROUGHNESS = "metal_roughness"
+    const val KEY_METAL_BASE_COLOR = "metal_base_color"
+    const val KEY_METAL_TEXTURE_TINT = "metal_texture_tint"
+    const val KEY_METAL_LIGHT_INTENSITY = "metal_light_intensity"
+    const val KEY_METAL_LIGHT_COLOR = "metal_light_color"
+    const val KEY_METAL_LIGHT_AZIMUTH = "metal_light_azimuth"
+    const val KEY_METAL_LIGHT_ELEVATION = "metal_light_elevation"
+    const val KEY_METAL_ANIMATE_LIGHT = "metal_animate_light"
+    const val KEY_METAL_LIGHT_SPEED = "metal_light_speed"
+    const val KEY_METAL_ENV_ROTATION = "metal_env_rotation"
+    const val KEY_METAL_ENV_INTENSITY = "metal_env_intensity"
+    const val KEY_METAL_PARALLAX = "metal_parallax"
+    const val KEY_METAL_ANISOTROPY = "metal_anisotropy"
+    const val KEY_METAL_BRUSH_ANGLE = "metal_brush_angle"
+    const val KEY_METAL_EXPOSURE = "metal_exposure"
     const val KEY_SOLVE_ANIMATION = "solve_animation"
     const val KEY_EVOLVE_CELLS = "evolve_cells"
     const val KEY_TOOL_BUTTON_SIZE = "tool_button_size"

@@ -1,5 +1,6 @@
 package ca.justinmo.wfcbitmap.ui
 
+import ca.justinmo.wfcbitmap.video.ScrollDirection
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -44,6 +45,7 @@ fun VideoPreviewDialog(
   image: ImageBitmap?,
   fps: Int,
   pixelsPerFrame: Int,
+  scrollDirection: ScrollDirection = ScrollDirection.LeftToRight,
   onDismiss: () -> Unit,
 ) {
   if (!open || image == null) return
@@ -73,17 +75,33 @@ fun VideoPreviewDialog(
         val left = (size.width - viewWidth) / 2f
         val top = (size.height - viewHeight) / 2f
         val scale = viewWidth / image.width
-        val shift = (frame.toLong() * pixelsPerFrame % image.width).toInt()
+        val span = if (scrollDirection.isVertical) image.height else image.width
+        val rawShift = (frame.toLong() * pixelsPerFrame % span).toInt()
+        val reverse = scrollDirection == ScrollDirection.RightToLeft ||
+          scrollDirection == ScrollDirection.Up
+        val shift = if (reverse && rawShift != 0) span - rawShift else rawShift
         val offset = shift * scale
         clipRect(left, top, left + viewWidth, top + viewHeight) {
-          var x = left - offset
-          while (x < left + viewWidth) {
-            drawImage(
-              image = image,
-              dstOffset = IntOffset(x.roundToInt(), top.roundToInt()),
-              dstSize = IntSize(viewWidth.roundToInt(), viewHeight.roundToInt()),
-            )
-            x += viewWidth
+          if (scrollDirection.isVertical) {
+            var y = top - offset
+            while (y < top + viewHeight) {
+              drawImage(
+                image = image,
+                dstOffset = IntOffset(left.roundToInt(), y.roundToInt()),
+                dstSize = IntSize(viewWidth.roundToInt(), viewHeight.roundToInt()),
+              )
+              y += viewHeight
+            }
+          } else {
+            var x = left - offset
+            while (x < left + viewWidth) {
+              drawImage(
+                image = image,
+                dstOffset = IntOffset(x.roundToInt(), top.roundToInt()),
+                dstSize = IntSize(viewWidth.roundToInt(), viewHeight.roundToInt()),
+              )
+              x += viewWidth
+            }
           }
         }
       }

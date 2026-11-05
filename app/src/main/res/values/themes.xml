@@ -5,7 +5,7 @@
         be dark before Compose's first frame and the system bars have to keep their light icons whatever the
         system-wide appearance is set to.
     -->
-    <style name="Theme.WFCBitmap" parent="android:Theme.Material.NoActionBar.Fullscreen">
+    <style name="Theme.WFCBitmap" parent="android:Theme.Material.NoActionBar">
         <!-- Black, not the platform dark theme's grey: the first frame and the last are the same colour. -->
         <item name="android:windowBackground">@android:color/black</item>
     </style>

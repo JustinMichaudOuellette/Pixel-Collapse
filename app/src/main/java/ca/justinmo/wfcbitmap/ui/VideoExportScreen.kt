@@ -1,12 +1,17 @@
 package ca.justinmo.wfcbitmap.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -17,6 +22,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -45,13 +54,18 @@ import ca.justinmo.wfcbitmap.video.MIN_EVOLVE_CELLS
 import ca.justinmo.wfcbitmap.video.MIN_GIF_DELAY_CENTISECONDS
 import ca.justinmo.wfcbitmap.video.MIN_LOOP_SCREENS
 import ca.justinmo.wfcbitmap.video.MIN_VIDEO_FPS
+import ca.justinmo.wfcbitmap.video.MetalFinish
+import ca.justinmo.wfcbitmap.video.MetalSettings
+import ca.justinmo.wfcbitmap.video.ScrollDirection
 import ca.justinmo.wfcbitmap.video.SolveAnimation
 import ca.justinmo.wfcbitmap.video.VideoFormat
+import ca.justinmo.wfcbitmap.video.VideoLook
 import ca.justinmo.wfcbitmap.video.VideoMode
 import ca.justinmo.wfcbitmap.video.estimatedVideoBytes
 import ca.justinmo.wfcbitmap.video.formatByteSize
 import ca.justinmo.wfcbitmap.video.videoPlan
 import kotlin.math.roundToInt
+import java.util.Locale
 
 /**
  * The video export as a screen of its own: the loop's two measurements, the container to write, and one
@@ -77,6 +91,13 @@ fun VideoExportScreen(
   screens: Int,
   fps: Int,
   pixelsPerFrame: Int = 2,
+  scrollDirection: ScrollDirection = ScrollDirection.LeftToRight,
+  look: VideoLook = VideoLook.Flat,
+  metal: MetalSettings = MetalSettings(),
+  previewPixels: IntArray? = null,
+  previewWidth: Int = 0,
+  previewHeight: Int = 0,
+  previewCellPixels: Int = 1,
   frameColumns: Int,
   frameRows: Int,
   pixelsPerCell: Int,
@@ -90,6 +111,9 @@ fun VideoExportScreen(
   onEvolveCellsChange: (Int) -> Unit = {},
   onFpsChange: (Int) -> Unit,
   onPixelsPerFrameChange: (Int) -> Unit = {},
+  onScrollDirectionChange: (ScrollDirection) -> Unit = {},
+  onLookChange: (VideoLook) -> Unit = {},
+  onMetalChange: (MetalSettings) -> Unit = {},
   onFormatChange: (VideoFormat) -> Unit,
   onPreview: () -> Unit = {},
   onDismiss: () -> Unit,
@@ -99,6 +123,7 @@ fun VideoExportScreen(
   val plan = videoPlan(
     frameColumns, frameRows, pixelsPerCell, cellSize, screens, fps,
     pixelsPerFrame = pixelsPerFrame,
+    scrollDirection = scrollDirection,
     outputWidth = outputWidth, outputHeight = outputHeight,
   )
   val solveSteps = (fps * 2).coerceIn(24, 90)
@@ -171,8 +196,8 @@ fun VideoExportScreen(
           Text(
             when (mode) {
               VideoMode.Panorama ->
-                "A wide picture pans left to right and loops back to its start. Every frame moves the " +
-                  "window one pixel, so the loop is smooth by construction."
+                "A wide picture pans around a loop and returns to its start. Pick the direction below; " +
+                  "every frame moves the window by the chosen step, so the loop is smooth by construction."
               VideoMode.Solve ->
                 "A replay of the real solver, not a reveal of the finished bitmap. A GIF runs the replay " +
                   "backwards so it loops; an MP4 stops on the finished picture."
@@ -185,6 +210,262 @@ fun VideoExportScreen(
             fontSize = 12.sp,
             lineHeight = 17.sp,
           )
+
+          Spacer(Modifier.height(18.dp))
+          SettingLabel("Look", look.label)
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            VideoLook.entries.forEach { option ->
+              val chosen = option == look
+              Button(
+                onClick = { onLookChange(option) },
+                enabled = !exporting,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(
+                  containerColor = if (chosen) MENU_TEXT_COLOR else MENU_TEXT_COLOR.copy(alpha = 0.12f),
+                  contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
+                  disabledContainerColor = if (chosen) {
+                    MENU_TEXT_COLOR.copy(alpha = 0.5f)
+                  } else {
+                    MENU_TEXT_COLOR.copy(alpha = 0.08f)
+                  },
+                  disabledContentColor = MENU_TEXT_COLOR.copy(alpha = 0.6f),
+                ),
+              ) {
+                Text(option.label, fontSize = 13.sp)
+              }
+            }
+          }
+          Spacer(Modifier.height(6.dp))
+          Text(
+            look.description,
+            color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+            fontSize = 11.sp,
+            lineHeight = 15.sp,
+          )
+
+          if (look == VideoLook.Metal) {
+            Spacer(Modifier.height(16.dp))
+            if (previewPixels != null && previewWidth > 0 && previewHeight > 0) {
+              SettingLabel("Live material", "moving light · moving reflections")
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .height(190.dp),
+                contentAlignment = Alignment.Center,
+              ) {
+                MetalPreview(
+                  pixels = previewPixels,
+                  width = previewWidth,
+                  height = previewHeight,
+                  cellPixels = previewCellPixels,
+                  settings = metal,
+                  modifier = Modifier
+                    .fillMaxHeight()
+                    .aspectRatio(previewWidth.toFloat() / previewHeight)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.Black),
+                )
+              }
+              Spacer(Modifier.height(4.dp))
+              Text(
+                "The preview is the real GPU shader: the key light orbits the relief and the studio " +
+                  "reflection turns with it. Every control below changes it immediately.",
+                color = MENU_TEXT_COLOR.copy(alpha = 0.5f),
+                fontSize = 10.sp,
+                lineHeight = 14.sp,
+              )
+              Spacer(Modifier.height(4.dp))
+              Text(
+                "Metal is continuous-tone: a GIF's 256 colours band the reflections and the file gets " +
+                  "large. MP4 keeps the full range and is much smaller.",
+                color = MENU_TEXT_COLOR.copy(alpha = 0.45f),
+                fontSize = 10.sp,
+                lineHeight = 14.sp,
+              )
+            } else {
+              Text(
+                "Solve a picture first to see the live metal material.",
+                color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+                fontSize = 11.sp,
+              )
+            }
+
+            Spacer(Modifier.height(16.dp))
+            SettingLabel("Metal finish", metal.finish.label)
+            MetalFinish.entries.chunked(3).forEach { row ->
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                row.forEach { finish ->
+                  val chosen = finish == metal.finish
+                  Button(
+                    onClick = { onMetalChange(metal.withFinish(finish)) },
+                    enabled = !exporting,
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                    modifier = Modifier
+                      .weight(1f)
+                      .height(34.dp),
+                    colors = ButtonDefaults.buttonColors(
+                      containerColor = if (chosen) {
+                        MENU_TEXT_COLOR
+                      } else {
+                        MENU_TEXT_COLOR.copy(alpha = 0.12f)
+                      },
+                      contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
+                    ),
+                  ) {
+                    Text(finish.label, fontSize = 10.sp, maxLines = 1)
+                  }
+                }
+                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+              }
+              Spacer(Modifier.height(6.dp))
+            }
+
+            MetalSlider(
+              label = "Emboss strength",
+              value = metal.emboss,
+              range = 0f..2.5f,
+              decimals = 2,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(emboss = it)) }
+            MetalSlider(
+              label = "Metallic",
+              value = metal.metallic,
+              range = 0f..1f,
+              decimals = 2,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(metallic = it)) }
+            MetalSlider(
+              label = "Roughness",
+              value = metal.roughness,
+              range = 0.03f..0.65f,
+              decimals = 3,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(roughness = it)) }
+            MetalSlider(
+              label = "Texture tint",
+              value = metal.textureTint,
+              range = 0f..1f,
+              decimals = 2,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(textureTint = it)) }
+            MetalSlider(
+              label = "Anisotropy",
+              value = metal.anisotropy,
+              range = 0f..1f,
+              decimals = 2,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(anisotropy = it)) }
+            MetalSlider(
+              label = "Brush direction",
+              value = metal.brushAngleDegrees,
+              range = 0f..180f,
+              decimals = 0,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(brushAngleDegrees = it)) }
+            MetalSlider(
+              label = "Parallax",
+              value = metal.parallax,
+              range = 0f..0.35f,
+              decimals = 2,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(parallax = it)) }
+
+            Spacer(Modifier.height(6.dp))
+            MetalColorSliders(
+              label = "Metal base colour",
+              color = metal.baseColor,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(baseColor = it)) }
+
+            Spacer(Modifier.height(14.dp))
+            Text("MOVING LIGHT", color = MENU_TEXT_COLOR.copy(alpha = 0.5f), fontSize = 10.sp)
+            Spacer(Modifier.height(6.dp))
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              listOf(true, false).forEach { animate ->
+                val chosen = metal.animateLight == animate
+                Button(
+                  onClick = { onMetalChange(metal.copy(animateLight = animate)) },
+                  enabled = !exporting,
+                  modifier = Modifier.weight(1f),
+                  colors = ButtonDefaults.buttonColors(
+                    containerColor = if (chosen) MENU_TEXT_COLOR else MENU_TEXT_COLOR.copy(alpha = 0.12f),
+                    contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
+                  ),
+                ) {
+                  Text(if (animate) "Animated" else "Manual", fontSize = 12.sp)
+                }
+              }
+            }
+            MetalSlider(
+              label = "Light intensity",
+              value = metal.lightIntensity,
+              range = 0f..12f,
+              decimals = 2,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(lightIntensity = it)) }
+            MetalSlider(
+              label = "Animation speed",
+              value = metal.lightTurnsPerLoop,
+              range = 0f..3f,
+              decimals = 2,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(lightTurnsPerLoop = it)) }
+            MetalSlider(
+              label = "Light position",
+              value = metal.lightAzimuthDegrees,
+              range = 0f..360f,
+              decimals = 0,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(lightAzimuthDegrees = it)) }
+            MetalSlider(
+              label = "Light height",
+              value = metal.lightElevationDegrees,
+              range = -20f..90f,
+              decimals = 0,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(lightElevationDegrees = it)) }
+            MetalColorSliders(
+              label = "Light colour",
+              color = metal.lightColor,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(lightColor = it)) }
+
+            Spacer(Modifier.height(14.dp))
+            Text("REFLECTIONS", color = MENU_TEXT_COLOR.copy(alpha = 0.5f), fontSize = 10.sp)
+            Spacer(Modifier.height(6.dp))
+            MetalSlider(
+              label = "Environment intensity",
+              value = metal.environmentIntensity,
+              range = 0f..2f,
+              decimals = 2,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(environmentIntensity = it)) }
+            MetalSlider(
+              label = "Environment rotation",
+              value = metal.environmentRotationDegrees,
+              range = 0f..360f,
+              decimals = 0,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(environmentRotationDegrees = it)) }
+            MetalSlider(
+              label = "Exposure",
+              value = metal.exposure,
+              range = 0.4f..2.5f,
+              decimals = 2,
+              enabled = !exporting,
+            ) { onMetalChange(metal.copy(exposure = it)) }
+
+            Spacer(Modifier.height(12.dp))
+          }
 
           if (mode == VideoMode.Solve) {
             Spacer(Modifier.height(18.dp))
@@ -271,6 +552,35 @@ fun VideoExportScreen(
               ),
             )
 
+            Spacer(Modifier.height(14.dp))
+            SettingLabel("Scroll direction", scrollDirection.label)
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              ScrollDirection.entries.forEach { option ->
+                val chosen = option == scrollDirection
+                Button(
+                  onClick = { onScrollDirectionChange(option) },
+                  enabled = !exporting,
+                  modifier = Modifier.weight(1f),
+                  colors = ButtonDefaults.buttonColors(
+                    containerColor = if (chosen) MENU_TEXT_COLOR else MENU_TEXT_COLOR.copy(alpha = 0.12f),
+                    contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
+                  ),
+                ) {
+                  Icon(
+                    imageVector = when (option) {
+                      ScrollDirection.LeftToRight -> Icons.AutoMirrored.Filled.ArrowForward
+                      ScrollDirection.RightToLeft -> Icons.AutoMirrored.Filled.ArrowBack
+                      ScrollDirection.Up -> Icons.Default.ArrowUpward
+                      ScrollDirection.Down -> Icons.Default.ArrowDownward
+                    },
+                    contentDescription = option.label,
+                  )
+                }
+              }
+            }
             Spacer(Modifier.height(10.dp))
           }
           SettingLabel(
@@ -282,12 +592,17 @@ fun VideoExportScreen(
             },
           )
           if (format == VideoFormat.Gif) {
-            // A GIF only stores whole centiseconds, so the thumb is the delay itself. There are exactly
-            // nine ticks: 2 cs (50 fps) through 10 cs (10 fps), one per possible GIF value.
+            // A GIF only stores whole centiseconds. The slider runs opposite the delay: the left end is
+            // 10 cs (10 fps), the right end is the fastest value, 2 cs (50 fps), which is also the default.
+            val delay = plan.frameDelayCentiseconds.coerceIn(
+              MIN_GIF_DELAY_CENTISECONDS,
+              MAX_GIF_DELAY_CENTISECONDS,
+            )
             Slider(
-              value = plan.frameDelayCentiseconds.toFloat(),
-              onValueChange = { cs ->
-                val whole = cs.roundToInt().coerceIn(
+              value = (MIN_GIF_DELAY_CENTISECONDS + MAX_GIF_DELAY_CENTISECONDS - delay).toFloat(),
+              onValueChange = { reversed ->
+                val whole = (MIN_GIF_DELAY_CENTISECONDS + MAX_GIF_DELAY_CENTISECONDS -
+                  reversed.roundToInt()).coerceIn(
                   MIN_GIF_DELAY_CENTISECONDS,
                   MAX_GIF_DELAY_CENTISECONDS,
                 )
@@ -390,6 +705,97 @@ fun VideoExportScreen(
         }
       }
     }
+  }
+}
+
+@Composable
+private fun MetalSlider(
+  label: String,
+  value: Float,
+  range: ClosedFloatingPointRange<Float>,
+  decimals: Int,
+  enabled: Boolean,
+  onChange: (Float) -> Unit,
+) {
+  SettingLabel(label, String.format(Locale.US, "%.${decimals}f", value))
+  Slider(
+    value = value,
+    onValueChange = onChange,
+    valueRange = range,
+    enabled = enabled,
+    colors = SliderDefaults.colors(
+      thumbColor = MENU_TEXT_COLOR,
+      activeTrackColor = MENU_TEXT_COLOR,
+      inactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.25f),
+      disabledThumbColor = MENU_TEXT_COLOR.copy(alpha = 0.4f),
+      disabledActiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.4f),
+      disabledInactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.15f),
+    ),
+  )
+}
+
+/**
+ * Three compact 0..255 channel sliders, so the metal and the key can be any colour rather than only one
+ * of the presets. The hex value is shown next to the label as the source of truth.
+ */
+@Composable
+private fun MetalColorSliders(
+  label: String,
+  color: Int,
+  enabled: Boolean,
+  onChange: (Int) -> Unit,
+) {
+  SettingLabel(label, String.format(Locale.US, "#%06X", color and 0xFFFFFF))
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
+    MetalColorChannel(
+      name = "R",
+      value = (color ushr 16) and 0xFF,
+      enabled = enabled,
+      modifier = Modifier.weight(1f),
+    ) { onChange((color and 0xFF00FFFF.toInt()) or (it shl 16)) }
+    MetalColorChannel(
+      name = "G",
+      value = (color ushr 8) and 0xFF,
+      enabled = enabled,
+      modifier = Modifier.weight(1f),
+    ) { onChange((color and 0xFFFF00FF.toInt()) or (it shl 8)) }
+    MetalColorChannel(
+      name = "B",
+      value = color and 0xFF,
+      enabled = enabled,
+      modifier = Modifier.weight(1f),
+    ) { onChange((color and 0xFFFFFF00.toInt()) or it) }
+  }
+}
+
+@Composable
+private fun MetalColorChannel(
+  name: String,
+  value: Int,
+  enabled: Boolean,
+  modifier: Modifier = Modifier,
+  onChange: (Int) -> Unit,
+) {
+  Column(modifier = modifier) {
+    Text(
+      "$name $value",
+      color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+      fontSize = 10.sp,
+    )
+    Slider(
+      value = value.toFloat(),
+      onValueChange = { onChange(it.roundToInt().coerceIn(0, 255)) },
+      valueRange = 0f..255f,
+      enabled = enabled,
+      colors = SliderDefaults.colors(
+        thumbColor = MENU_TEXT_COLOR,
+        activeTrackColor = MENU_TEXT_COLOR,
+        inactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.25f),
+      ),
+    )
   }
 }
 

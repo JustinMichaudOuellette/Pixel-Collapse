@@ -40,6 +40,8 @@ internal data class VideoPlan(
   val frameCount: Int,
   /** How many panorama pixels the window advances between frames (1–16). */
   val pixelsPerFrame: Int,
+  /** Which way the window walks around the loop. */
+  val scrollDirection: ScrollDirection,
   /** GIF frame delay in whole centiseconds; a GIF cannot express anything finer than that. */
   val frameDelayCentiseconds: Int,
   /** The frame rate that delay actually produces, which is what the clip plays at. */
@@ -58,11 +60,42 @@ enum class VideoFormat(val label: String) {
   Mp4("MP4"),
 }
 
+/**
+ * How the export paints each solved frame.
+ *
+ * [Flat] is the picture exactly as the editor shows it. [Metal] lifts the drawing into a relief and
+ * lights it with a studio environment, so the picture reads as a sheet of machined metal: every cell is
+ * a plate, every plate edge a bevel, and the palette is kept because the metal's tint is the cell's own
+ * colour. The pixels it produces are many more colours than pixel art has, so a metal GIF is palette
+ * limited by the container while a metal MP4 is not.
+ */
+enum class VideoLook(val label: String, val description: String) {
+  Flat("Flat", "The picture exactly as it is drawn."),
+  Metal("Metal 3D", "The pattern raised, lit and given a metallic sheen."),
+}
+
 /** What the video shows: a pan, the solve revealing the picture, or a picture nudged patch by patch. */
 enum class VideoMode(val label: String) {
   Panorama("Panorama"),
   Solve("Solve"),
   Evolve("Evolve"),
+}
+
+/** Which way the panorama window travels around the loop. */
+enum class ScrollDirection(val label: String) {
+  LeftToRight("Left to right"),
+  RightToLeft("Right to left"),
+  Down("Down"),
+  Up("Up"),
+  ;
+
+  /** True for directions that travel along the picture's height rather than its width. */
+  val isVertical: Boolean
+    get() = this == Down || this == Up
+
+  /** The horizontal direction whose window path, transposed, is this vertical one. */
+  internal val horizontalEquivalent: ScrollDirection
+    get() = if (this == Up) RightToLeft else LeftToRight
 }
 
 /**
@@ -127,13 +160,13 @@ internal fun evolveUndoPlan(changeCount: Int): List<Int> {
   return plan
 }
 
-/** The frame rate MP4 offers: 10–60 fps. GIF can go to 100 fps (1 cs), so the internal cap is wider. */
+/** The frame rate the export offers: 10–100 fps; MP4 is separately capped at [MAX_MP4_FPS]. */
 internal const val MIN_VIDEO_FPS = 10
 internal const val MAX_MP4_FPS = 60
 internal const val MAX_VIDEO_FPS = 100
 
-/** GIF's whole-centisecond delays: 1 cs (100 fps) through 10 cs (10 fps). */
-internal const val MIN_GIF_DELAY_CENTISECONDS = 1
+/** GIF's whole-centisecond delays: 2 cs (50 fps) through 10 cs (10 fps). */
+internal const val MIN_GIF_DELAY_CENTISECONDS = 2
 internal const val MAX_GIF_DELAY_CENTISECONDS = 10
 
 /**
@@ -212,9 +245,32 @@ internal fun videoPlan(
   screens: Int,
   fps: Int,
   pixelsPerFrame: Int = 1,
+  scrollDirection: ScrollDirection = ScrollDirection.LeftToRight,
   outputWidth: Int = 0,
   outputHeight: Int = 0,
 ): VideoPlan {
+  if (scrollDirection.isVertical) {
+    // A vertical loop is the same wide panorama with its two axes swapped: generate it across the
+    // picture's height, then transpose every frame back when it is written. The output keeps the
+    // requested width and height.
+    val generationPlan = videoPlan(
+      frameColumns = frameRows,
+      frameRows = frameColumns,
+      pixelsPerCell = pixelsPerCell,
+      cellSize = cellSize,
+      screens = screens,
+      fps = fps,
+      pixelsPerFrame = pixelsPerFrame,
+      scrollDirection = scrollDirection.horizontalEquivalent,
+      outputWidth = outputWidth,
+      outputHeight = outputHeight,
+    )
+    return generationPlan.copy(
+      outputWidth = if (outputWidth > 0) outputWidth else frameColumns * pixelsPerCell,
+      outputHeight = if (outputHeight > 0) outputHeight else frameRows * pixelsPerCell,
+      scrollDirection = scrollDirection,
+    )
+  }
   val share = (frameColumns / 6).coerceIn(2, 16)
   // The seam is wider than the plain share by [SEAM_MARGIN_CELLS], but it can never take the whole frame:
   // a screen that is all overlap generates nothing new and the pan stops advancing. The floor keeps tiny
@@ -227,7 +283,9 @@ internal fun videoPlan(
   val screenCount = screens.coerceIn(MIN_LOOP_SCREENS, widest)
   val panoramaColumns = frameColumns + (screenCount - 1) * advance
   val panoramaWidth = panoramaColumns * pixelsPerCell
-  val delay = (100f / fps.coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS)).roundToInt().coerceIn(1, 100)
+  val delay = (100f / fps.coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS))
+    .roundToInt()
+    .coerceIn(MIN_GIF_DELAY_CENTISECONDS, MAX_GIF_DELAY_CENTISECONDS)
   val effectiveFps = 100f / delay
   val step = pixelsPerFrame.coerceIn(1, 16)
   val frameCount = ((panoramaWidth + step - 1) / step).coerceAtLeast(1)
@@ -244,6 +302,7 @@ internal fun videoPlan(
     cellSize = cellSize,
     frameCount = frameCount,
     pixelsPerFrame = step,
+    scrollDirection = scrollDirection,
     frameDelayCentiseconds = delay,
     effectiveFps = effectiveFps,
     loopSeconds = frameCount * step / effectiveFps,
@@ -325,11 +384,14 @@ internal fun cropFrame(
   index: Int,
 ): IntArray {
   val frame = IntArray(plan.frameWidth * plan.frameHeight)
-  val x = if (plan.frameCount <= 1) {
+  val shifted = if (plan.frameCount <= 1) {
     0
   } else {
     (index * plan.pixelsPerFrame) % panoramaWidth
   }
+  val reverse = plan.scrollDirection == ScrollDirection.RightToLeft ||
+    plan.scrollDirection == ScrollDirection.Up
+  val x = if (reverse && shifted != 0) panoramaWidth - shifted else shifted
   val head = minOf(plan.frameWidth, panoramaWidth - x).coerceAtLeast(0)
   for (y in 0 until plan.frameHeight) {
     val source = y * panoramaWidth + x
@@ -382,6 +444,16 @@ internal fun formatByteSize(bytes: Long): String {
  * The solve is capped so a large preview stays solvable; this is what makes the written video still
  * 1080×1920 instead of the solver's smaller grid.
  */
+internal fun transposePixels(pixels: IntArray, width: Int, height: Int): IntArray {
+  val transposed = IntArray(width * height)
+  for (y in 0 until height) {
+    for (x in 0 until width) {
+      transposed[x * height + y] = pixels[y * width + x]
+    }
+  }
+  return transposed
+}
+
 internal fun scaleFrame(
   frame: IntArray,
   width: Int,
