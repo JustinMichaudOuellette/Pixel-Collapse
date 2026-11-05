@@ -226,6 +226,9 @@ object WfcGenerator {
   /** Whether the cached tile set carried patterns flipped top to bottom; part of the cache key as well. */
   private var cachedMirrorVertical: Boolean = false
 
+  /** Whether the cached tile set carried patterns turned a quarter turn; part of the cache key as well. */
+  private var cachedQuarterTurn: Boolean = false
+
   /** How many pixels per cell the cached picture was drawn with; part of the cache key as well. */
   private var cachedPixelsPerCell: Int = PIXELS_PER_CELL
 
@@ -358,6 +361,9 @@ object WfcGenerator {
    *   contain.
    * @param mirrorVertical also offer every window flipped top to bottom, the other mirror; with both on the
    *   half turn comes with them.
+   * @param quarterTurn also offer every window turned a quarter turn clockwise, the third symmetry setting.
+   *   Independent of the mirrors, and composing with them: with all three on the tile set carries all eight
+   *   orientations of every window (see [BitmapWaveFunctionCell.createCells]).
    * @param pixelsPerCell how many pixels of the picture each solved cell becomes. It changes only the size
    *   of the picture, not what it is -- the solver fills the same grid either way -- so it is a rendering
    *   choice rather than a solving one, and the save size is applied on top of it.
@@ -372,6 +378,7 @@ object WfcGenerator {
     wrapEdges: Boolean = false,
     mirrorHorizontal: Boolean = false,
     mirrorVertical: Boolean = false,
+    quarterTurn: Boolean = false,
     pixelsPerCell: Int = PIXELS_PER_CELL,
     cellSize: Int = 1,
     timeoutMillis: Long? = null,
@@ -413,6 +420,7 @@ object WfcGenerator {
         wrap = wrapEdges,
         mirrorHorizontal = mirrorHorizontal,
         mirrorVertical = mirrorVertical,
+        quarterTurn = quarterTurn,
       )
       if (sampled.isEmpty()) {
         throw GenerationException("The drawing is empty - draw a pattern first.")
@@ -428,7 +436,8 @@ object WfcGenerator {
       if (grouped == null && fixedCenters == null && fixedPatterns == null && reusable != null && cachedSeed == seed && columns == reusable.columns &&
         rows == reusable.rows && cachedPacked.contentEquals(packed) &&
         cachedWrapEdges == wrapEdges && cachedMirrorHorizontal == mirrorHorizontal &&
-        cachedMirrorVertical == mirrorVertical && cachedPixelsPerCell == renderScale
+        cachedMirrorVertical == mirrorVertical && cachedQuarterTurn == quarterTurn &&
+        cachedPixelsPerCell == renderScale
       ) {
         // The picture from the cache is a picture: whatever failed before is no longer the last answer.
         lastGenerationFailed = false
@@ -570,6 +579,7 @@ object WfcGenerator {
         cachedWrapEdges = wrapEdges
         cachedMirrorHorizontal = mirrorHorizontal
         cachedMirrorVertical = mirrorVertical
+        cachedQuarterTurn = quarterTurn
         cachedPixelsPerCell = renderScale
         lastSolveMillis = solveMillis
       }

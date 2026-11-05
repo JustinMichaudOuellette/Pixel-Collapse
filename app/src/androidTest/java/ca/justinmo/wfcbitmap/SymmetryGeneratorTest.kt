@@ -13,11 +13,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * The two mirrors reach the generator, and the generator knows which one it was asked for.
+ * The three symmetry settings reach the generator, and the generator knows which one it was asked for.
  *
- * The tile set is what the solver is given, so the flips have to show up there -- and the cached picture is
- * keyed by the settings that made it, so turning one mirror off has to be able to bring the unmirrored picture
- * back rather than the flipped one that was cached a moment ago.
+ * The tile set is what the solver is given, so the flips and the turn have to show up there -- and the cached
+ * picture is keyed by the settings that made it, so turning one off has to be able to bring the plain picture
+ * back rather than the turned or mirrored one that was cached a moment ago.
  */
 @RunWith(AndroidJUnit4::class)
 class SymmetryGeneratorTest {
@@ -34,14 +34,30 @@ class SymmetryGeneratorTest {
   }
 
   @Test
-  fun theTwoMirrorsAreDifferentPatterns() = runBlocking {
-    val horizontal = generate(mirrorHorizontal = true)
-    val vertical = generate(mirrorVertical = true)
-    val both = generate(mirrorHorizontal = true, mirrorVertical = true)
+  fun theQuarterTurnAddsPatternsToTheTileSet() = runBlocking {
+    val plain = generate()
+    val turned = generate(quarterTurn = true)
 
-    // Each of the three settings offers a different set of shapes, so each was a real choice.
-    assertTrue("both mirrors add the half turn too", both.tileCount > horizontal.tileCount)
-    assertTrue("both mirrors add the half turn too", both.tileCount > vertical.tileCount)
+    assertTrue(
+      "the turn has to reach the solver: ${turned.tileCount} vs ${plain.tileCount} patterns",
+      turned.tileCount > plain.tileCount,
+    )
+  }
+
+  @Test
+  fun theTurnAndTheMirrorAreDifferentPatterns() = runBlocking {
+    val turned = generate(quarterTurn = true)
+    val mirrored = generate(mirrorHorizontal = true)
+    val both = generate(mirrorHorizontal = true, quarterTurn = true)
+
+    // Stripes lying one way: the turn offers the ones lying across, the mirror the ones running the other way,
+    // and together more than either -- the two settings are not two names for one thing.
+    assertTrue(
+      "the turn and the mirror are different tile sets",
+      turned.packedTiles?.contentEquals(mirrored.packedTiles) == false,
+    )
+    assertTrue("and together they add more", both.tileCount > turned.tileCount)
+    assertTrue("and together they add more", both.tileCount > mirrored.tileCount)
   }
 
   @Test
@@ -56,9 +72,22 @@ class SymmetryGeneratorTest {
     assertTrue("the unmirrored picture comes back", before.bitmap.sameAs(after.bitmap))
   }
 
+  @Test
+  fun turningTheQuarterTurnOffBringsTheUnturnedPictureBack() = runBlocking {
+    val before = generate()
+    val turned = generate(quarterTurn = true)
+    val after = generate()
+
+    assertTrue("the two pictures differ", !before.bitmap.sameAs(turned.bitmap))
+    // The same reasoning as the mirror above, for the third setting: the turn is part of what the cached
+    // picture is a picture of, so switching it off has to bring the plain one back rather than the turned one.
+    assertTrue("the unturned picture comes back", before.bitmap.sameAs(after.bitmap))
+  }
+
   private suspend fun generate(
     mirrorHorizontal: Boolean = false,
     mirrorVertical: Boolean = false,
+    quarterTurn: Boolean = false,
   ) = WfcGenerator.generate(
     pixels = DRAWING,
     sourceWidth = SIDE,
@@ -70,6 +99,7 @@ class SymmetryGeneratorTest {
     wrapEdges = true,
     mirrorHorizontal = mirrorHorizontal,
     mirrorVertical = mirrorVertical,
+    quarterTurn = quarterTurn,
   )
 
   private companion object {

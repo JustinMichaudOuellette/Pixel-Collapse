@@ -70,12 +70,13 @@ internal fun EditorInfoScreen(open: Boolean, onClose: () -> Unit) {
         "coarser setting is a blockier picture of the same size.",
     )
     InfoSection(
-      title = "Edges and mirrors",
+      title = "Edges and symmetry",
       body = "Wrapped, the drawing is read as a torus: its borders are not borders, and a pattern may run " +
         "off one edge and come back on the other. Unwrapped, the drawing's border has to be the picture's " +
         "border, which a busy border cannot be around a long edge -- the app then tiles without that rule " +
-        "and says \"Edges relaxed\". Mirrors offer the flipped copies of every window as well, which is " +
-        "more arrangements of the same drawing, and shapes facing a way the drawing does not face.",
+        "and says \"Edges relaxed\". The symmetry settings offer more than the drawing itself: the two " +
+        "mirrors offer every window's flipped copies, and the quarter turn offers its turned copies, which " +
+        "is more arrangements of the same drawing -- and shapes facing a way the drawing does not face.",
     )
     InfoSection(
       title = "Saving",

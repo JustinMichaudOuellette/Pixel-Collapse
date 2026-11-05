@@ -21,8 +21,8 @@ import java.io.IOException
  * worth hundreds of megabytes of snapshot file for a convenience, and the second is a scratch buffer.
  *
  * The encoding is written and read by hand rather than through a schema library: there are two producers
- * (this file and its test) and one consumer, the format is eleven fields, and a versioned header costs less
- * than a dependency.
+ * (this file and its test) and one consumer, the format is a short fixed list of fields, and a versioned
+ * header costs less than a dependency.
  */
 data class EditorSnapshot(
   val columns: Int,
@@ -47,6 +47,8 @@ data class EditorSnapshot(
   val mirrorHorizontal: Boolean,
   /** Whether every pattern was also offered flipped top to bottom. */
   val mirrorVertical: Boolean,
+  /** Whether every pattern was also offered turned a quarter turn; the third symmetry setting. */
+  val quarterTurn: Boolean = false,
   /** The selected palette ID. */
   val paletteId: String = PaletteStore.DEFAULT_PALETTE_ID,
   /**
@@ -80,6 +82,7 @@ data class EditorSnapshot(
       out.writeBoolean(wrapEdges)
       out.writeBoolean(mirrorHorizontal)
       out.writeBoolean(mirrorVertical)
+      out.writeBoolean(quarterTurn)
       out.writeUTF(paletteId)
       out.writeUTF(kernelName)
       out.writeBoolean(savedAsPattern)
@@ -100,9 +103,10 @@ data class EditorSnapshot(
      * the editor has: either of them changes the tile set, so a session cannot come back without both.
      * 5 added paletteId for palette selection. 6 added the pixel-art scaler used when saving. 7 added
      * the tile-grouping kernel, which changes the tile set as much as the mirrors do. 8 added
-     * savedAsPattern, so a pattern that was not edited afterwards does not reopen.
+     * savedAsPattern, so a pattern that was not edited afterwards does not reopen. 9 added the
+     * quarter-turn symmetry setting, the third way a window can be offered turned.
      */
-    private const val VERSION = 8
+    private const val VERSION = 9
 
     private const val HEADER_BYTES = 128
 
@@ -148,6 +152,7 @@ data class EditorSnapshot(
           val wrapEdges = input.readBoolean()
           val mirrorHorizontal = input.readBoolean()
           val mirrorVertical = input.readBoolean()
+          val quarterTurn = version >= 9 && input.readBoolean()
           val paletteId = if (version >= 5) input.readUTF() else PaletteStore.DEFAULT_PALETTE_ID
           val kernelName = if (version >= 7) input.readUTF() else KernelSize.Three.name
           val savedAsPattern = version >= 8 && input.readBoolean()
@@ -166,6 +171,7 @@ data class EditorSnapshot(
             wrapEdges = wrapEdges,
             mirrorHorizontal = mirrorHorizontal,
             mirrorVertical = mirrorVertical,
+            quarterTurn = quarterTurn,
             paletteId = paletteId,
             savedAsPattern = savedAsPattern,
           )
@@ -189,6 +195,7 @@ data class EditorSnapshot(
       wrapEdges == other.wrapEdges &&
       mirrorHorizontal == other.mirrorHorizontal &&
       mirrorVertical == other.mirrorVertical &&
+      quarterTurn == other.quarterTurn &&
       paletteId == other.paletteId &&
       savedAsPattern == other.savedAsPattern
   }
@@ -207,6 +214,7 @@ data class EditorSnapshot(
     result = 31 * result + wrapEdges.hashCode()
     result = 31 * result + mirrorHorizontal.hashCode()
     result = 31 * result + mirrorVertical.hashCode()
+    result = 31 * result + quarterTurn.hashCode()
     result = 31 * result + paletteId.hashCode()
     result = 31 * result + savedAsPattern.hashCode()
     return result

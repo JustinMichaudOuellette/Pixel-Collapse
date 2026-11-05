@@ -67,6 +67,13 @@ class EditorPreferences(context: Context) {
     preferences.edit().putBoolean(KEY_MIRROR_VERTICAL, value).apply()
   }
 
+  fun quarterTurn(fallback: Boolean): Boolean =
+    preferences.getBoolean(KEY_QUARTER_TURN, fallback)
+
+  fun setQuarterTurn(value: Boolean) {
+    preferences.edit().putBoolean(KEY_QUARTER_TURN, value).apply()
+  }
+
   fun autoMigrateColors(fallback: Boolean): Boolean =
     preferences.getBoolean(KEY_AUTO_MIGRATE_COLORS, fallback)
 
@@ -247,6 +254,7 @@ class EditorPreferences(context: Context) {
     const val KEY_WRAP_EDGES = "wrap_edges"
     const val KEY_MIRROR_HORIZONTAL = "mirror_horizontal"
     const val KEY_MIRROR_VERTICAL = "mirror_vertical"
+    const val KEY_QUARTER_TURN = "quarter_turn"
     const val KEY_AUTO_MIGRATE_COLORS = "auto_migrate_colors"
     const val KEY_OUTPUT_ASPECT = "output_aspect"
     const val KEY_OUTPUT_PREVIEW = "output_preview"

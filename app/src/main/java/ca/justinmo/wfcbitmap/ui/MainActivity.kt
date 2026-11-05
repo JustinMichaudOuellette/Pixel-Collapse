@@ -504,6 +504,18 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   }
 
   /*
+   * Whether every 3x3 pattern is also offered turned a quarter turn.
+   *
+   * The third symmetry setting, and the one neither mirror reaches: a mirror never turns a window on its
+   * side. It is a choice about what the picture may be made of like the mirrors are, so it regenerates the
+   * same way, and it composes with them -- with a mirror on as well the tile set is all eight orientations.
+   * Off by default for the same reason: a turned pattern is a shape the drawing does not contain.
+   */
+  var quarterTurn by remember {
+    mutableStateOf(preferences.quarterTurn(fallback = restored?.quarterTurn ?: false))
+  }
+
+  /*
    * Generation is started straight from the gesture, not from observing the drawing.
    *
    * Observing costs a frame: `revision` is snapshot state, Compose delivers apply-notifications on a
@@ -540,6 +552,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(wrapEdges) { preferences.setWrapEdges(wrapEdges) }
   LaunchedEffect(mirrorHorizontal) { preferences.setMirrorHorizontal(mirrorHorizontal) }
   LaunchedEffect(mirrorVertical) { preferences.setMirrorVertical(mirrorVertical) }
+  LaunchedEffect(quarterTurn) { preferences.setQuarterTurn(quarterTurn) }
   LaunchedEffect(outputSettings) { preferences.setOutputSettings(outputSettings) }
   LaunchedEffect(autoMigrateColors) { preferences.setAutoMigrateColors(autoMigrateColors) }
   LaunchedEffect(videoScreens) { preferences.setVideoScreens(videoScreens) }
@@ -590,6 +603,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       wrapEdges = wrapEdges,
       mirrorHorizontal = mirrorHorizontal,
       mirrorVertical = mirrorVertical,
+      quarterTurn = quarterTurn,
       paletteId = activePalette.id,
       savedAsPattern = patternClean,
     )
@@ -640,6 +654,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
               wrapEdges = wrapEdges,
               mirrorHorizontal = mirrorHorizontal,
               mirrorVertical = mirrorVertical,
+              quarterTurn = quarterTurn,
               pixelsPerCell = plan.pixelsPerCell,
               cellSize = plan.cellSize,
             )
@@ -710,9 +725,10 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   // Wrapping the drawing's edges or not changes what the picture may be made of, so it is rebuilt too.
   LaunchedEffect(wrapEdges) { requestGeneration() }
 
-  // Either mirror changes the tile set, and so the picture, so the picture is rebuilt for both.
+  // The symmetry settings all change the tile set, and so the picture, so the picture is rebuilt for each.
   LaunchedEffect(mirrorHorizontal) { requestGeneration() }
   LaunchedEffect(mirrorVertical) { requestGeneration() }
+  LaunchedEffect(quarterTurn) { requestGeneration() }
 
   /*
    * Sharing writes the picture that is on screen, which is the generated bitmap.
@@ -1296,6 +1312,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
                 wrapEdges = wrapEdges,
                 mirrorHorizontal = mirrorHorizontal,
                 mirrorVertical = mirrorVertical,
+                quarterTurn = quarterTurn,
                 pixelsPerCell = video.pixelsPerCell,
                 cellSize = video.cellSize,
                 timeoutMillis = PANORAMA_TIMEOUT_MILLIS,
@@ -1436,6 +1453,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
                   wrapEdges = wrapEdges,
                   mirrorHorizontal = mirrorHorizontal,
                   mirrorVertical = mirrorVertical,
+                  quarterTurn = quarterTurn,
                   pixelsPerCell = video.pixelsPerCell,
                   cellSize = video.cellSize,
                   timeoutMillis = 15_000L,
@@ -1784,11 +1802,13 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     // owns the answer: setting it is what rebuilds the picture (see the effect above).
     wrapEdges = wrapEdges,
     onWrapEdgesChange = { wrapEdges = it },
-    // The mirrors are the same kind of setting: the caller builds the picture, so it owns the answer.
+    // The symmetry settings are the same kind of choice: the caller builds the picture, so it owns them.
     mirrorHorizontal = mirrorHorizontal,
     onMirrorHorizontalChange = { mirrorHorizontal = it },
     mirrorVertical = mirrorVertical,
     onMirrorVerticalChange = { mirrorVertical = it },
+    quarterTurn = quarterTurn,
+    onQuarterTurnChange = { quarterTurn = it },
     // The drawing marks its edge cells while the picture on screen really does keep the drawing's border.
     edgeRuleKept = output?.relaxedEdges != true,
     palettes = availablePalettes,
@@ -1997,6 +2017,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           wrapEdges = snapshot.wrapEdges
           mirrorHorizontal = snapshot.mirrorHorizontal
           mirrorVertical = snapshot.mirrorVertical
+          quarterTurn = snapshot.quarterTurn
           drawingColor = Color(snapshot.colorArgb)
 
           // The palette is part of the pattern's metadata. Use the bundled file when it still exists;

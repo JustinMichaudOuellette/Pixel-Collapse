@@ -56,6 +56,7 @@ internal object PatternJson {
         wrapEdges = snapshot.wrapEdges,
         mirrorHorizontal = snapshot.mirrorHorizontal,
         mirrorVertical = snapshot.mirrorVertical,
+        quarterTurn = snapshot.quarterTurn,
         paletteColors = metadata.paletteColors.map { it.toArgb() },
         pixelsBase64 = encodePixels(snapshot.pixels),
       )
@@ -96,6 +97,7 @@ internal object PatternJson {
         wrapEdges = document.wrapEdges,
         mirrorHorizontal = document.mirrorHorizontal,
         mirrorVertical = document.mirrorVertical,
+        quarterTurn = document.quarterTurn,
       )
     }
   } catch (_: Exception) {
@@ -138,6 +140,7 @@ internal object PatternJson {
     val wrapEdges: Boolean = false,
     val mirrorHorizontal: Boolean = false,
     val mirrorVertical: Boolean = false,
+    val quarterTurn: Boolean = false,
     val paletteColors: List<Int> = emptyList(),
     val pixelsBase64: String = "",
   )
@@ -158,4 +161,6 @@ internal class PatternPayload(
   val wrapEdges: Boolean,
   val mirrorHorizontal: Boolean,
   val mirrorVertical: Boolean,
+  /** Whether every window was also offered turned a quarter turn; absent from older files, so false. */
+  val quarterTurn: Boolean = false,
 )

@@ -21,7 +21,7 @@ import java.util.zip.Inflater
  * A PNG because it is lossless and every ordinary image tool can open it. The image is the drawing itself
  * (one pixel per cell), not the generated picture, so it survives a save and load without resampling.
  * The `tEXt` chunk carries everything the image cannot: the palette, the seed, the output shape and sizes,
- * the edge setting, and the two mirrors.
+ * the edge setting, and the symmetry settings.
  *
  * The PNG is written by hand rather than through `Bitmap.compress`, because that encoder cannot attach
  * metadata and this codec has to be testable on the JVM. It supports the one format it writes: 8-bit
@@ -87,6 +87,7 @@ internal object PatternPng {
       wrapEdges = payload.wrapEdges,
       mirrorHorizontal = payload.mirrorHorizontal,
       mirrorVertical = payload.mirrorVertical,
+      quarterTurn = payload.quarterTurn,
       paletteId = payload.metadata.paletteId,
     )
     if (!snapshot.isValid) return null

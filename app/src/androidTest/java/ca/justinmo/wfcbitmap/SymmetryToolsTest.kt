@@ -27,12 +27,12 @@ import org.junit.runner.RunWith
 import org.junit.Test
 
 /**
- * Two mirrors, two buttons, and neither of them turns the other on.
+ * Three symmetry settings, three buttons, and none of them turns another on.
  *
  * They are separate settings because they are separate choices about what the picture may be made of: the
- * left-to-right flip, the top-to-bottom flip, the half turn the two make together, or nothing at all. A pair of
- * buttons that behaved like one switch would be telling the person drawing that they had chosen something they
- * had not.
+ * left-to-right flip, the top-to-bottom flip, the half turn the two make together, the quarter turns, or
+ * nothing at all. A set of buttons that behaved like one switch would be telling the person drawing that they
+ * had chosen something they had not.
  */
 @RunWith(AndroidJUnit4::class)
 class SymmetryToolsTest {
@@ -95,9 +95,40 @@ class SymmetryToolsTest {
     rule.onNodeWithContentDescription(VERTICAL).assertIsSelected()
   }
 
+  @Test
+  fun theQuarterTurnIsArmedIndependentlyOfTheMirrors() {
+    rule.setContent {
+      var horizontal by remember { mutableStateOf(false) }
+      var quarterTurn by remember { mutableStateOf(false) }
+      PixelEditorScreen(
+        mirrorHorizontal = horizontal,
+        onMirrorHorizontalChange = { horizontal = it },
+        quarterTurn = quarterTurn,
+        onQuarterTurnChange = { quarterTurn = it },
+      )
+    }
+    rule.waitForIdle()
+
+    rule.onNodeWithContentDescription(QUARTER_TURN).assertIsNotSelected()
+    rule.onNodeWithContentDescription(HORIZONTAL).assertIsNotSelected()
+
+    // The turn is a move of its own: arming it must not claim a mirror was chosen.
+    rule.onNodeWithContentDescription(QUARTER_TURN).performClick()
+    rule.waitForIdle()
+    rule.onNodeWithContentDescription(QUARTER_TURN).assertIsSelected()
+    rule.onNodeWithContentDescription(HORIZONTAL).assertIsNotSelected()
+
+    // And a mirror does not arm the turn either, or switch it off.
+    rule.onNodeWithContentDescription(HORIZONTAL).performClick()
+    rule.waitForIdle()
+    rule.onNodeWithContentDescription(QUARTER_TURN).assertIsSelected()
+    rule.onNodeWithContentDescription(HORIZONTAL).assertIsSelected()
+  }
+
   private companion object {
     const val HORIZONTAL = "Mirror every pattern left to right, giving the picture more arrangements"
     const val VERTICAL = "Mirror every pattern top to bottom, giving the picture more arrangements"
+    const val QUARTER_TURN = "Turn every pattern a quarter turn, giving the picture more arrangements"
     const val WAKELOCK_MILLIS = 120_000L
   }
 }

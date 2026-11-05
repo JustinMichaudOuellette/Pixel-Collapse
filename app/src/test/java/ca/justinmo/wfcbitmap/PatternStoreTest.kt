@@ -161,6 +161,7 @@ class PatternStoreTest {
       wrapEdges = true,
       mirrorHorizontal = true,
       mirrorVertical = false,
+      quarterTurn = true,
       paletteId = "endesga-32.txt",
     )
   }

@@ -56,6 +56,7 @@ import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Redo
 import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.Rotate90DegreesCw
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Settings
@@ -216,6 +217,16 @@ fun PixelEditorScreen(
   mirrorVertical: Boolean = false,
   /** Called when the top-to-bottom mirror is tapped, with the state it should have afterwards. */
   onMirrorVerticalChange: (Boolean) -> Unit = {},
+  /**
+   * Whether every pattern is also offered turned a quarter turn; see [EditorTool].
+   *
+   * The third symmetry setting, and the one neither mirror reaches: a mirror never turns a pattern on its
+   * side. It composes with them rather than replacing them -- with a mirror on as well the picture may use
+   * all eight orientations of a window.
+   */
+  quarterTurn: Boolean = false,
+  /** Called when the quarter-turn toggle is tapped, with the state it should have afterwards. */
+  onQuarterTurnChange: (Boolean) -> Unit = {},
   /**
    * Whether the edge rule held for the picture on screen. False once the generator had to drop it, which
    * means the drawing's border is not the picture's border any more.
@@ -446,9 +457,10 @@ fun PixelEditorScreen(
     },
 
     /*
-     * The flips are off while the same mirror is being applied to every pattern. Mirroring the drawing
-     * as well would say the same thing twice -- the picture already has both orientations of everything
-     * -- and a button that looks live but cannot change the picture is worse than one that says so.
+     * The flips and the turn are off while the matching symmetry is being applied to every pattern.
+     * Mirroring or turning the drawing as well would say the same thing twice -- the picture already has
+     * those orientations of everything -- and a button that looks live but cannot change the picture is
+     * worse than one that says so.
      */
     EditorTool(
       icon = Icons.Default.Flip,
@@ -481,7 +493,12 @@ fun PixelEditorScreen(
     EditorTool(
       icon = Icons.Default.RotateRight,
       contentDescription = "Turn the drawing a quarter turn",
-      explanation = "Turns the whole drawing a quarter turn clockwise, which swaps its width and height.",
+      explanation = if (quarterTurn) {
+        "Off while the patterns are turned a quarter turn: the picture already has every turning."
+      } else {
+        "Turns the whole drawing a quarter turn clockwise, which swaps its width and height."
+      },
+      enabled = !quarterTurn,
     ) {
       gridState.rotateClockwise()
       onResize()
@@ -553,9 +570,14 @@ fun PixelEditorScreen(
       onClick = { onWrapEdgesChange(!wrapEdges) },
     ),
     /*
-     * The two mirrors, side by side and independent of each other. Together they are the three flips a
-     * 3x3 window has -- one axis, the other, and the half turn the two make -- so a drawing with both on
-     * is arranged from four times the shapes it was drawn with.
+     * The symmetry row: the two mirrors and the quarter turn, one button each and none of them switching
+     * another on.
+     *
+     * The mirrors between them are the three flips a 3x3 window has -- one axis, the other, and the half
+     * turn the two make -- so a drawing with both on is arranged from four times the shapes it was drawn
+     * with. The turn is the move the first two cannot give, which is why it is its own setting rather than a
+     * third mirror: with all three on the picture may use all eight orientations of every window, the
+     * whole symmetry group of a square.
      */
     EditorTool(
       icon = Icons.Default.SwapHoriz,
@@ -574,6 +596,17 @@ fun PixelEditorScreen(
       // The other axis; the two do not depend on each other.
       selected = mirrorVertical,
       onClick = { onMirrorVerticalChange(!mirrorVertical) },
+    ),
+    EditorTool(
+      icon = Icons.Default.Rotate90DegreesCw,
+      contentDescription = "Turn every pattern a quarter turn, giving the picture more arrangements",
+      explanation = "On: every 3x3 pattern is also available turned a quarter turn clockwise, so the " +
+        "picture can use shapes lying on their side -- something neither mirror can offer. With the " +
+        "mirrors on as well, every window has all eight orientations.",
+      // A third axis of its own: a mirror never turns a pattern on its side, so this is not the two
+      // mirrors by another name.
+      selected = quarterTurn,
+      onClick = { onQuarterTurnChange(!quarterTurn) },
     ),
 
     // The single save writes the pattern, not a flattened picture: the PNG carries the drawing and its

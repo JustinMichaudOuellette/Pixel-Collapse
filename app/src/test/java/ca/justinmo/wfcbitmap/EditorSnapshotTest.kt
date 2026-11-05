@@ -50,6 +50,7 @@ class EditorSnapshotTest {
     wrapEdges = true,
     mirrorHorizontal = true,
     mirrorVertical = true,
+    quarterTurn = true,
     paletteId = "endesga-32.txt",
   )
 
