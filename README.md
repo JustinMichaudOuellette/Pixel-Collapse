@@ -120,12 +120,11 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 | `app/src/main/java/net/akachaki/...` | The generic WFC engine: cells, tile solvers, the solver portfolio |
 | `app/src/test/` | JVM tests |
 | `app/src/androidTest/` | Device tests, including the solver benchmarks |
-| `design/` | The script and candidates used to pick the launcher icon out of generated pictures |
+| `design/` | The Python WFC generator that turns a pattern drawing into launcher-icon candidates |
 
 ## TODOs
 
 - **Info screen** explain the basics, point to the git repo
-- **Improve launcher icon** make it full bleed, improve pattern
 - **Onboarding** tutorial and info for the app
 
 ## License
