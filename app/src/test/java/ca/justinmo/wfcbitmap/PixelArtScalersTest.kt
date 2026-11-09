@@ -1,11 +1,11 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
+import ca.justinmo.wfcbitmap.output.EagleUpscaler
+import ca.justinmo.wfcbitmap.output.Hq2xUpscaler
+import ca.justinmo.wfcbitmap.output.PixelArtScaler
+import ca.justinmo.wfcbitmap.output.PixelScaler
+import ca.justinmo.wfcbitmap.output.SaiUpscaler
+import ca.justinmo.wfcbitmap.output.SmoothUpscaler
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

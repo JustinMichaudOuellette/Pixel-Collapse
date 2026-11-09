@@ -1,10 +1,5 @@
 package ca.justinmo.wfcbitmap.video
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
+import ca.justinmo.wfcbitmap.generation.SolveTrace
 
 /**
  * Turns a real [SolveTrace] into video frames.

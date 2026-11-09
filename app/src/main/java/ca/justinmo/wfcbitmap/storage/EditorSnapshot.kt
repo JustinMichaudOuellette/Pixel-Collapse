@@ -1,11 +1,12 @@
 package ca.justinmo.wfcbitmap.storage
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
+import ca.justinmo.wfcbitmap.editor.MIN_GRID_SIZE
+import ca.justinmo.wfcbitmap.output.KernelSize
+import ca.justinmo.wfcbitmap.output.OutputAspect
+import ca.justinmo.wfcbitmap.output.OutputScale
+import ca.justinmo.wfcbitmap.output.PixelArtScaler
+import ca.justinmo.wfcbitmap.output.PreviewScale
+import ca.justinmo.wfcbitmap.palette.PaletteStore
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream

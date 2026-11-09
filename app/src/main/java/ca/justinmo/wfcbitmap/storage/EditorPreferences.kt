@@ -1,12 +1,25 @@
 package ca.justinmo.wfcbitmap.storage
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import android.content.Context
+import ca.justinmo.wfcbitmap.output.KernelSize
+import ca.justinmo.wfcbitmap.output.OutputAspect
+import ca.justinmo.wfcbitmap.output.OutputScale
+import ca.justinmo.wfcbitmap.output.OutputSettings
+import ca.justinmo.wfcbitmap.output.PixelArtScaler
+import ca.justinmo.wfcbitmap.output.PreviewScale
+import ca.justinmo.wfcbitmap.video.MAX_EVOLVE_CELLS
+import ca.justinmo.wfcbitmap.video.MAX_LOOP_SCREENS
+import ca.justinmo.wfcbitmap.video.MAX_VIDEO_FPS
+import ca.justinmo.wfcbitmap.video.MIN_EVOLVE_CELLS
+import ca.justinmo.wfcbitmap.video.MIN_LOOP_SCREENS
+import ca.justinmo.wfcbitmap.video.MIN_VIDEO_FPS
+import ca.justinmo.wfcbitmap.video.MetalFinish
+import ca.justinmo.wfcbitmap.video.MetalSettings
+import ca.justinmo.wfcbitmap.video.ScrollDirection
+import ca.justinmo.wfcbitmap.video.SolveAnimation
+import ca.justinmo.wfcbitmap.video.VideoFormat
+import ca.justinmo.wfcbitmap.video.VideoLook
+import ca.justinmo.wfcbitmap.video.VideoMode
 
 /** The range offered for the tool and colour button size, in dp. */
 const val MIN_TOOL_BUTTON_SIZE = 38

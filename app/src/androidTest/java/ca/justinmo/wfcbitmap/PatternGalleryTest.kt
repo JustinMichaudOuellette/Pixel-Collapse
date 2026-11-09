@@ -1,14 +1,16 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import androidx.compose.ui.graphics.Color
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import ca.justinmo.wfcbitmap.output.KernelSize
+import ca.justinmo.wfcbitmap.output.OutputAspect
+import ca.justinmo.wfcbitmap.output.OutputScale
+import ca.justinmo.wfcbitmap.output.PixelArtScaler
+import ca.justinmo.wfcbitmap.output.PreviewScale
+import ca.justinmo.wfcbitmap.palette.Palette
+import ca.justinmo.wfcbitmap.storage.EditorSnapshot
+import ca.justinmo.wfcbitmap.storage.PatternGallery
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull

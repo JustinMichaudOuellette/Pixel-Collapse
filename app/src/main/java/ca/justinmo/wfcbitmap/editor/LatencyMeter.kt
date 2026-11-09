@@ -1,14 +1,8 @@
 package ca.justinmo.wfcbitmap.editor
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import android.util.Log
 import android.view.View
-import android.view.ViewTreeObserver
+import ca.justinmo.wfcbitmap.generation.WfcGenerator
 import java.util.Locale
 
 /**
@@ -124,12 +118,12 @@ internal class LatencyMeter(private val tag: String = "WfcLatency") {
    *             solve 13.0, render 0.0, ui+gpu 13.6)
    * ```
    *
-   * - `snapshot` — copying the drawing out of Compose state on the tap's own thread (sub-0.1 ms)
-   * - `dispatch` — handing the work to a solver thread
-   * - `prep` — anything between resuming the coroutine and calling the generator
-   * - `extract` — sampling the tile set and building the native model
-   * - `solve`, `render` — from the generator
-   * - `ui+gpu` — everything after the bitmap exists: the state write, recomposition, the upload, the
+   * - `snapshot` ï¿½ copying the drawing out of Compose state on the tap's own thread (sub-0.1 ms)
+   * - `dispatch` ï¿½ handing the work to a solver thread
+   * - `prep` ï¿½ anything between resuming the coroutine and calling the generator
+   * - `extract` ï¿½ sampling the tile set and building the native model
+   * - `solve`, `render` ï¿½ from the generator
+   * - `ui+gpu` ï¿½ everything after the bitmap exists: the state write, recomposition, the upload, the
    *   RenderThread and the compositor. On a 90 Hz phone this comes out in multiples of ~11.1 ms, so it
    *   is mostly frame pacing rather than drawing.
    */

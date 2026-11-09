@@ -7,17 +7,7 @@
  */
 
 package ca.justinmo.wfcbitmap.editor
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
-import androidx.compose.foundation.gestures.drag
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -25,7 +15,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.semantics.selected
+import ca.justinmo.wfcbitmap.editor.*
+import ca.justinmo.wfcbitmap.palette.PaletteStore
 
 /** Smallest grid allowed in either axis, in cells. */
 const val MIN_GRID_SIZE = 7

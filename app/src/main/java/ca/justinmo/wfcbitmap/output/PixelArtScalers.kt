@@ -1,10 +1,4 @@
 package ca.justinmo.wfcbitmap.output
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 /** An image as row-major ARGB pixels, after scaling. */
 internal data class ScaledImage(val pixels: IntArray, val width: Int, val height: Int)

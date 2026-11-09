@@ -1,10 +1,4 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import ca.justinmo.wfcbitmap.ui.MAX_PREVIEW_ZOOM
 import ca.justinmo.wfcbitmap.ui.MIN_PREVIEW_ZOOM

@@ -64,8 +64,8 @@ import ca.justinmo.wfcbitmap.video.VideoMode
 import ca.justinmo.wfcbitmap.video.estimatedVideoBytes
 import ca.justinmo.wfcbitmap.video.formatByteSize
 import ca.justinmo.wfcbitmap.video.videoPlan
-import kotlin.math.roundToInt
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * The video export as a screen of its own: the loop's two measurements, the container to write, and one

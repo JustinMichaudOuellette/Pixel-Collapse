@@ -1,12 +1,17 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import ca.justinmo.wfcbitmap.generation.WfcGenerator
+import ca.justinmo.wfcbitmap.generation.groupCells
+import ca.justinmo.wfcbitmap.output.KernelSize
+import ca.justinmo.wfcbitmap.output.OutputAspect
+import ca.justinmo.wfcbitmap.output.PreviewScale
+import ca.justinmo.wfcbitmap.video.LOOP_SEAM_CELLS
+import ca.justinmo.wfcbitmap.video.MAX_PANORAMA_CELLS
+import ca.justinmo.wfcbitmap.video.PANORAMA_TIMEOUT_MILLIS
+import ca.justinmo.wfcbitmap.video.stitchScreen
+import ca.justinmo.wfcbitmap.video.videoFramePlan
+import ca.justinmo.wfcbitmap.video.videoPlan
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

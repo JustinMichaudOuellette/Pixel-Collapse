@@ -1,15 +1,16 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
-import kotlin.math.abs
+import ca.justinmo.wfcbitmap.generation.generationPlan
+import ca.justinmo.wfcbitmap.generation.groupCells
+import ca.justinmo.wfcbitmap.generation.renderCellCenters
+import ca.justinmo.wfcbitmap.output.KernelSize
+import ca.justinmo.wfcbitmap.output.OutputAspect
+import ca.justinmo.wfcbitmap.output.PreviewScale
+import ca.justinmo.wfcbitmap.output.previewPixelSize
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.abs
 
 /**
  * How a grouped kernel's cells are drawn.

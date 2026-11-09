@@ -1,10 +1,4 @@
 package ca.justinmo.wfcbitmap.generation
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 /**
  * Local Evolve: re-solves a small patch of cells while every cell outside the patch is pinned to its

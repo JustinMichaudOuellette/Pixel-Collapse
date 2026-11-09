@@ -1,11 +1,8 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
+import ca.justinmo.wfcbitmap.output.OutputScale
+import ca.justinmo.wfcbitmap.output.OutputSettings
+import ca.justinmo.wfcbitmap.output.PixelArtScaler
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

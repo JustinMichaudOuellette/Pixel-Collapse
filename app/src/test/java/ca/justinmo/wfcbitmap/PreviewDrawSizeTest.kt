@@ -1,11 +1,8 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
+import ca.justinmo.wfcbitmap.output.OutputAspect
+import ca.justinmo.wfcbitmap.output.PreviewScale
+import ca.justinmo.wfcbitmap.output.previewPixelSize
 import ca.justinmo.wfcbitmap.ui.previewColumnWidthPx
 import ca.justinmo.wfcbitmap.ui.previewDrawSize
 import org.junit.Assert.assertEquals

@@ -1,12 +1,10 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import ca.justinmo.wfcbitmap.generation.NativeTileSolver
+import ca.justinmo.wfcbitmap.generation.WfcGenerator
+import ca.justinmo.wfcbitmap.generation.WfcNative
+import kotlinx.coroutines.runBlocking
 import net.akachaki.processing.engine.array.IntArray2D
 import net.akachaki.processing.engine.enum.Direction2d8
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.BitmapWaveFunctionCell
@@ -18,7 +16,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicReference
 
 /**

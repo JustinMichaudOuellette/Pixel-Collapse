@@ -1,11 +1,10 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
+import ca.justinmo.wfcbitmap.generation.WfcGenerator
+import ca.justinmo.wfcbitmap.generation.groupCells
+import ca.justinmo.wfcbitmap.generation.renderCellCenters
+import ca.justinmo.wfcbitmap.generation.renderSolvedCells
+import ca.justinmo.wfcbitmap.output.KernelSize
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals

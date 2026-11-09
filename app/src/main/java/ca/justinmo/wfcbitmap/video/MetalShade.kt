@@ -1,5 +1,6 @@
 package ca.justinmo.wfcbitmap.video
 
+import ca.justinmo.wfcbitmap.video.MetalShade.MIN_HEIGHT
 import kotlin.math.abs
 import kotlin.math.sqrt
 

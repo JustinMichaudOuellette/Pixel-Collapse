@@ -1,18 +1,18 @@
 package ca.justinmo.wfcbitmap
+
+import ca.justinmo.wfcbitmap.editor.*
 import ca.justinmo.wfcbitmap.generation.*
 import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
 import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
-
-import java.io.ByteArrayInputStream
-import javax.imageio.ImageIO
+import ca.justinmo.wfcbitmap.storage.*
+import ca.justinmo.wfcbitmap.video.*
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume
 import org.junit.Test
 import org.w3c.dom.Element
+import java.io.ByteArrayInputStream
+import javax.imageio.ImageIO
 
 /** The GIF container and the panning geometry, checked by reading the GIF back and inspecting frames. */
 class GifEncoderTest {

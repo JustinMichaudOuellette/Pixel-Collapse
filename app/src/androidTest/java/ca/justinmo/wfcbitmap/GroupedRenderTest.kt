@@ -1,12 +1,14 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import ca.justinmo.wfcbitmap.editor.DebugTestPattern
+import ca.justinmo.wfcbitmap.generation.WfcGenerator
+import ca.justinmo.wfcbitmap.generation.blockSourcePixel
+import ca.justinmo.wfcbitmap.generation.generationPlan
+import ca.justinmo.wfcbitmap.generation.groupCells
+import ca.justinmo.wfcbitmap.output.KernelSize
+import ca.justinmo.wfcbitmap.output.OutputAspect
+import ca.justinmo.wfcbitmap.output.PreviewScale
 import kotlinx.coroutines.runBlocking
 import net.akachaki.processing.engine.array.IntArray2D
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.BitmapWaveFunctionCell

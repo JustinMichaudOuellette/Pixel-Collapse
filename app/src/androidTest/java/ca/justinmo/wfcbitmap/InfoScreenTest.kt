@@ -1,10 +1,4 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasContentDescription
@@ -44,9 +38,10 @@ class InfoScreenTest {
       EditorInfoScreen(open = true, onClose = { closed = true })
     }
 
-    rule.onNodeWithText("About Pixel Collapse").assertIsDisplayed()
-    rule.onNodeWithText("The picture is not your drawing").assertIsDisplayed()
+    rule.onNodeWithText("About").assertIsDisplayed()
+    rule.onNodeWithText("History").assertExists()
     // Section headings further down are composed but may be scrolled out of the window.
+    rule.onNodeWithText("Collapsing on purpose").assertExists()
     rule.onNodeWithText("Tile grouping").assertExists()
     rule.onNodeWithText("Saving").assertExists()
     rule.onNodeWithText("The video").assertExists()
@@ -62,7 +57,7 @@ class InfoScreenTest {
       EditorInfoScreen(open = false, onClose = {})
     }
 
-    rule.onNodeWithText("About Pixel Collapse").assertDoesNotExist()
+    rule.onNodeWithText("About").assertDoesNotExist()
   }
 
   /**
@@ -78,6 +73,6 @@ class InfoScreenTest {
     rule.onAllNodes(hasScrollToNodeAction()).onFirst()
       .performScrollToNode(hasContentDescription("About this app"))
     rule.onNodeWithContentDescription("About this app").performClick()
-    rule.onNodeWithText("About Pixel Collapse").assertIsDisplayed()
+    rule.onNodeWithText("About").assertIsDisplayed()
   }
 }

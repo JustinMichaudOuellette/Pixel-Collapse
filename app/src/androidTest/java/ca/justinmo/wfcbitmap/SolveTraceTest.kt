@@ -1,12 +1,14 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import ca.justinmo.wfcbitmap.editor.DebugTestPattern
+import ca.justinmo.wfcbitmap.generation.NativeTileSolver
+import ca.justinmo.wfcbitmap.generation.TileEvolver
+import ca.justinmo.wfcbitmap.generation.WfcGenerator
+import ca.justinmo.wfcbitmap.generation.WfcNative
+import ca.justinmo.wfcbitmap.video.SolveAnimation
+import ca.justinmo.wfcbitmap.video.SolveAnimationFrames
+import kotlinx.coroutines.runBlocking
 import net.akachaki.processing.engine.array.IntArray2D
 import net.akachaki.processing.engine.wavefunctioncollapse.bitmap.BitmapWaveFunctionCell
 import org.junit.Assert.assertArrayEquals
@@ -16,7 +18,6 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import kotlinx.coroutines.runBlocking
 
 /**
  * The trace has to describe the search that actually ran, and its final state has to be the solved

@@ -87,14 +87,11 @@ import ca.justinmo.wfcbitmap.video.MAX_VIDEO_FPS
 import ca.justinmo.wfcbitmap.video.MIN_EVOLVE_CELLS
 import ca.justinmo.wfcbitmap.video.MIN_VIDEO_FPS
 import ca.justinmo.wfcbitmap.video.MetalOffscreenRenderer
-import ca.justinmo.wfcbitmap.video.MetalSettings
 import ca.justinmo.wfcbitmap.video.MetalShade
 import ca.justinmo.wfcbitmap.video.Mp4Encoder
 import ca.justinmo.wfcbitmap.video.Mp4Saver
 import ca.justinmo.wfcbitmap.video.PANORAMA_TIMEOUT_MILLIS
 import ca.justinmo.wfcbitmap.video.ScrollDirection
-import ca.justinmo.wfcbitmap.video.panoramaMetalFrame
-import ca.justinmo.wfcbitmap.video.stillMetalFrame
 import ca.justinmo.wfcbitmap.video.SolveAnimation
 import ca.justinmo.wfcbitmap.video.SolveAnimationFrames
 import ca.justinmo.wfcbitmap.video.VideoFormat
@@ -102,7 +99,9 @@ import ca.justinmo.wfcbitmap.video.VideoLook
 import ca.justinmo.wfcbitmap.video.VideoMode
 import ca.justinmo.wfcbitmap.video.cropFrame
 import ca.justinmo.wfcbitmap.video.evolveUndoPlan
+import ca.justinmo.wfcbitmap.video.panoramaMetalFrame
 import ca.justinmo.wfcbitmap.video.scaleFrame
+import ca.justinmo.wfcbitmap.video.stillMetalFrame
 import ca.justinmo.wfcbitmap.video.stitchScreen
 import ca.justinmo.wfcbitmap.video.transposePixels
 import ca.justinmo.wfcbitmap.video.videoFramePlan

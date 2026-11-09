@@ -124,8 +124,8 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 
 ## TODOs
 
-- **Info screen** explain the basics, point to the git repo
-- **Onboarding** tutorial and info for the app
+- **Info screen** simplify, explain the history, intent and purpose
+- **Onboarding** tutorial that is shown the first time and accessible from the info screen
 
 ## License
 

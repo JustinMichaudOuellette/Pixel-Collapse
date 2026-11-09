@@ -1,10 +1,4 @@
 package ca.justinmo.wfcbitmap
-import ca.justinmo.wfcbitmap.generation.*
-import ca.justinmo.wfcbitmap.output.*
-import ca.justinmo.wfcbitmap.video.*
-import ca.justinmo.wfcbitmap.storage.*
-import ca.justinmo.wfcbitmap.palette.*
-import ca.justinmo.wfcbitmap.editor.*
 
 import android.content.Context
 import android.os.PowerManager
@@ -23,8 +17,8 @@ import ca.justinmo.wfcbitmap.ui.PixelEditorScreen
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
-import org.junit.runner.RunWith
 import org.junit.Test
+import org.junit.runner.RunWith
 
 /**
  * The wrap button tells the truth about the picture that is up, including when the picture relaxed its edges.
