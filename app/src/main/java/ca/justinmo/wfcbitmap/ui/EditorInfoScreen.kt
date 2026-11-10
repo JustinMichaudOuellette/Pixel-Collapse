@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -33,7 +32,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalInspectionMode
@@ -55,7 +53,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import ca.justinmo.wfcbitmap.R
-import ca.justinmo.wfcbitmap.output.KernelSize
 
 private const val CREDIT_URL = "https://www.justinmo.ca"
 private const val PROJECT_URL = "https://github.com/JustinMichaudOuellette/Pixel-Collapse"
@@ -158,71 +155,14 @@ internal fun EditorInfoScreen(open: Boolean, onClose: () -> Unit) {
     }
 
     InfoSection(
-      title = "History",
       body = "I started experimenting with wave function collapse as part of my pen plotting work. " +
           "I had a lot of fun creating a pseudo electric schematic generator. " +
           "I found the WFC algorithm to be particularly interesting so I decided to explore a bitmap based implementation. " +
           "Mobile felt like an interesting platform for it, not only because I am a seasoned mobile app developer but also because the touch interface makes it enjoyable. " +
           "The resulting app is a tool I create for me and to share to allow the exploration of wfc and patterns. " +
-          "I hope you enjoy it as much as I enjoyed creating it.",
+          "I hope you enjoy it as much as I enjoyed creating it." +
+          "\n\n— jmo",
     )
-
-    InfoSection(
-      title = "Collapsing on purpose",
-      body = "The app does not copy the drawing. It reads every 3×3 window of it as a tile, then fills a " +
-        "larger grid one cell at a time, keeping each new tile consistent with the tiles already around it. " +
-        "Three ideas do all the work:",
-    ) {
-      Spacer(Modifier.height(12.dp))
-      StepGrid(
-        listOf(
-          "Draw" to "A tiny pixel drawing is the whole vocabulary. The solver never invents a shape you did " +
-            "not draw.",
-          "Collapse" to "Every 3×3 window becomes a tile, and the grid is filled until every cell fits the " +
-            "tiles beside it.",
-          "Export" to "Save the picture, or turn the same solve into a panning loop, a solve replay or an " +
-            "evolve clip.",
-        ),
-      )
-    }
-
-    InfoSection(
-      title = "Tile grouping",
-      body = "The kernel is always 3×3 cells, so the grouping decides how big one cell is: 3×3 is one " +
-        "drawing pixel per cell, 6×6 is 2×2, 9×9 is 3×3. It changes what a pattern is, not how many cells " +
-        "the picture has. At 9×9 a 9×9 drawing is seen whole, and the picture becomes its lattice.",
-    ) { KernelCards() }
-
-    InfoSection(
-      title = "Preview size",
-      body = "1× solves a sixteenth of the cells, 2× a quarter, 4× the full count. It decides how much " +
-        "detail is in the picture, not how big the picture is: the preview always fills its column, so a " +
-        "coarser setting is a blockier picture of the same size.",
-    )
-    InfoSection(
-      title = "Edges and symmetry",
-      body = "Wrapped, the drawing is read as a torus: its borders are not borders, and a pattern may run " +
-        "off one edge and come back on the other. Unwrapped, the drawing's border has to be the picture's " +
-        "border, which a busy border cannot be around a long edge -- the app then tiles without that rule " +
-        "and says \"Edges relaxed\". The symmetry settings offer more than the drawing itself: the two " +
-        "mirrors offer every window's flipped copies, and the quarter turn offers its turned copies, which " +
-        "is more arrangements of the same drawing -- and shapes facing a way the drawing does not face.",
-    )
-    InfoSection(
-      title = "Saving",
-      body = "Save writes the picture to your gallery at the save size, which multiplies the generated " +
-        "picture. The preview decides how much is generated; the save size decides how big the file is. " +
-        "Saved patterns are the drawing itself, kept inside the app so they can be loaded again.",
-    )
-    InfoSection(
-      title = "The video",
-      body = "The export solves one wide panorama, pins the cells past its end to its own first cells, and " +
-        "then pans a frame-sized window across it one pixel at a time. Because the panorama's end is its " +
-        "beginning, the last frame runs into the first and the clip loops without a jump; because the " +
-        "window moves a pixel at a time, nothing is skipped. A GIF stores whole centiseconds, so the frame " +
-        "rate you pick is played at the nearest delay it can express, and the dialog says which.",
-    )
-    Spacer(Modifier.height(28.dp))
   }
 }
 
@@ -286,18 +226,20 @@ private fun StepRow(
  */
 @Composable
 internal fun InfoSection(
-  title: String,
+  title: String? = null,
   body: String,
   content: @Composable () -> Unit = {},
 ) {
   Spacer(Modifier.height(22.dp))
-  Text(
-    text = title,
-    color = MENU_TEXT_COLOR,
-    fontSize = 15.sp,
-    fontWeight = FontWeight.Bold,
-  )
-  Spacer(Modifier.height(5.dp))
+  if (title != null) {
+    Text(
+      text = title,
+      color = MENU_TEXT_COLOR,
+      fontSize = 15.sp,
+      fontWeight = FontWeight.Bold,
+    )
+    Spacer(Modifier.height(5.dp))
+  }
   Text(
     text = body,
     color = MENU_TEXT_COLOR.copy(alpha = 0.72f),
@@ -350,48 +292,6 @@ internal fun InfoScreen(
             .padding(horizontal = 20.dp),
           content = content,
         )
-      }
-    }
-  }
-}
-
-/**
- * The first three groupings as cards, so the difference between them is a picture and a line of text rather
- * than a paragraph: what changes is how many of your pixels sit inside one cell, and that is exactly what
- * each card says.
- */
-@Composable
-private fun KernelCards() {
-  Spacer(Modifier.height(12.dp))
-  Row(
-    modifier = Modifier.fillMaxWidth(),
-    horizontalArrangement = Arrangement.spacedBy(8.dp),
-  ) {
-    listOf(KernelSize.Three, KernelSize.Six, KernelSize.Nine).forEach { kernel ->
-      Surface(
-        modifier = Modifier.weight(1f),
-        shape = RoundedCornerShape(10.dp),
-        color = Color.White.copy(alpha = 0.07f),
-      ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-          Text(
-            text = kernel.label,
-            color = MENU_TEXT_COLOR,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-          )
-          Spacer(Modifier.height(2.dp))
-          Text(
-            text = if (kernel.grouped) {
-              "${kernel.cellSize}×${kernel.cellSize} pixels per cell"
-            } else {
-              "One pixel per cell"
-            },
-            color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
-            fontSize = 11.sp,
-            lineHeight = 15.sp,
-          )
-        }
       }
     }
   }
