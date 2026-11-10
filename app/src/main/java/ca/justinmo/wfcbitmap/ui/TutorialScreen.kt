@@ -38,6 +38,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -45,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -68,7 +70,7 @@ import kotlinx.coroutines.launch
 import kotlin.math.floor
 
 /**
- * The first-launch tour: four screens that explain what the app does before the editor asks to be used.
+ * The first-launch tour: five screens that explain what the app does before the editor asks to be used.
  *
  * A dialog over the editor rather than a separate activity: the editor underneath is already composed, so
  * closing the tour leaves the drawing and the solver exactly where they were. The first page keeps the
@@ -107,7 +109,7 @@ internal fun TutorialScreen(
           .windowInsetsPadding(WindowInsets.safeDrawing),
       ) {
         TopAppBar(
-          title = { Text("Tutorial") },
+          title = { Text("Introduction") },
           actions = {
             TextButton(onClick = onDismiss) {
               Text("Skip", color = MENU_TEXT_COLOR.copy(alpha = 0.75f))
@@ -132,39 +134,39 @@ internal fun TutorialScreen(
           TutorialPageView(TUTORIAL_PAGES[index], seed)
         }
 
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.Center,
-        ) {
-          TUTORIAL_PAGES.indices.forEach { index ->
-            Box(
-              modifier = Modifier
-                .padding(horizontal = 4.dp)
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(
-                  if (index == page) MENU_TEXT_COLOR else MENU_TEXT_COLOR.copy(alpha = 0.22f),
-                ),
-            )
-          }
-        }
-
-        Row(
+        // One row for the whole footer: Back on the left, the page dots centred between the two buttons, and
+        // Next on the right. A Box rather than weighted spacers because the dots belong on the screen's
+        // centre line, not on the centre of whatever the two buttons leave over.
+        Box(
           modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 16.dp),
-          verticalAlignment = Alignment.CenterVertically,
         ) {
           if (page > 0) {
             TextButton(
               onClick = { scope.launch { pager.animateScrollToPage(page - 1) } },
+              modifier = Modifier.align(Alignment.CenterStart),
             ) {
               Text("Back", color = MENU_TEXT_COLOR.copy(alpha = 0.72f))
             }
-          } else {
-            Spacer(Modifier.width(64.dp))
           }
-          Spacer(Modifier.weight(1f))
+          Row(
+            modifier = Modifier.align(Alignment.Center),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            TUTORIAL_PAGES.indices.forEach { index ->
+              Box(
+                modifier = Modifier
+                  .padding(horizontal = 4.dp)
+                  .size(8.dp)
+                  .clip(CircleShape)
+                  .background(
+                    if (index == page) MENU_TEXT_COLOR else MENU_TEXT_COLOR.copy(alpha = 0.22f),
+                  ),
+              )
+            }
+          }
           Button(
             onClick = {
               if (page == lastPage) {
@@ -177,7 +179,9 @@ internal fun TutorialScreen(
               containerColor = MENU_TEXT_COLOR,
               contentColor = Color.Black,
             ),
-            modifier = Modifier.height(48.dp),
+            modifier = Modifier
+              .align(Alignment.CenterEnd)
+              .height(48.dp),
           ) {
             Text(if (page == lastPage) "Start drawing" else "Next", fontSize = 14.sp)
           }
@@ -197,10 +201,12 @@ private fun TutorialPageView(page: TutorialPage, seed: Int) {
     horizontalAlignment = Alignment.CenterHorizontally,
   ) {
     Spacer(Modifier.height(20.dp))
-    if (page.art == TutorialArtKind.PatternResult) {
-      PatternResultArt(seed)
-    } else {
-      TutorialArt(page.art, Modifier.size(200.dp))
+    when (page.art) {
+      // The first page animates drawing the sample one touch at a time; the next page shows that drawing
+      // finished, beside the picture collapsed from it.
+      TutorialArtKind.Draw -> DrawingTutorialArt(Modifier.size(200.dp))
+      TutorialArtKind.PatternResult -> PatternResultArt(seed)
+      else -> TutorialArt(page.art, Modifier.size(200.dp))
     }
     Spacer(Modifier.height(30.dp))
     Text(
@@ -229,6 +235,20 @@ private fun TutorialPageView(page: TutorialPage, seed: Int) {
  */
 private const val SAMPLE_INTERVAL_MILLIS = 1_000L
 
+/**
+ * The drawing animation's pace. A stroke starts with a touch-down pause, then the cells follow at the stroke's
+ * own drag speed, and the highlight rests on the last cell while the hand lifts.
+ */
+private const val DRAWING_TOUCH_DOWN_MILLIS = 140L
+private const val DRAWING_TOUCH_UP_MILLIS = 90L
+
+/** Pause between strokes, while the hand moves to the next one; the highlight is off for this. */
+private const val DRAWING_STROKE_GAP_MILLIS = 220L
+
+/** Blank-paper pause before the drawing starts again, and the hold on the finished drawing. */
+private const val DRAWING_RESTART_MILLIS = 600L
+private const val DRAWING_HOLD_MILLIS = 1_800L
+
 /** The seed a sample starts on when it is composed without editor state (previews and UI tests). */
 private const val SAMPLE_FIRST_SEED = 1
 
@@ -253,7 +273,62 @@ private const val SAMPLE_RESULT_RATIO = SAMPLE_RESULT_COLUMNS.toFloat() / SAMPLE
 private const val TAG = "TutorialScreen"
 
 /**
- * The first page's before/after: the tour's 8x9 drawing and a square, deliberately coarse collapse of it.
+ * The first page's animation: the tour's 8x9 drawing being painted the way a hand would draw it.
+ *
+ * The pattern is three strokes, not a cell-by-cell sweep: the frame is traced clockwise in one drag, then the
+ * two inner bars are drawn as L-shaped strokes. Each stroke starts with the touch highlight resting on its
+ * first cell, moves at its own pace (the outline faster than the details), and lifts before the next one, so
+ * the page reads as someone drawing the test pattern rather than as a scan filling cells in.
+ */
+@Composable
+private fun DrawingTutorialArt(modifier: Modifier) {
+  var painted by remember { mutableIntStateOf(0) }
+  var touched by remember { mutableIntStateOf(-1) }
+  LaunchedEffect(Unit) {
+    val strokes = SAMPLE_DRAWING_STROKES
+    while (isActive) {
+      painted = 0
+      touched = -1
+      delay(DRAWING_RESTART_MILLIS)
+      for (stroke in strokes) {
+        touched = stroke.cells.first()
+        delay(DRAWING_TOUCH_DOWN_MILLIS)
+        for (index in stroke.cells.indices) {
+          touched = stroke.cells[index]
+          painted++
+          delay(
+            if (index == stroke.cells.lastIndex) {
+              DRAWING_TOUCH_UP_MILLIS
+            } else {
+              stroke.stepMillis
+            },
+          )
+        }
+        touched = -1
+        delay(DRAWING_STROKE_GAP_MILLIS)
+      }
+      delay(DRAWING_HOLD_MILLIS)
+    }
+  }
+  val pixels = remember(painted) {
+    IntArray(SAMPLE_DRAWING_COLUMNS * SAMPLE_DRAWING_ROWS) { SAMPLE_PAPER }.also { cells ->
+      for (step in 0 until painted) {
+        val cell = SAMPLE_DRAWING_TOUCHES[step]
+        cells[cell] = SAMPLE_DRAWING[cell]
+      }
+    }
+  }
+  PixelCells(
+    pixels = pixels,
+    columns = SAMPLE_DRAWING_COLUMNS,
+    rows = SAMPLE_DRAWING_ROWS,
+    modifier = modifier,
+    touchedCell = touched,
+  )
+}
+
+/**
+ * The result page's before/after: the tour's 8x9 drawing and a square, deliberately coarse collapse of it.
  *
  * The drawing keeps the editor's grey grid; the result is a bitmap, so it is drawn without separators. The
  * result is live: its first frame is generated with the seed the editor's picture is on, and every second the
@@ -281,7 +356,7 @@ private fun PatternResultArt(seed: Int) {
       )
       Spacer(Modifier.height(6.dp))
       Text(
-        text = "Drawn pattern",
+        text = "Drawn bitmap",
         color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
         fontSize = 10.sp,
       )
@@ -294,7 +369,7 @@ private fun PatternResultArt(seed: Int) {
       )
       Spacer(Modifier.height(6.dp))
       Text(
-        text = "Generated results",
+        text = "Generated bitmaps",
         color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
         fontSize = 10.sp,
       )
@@ -350,6 +425,9 @@ private suspend fun generateResult(seed: Int): ImageBitmap? {
  *
  * The cell is a whole number of device pixels and the grid is centred, so no cell edge lands on a fraction
  * of a pixel and the drawing is never resampled.
+ *
+ * @param touchedCell the cell under the animation's touch, or -1 for none. It is drawn as an amber ring and a
+ *   soft dot after the grid, so the touch is visible whether the cell is paper or freshly painted.
  */
 @Composable
 private fun PixelCells(
@@ -357,6 +435,7 @@ private fun PixelCells(
   columns: Int,
   rows: Int,
   modifier: Modifier,
+  touchedCell: Int = -1,
 ) {
   Canvas(modifier) {
     val cell = floor(minOf(size.width / columns, size.height / rows)).coerceAtLeast(1f)
@@ -391,6 +470,22 @@ private fun PixelCells(
         strokeWidth = 1f,
       )
     }
+    if (touchedCell in 0 until columns * rows) {
+      val left = originX + (touchedCell % columns) * cell
+      val top = originY + (touchedCell / columns) * cell
+      drawRoundRect(
+        color = SAMPLE_TOUCH_COLOR,
+        topLeft = Offset(left, top),
+        size = Size(cell, cell),
+        cornerRadius = CornerRadius(cell * 0.18f),
+        style = Stroke(width = 2.dp.toPx()),
+      )
+      drawCircle(
+        color = SAMPLE_TOUCH_COLOR.copy(alpha = 0.4f),
+        radius = cell * 0.24f,
+        center = Offset(left + cell / 2f, top + cell / 2f),
+      )
+    }
   }
 }
 
@@ -420,8 +515,8 @@ private fun PixelBitmap(image: ImageBitmap?, modifier: Modifier) {
 }
 
 /**
- * A 9x9 pixel drawing with one page-specific accent, so the four screens look like the editor rather than
- * like four slides of body copy.
+ * A 9x9 pixel drawing with one page-specific accent, so the tour's later screens look like the editor rather
+ * than like four slides of body copy.
  */
 @Composable
 private fun TutorialArt(art: TutorialArtKind, modifier: Modifier) {
@@ -498,6 +593,16 @@ private class TutorialPage(
 
 private val TUTORIAL_PAGES = listOf(
   TutorialPage(
+    title = "Draw the test pattern",
+    body = "Every picture starts as a small drawing. This is the tour's test pattern: an 8×9 phone, drawn " +
+      "the way it would be by hand — the frame first, then the inner bars, one touch at a time. In the " +
+      "editor you paint by touching the grid; the highlight shows the cell under the touch, and each touch " +
+      "paints exactly one pixel.\n\n" +
+      "Only the filled cells need painting — the empty cells are the paper the drawing sits on. The " +
+      "finished drawing is the 3×3 window set that the next pages collapse into a larger bitmap.",
+    art = TutorialArtKind.Draw,
+  ),
+  TutorialPage(
     title = "Draw a bitmap, collapse a bigger one",
     body = "The test pattern above is the bitmap loaded in the editor, and the result beside it is a " +
       "much larger bitmap collapsed from its 3×3 windows. Pixel Collapse lets you draw a small bitmap, " +
@@ -547,10 +652,11 @@ private val HEART = listOf(
 )
 
 /**
- * The 8x9 drawing the first page shows, the one the tour has always used.
+ * The 8x9 drawing the tour uses, the one it has always shown.
  *
- * It is the page's own illustration: the app does not copy the editor's grid into the tour. The result beside
- * it is generated from this drawing, so the pair always describes the same thing.
+ * It is the tour's own illustration: the app does not copy the editor's grid into the tour. The first page
+ * animates painting it, and the next page shows it finished beside the picture generated from it, so the tour
+ * always describes the same drawing.
  */
 private const val SAMPLE_DRAWING_COLUMNS = 8
 private const val SAMPLE_DRAWING_ROWS = 9
@@ -568,9 +674,62 @@ private val SAMPLE_DRAWING_TEXT = listOf(
   "........",
 )
 
+/** The colour a cell starts as, before the first page's animation paints it. */
+private val SAMPLE_PAPER = 0xFFFCFCFC.toInt()
+
 /** [SAMPLE_DRAWING_TEXT] as ARGB pixels, in the page's black-and-white sample colours. */
 private val SAMPLE_DRAWING = IntArray(SAMPLE_DRAWING_COLUMNS * SAMPLE_DRAWING_ROWS) { index ->
   val filled = SAMPLE_DRAWING_TEXT[index / SAMPLE_DRAWING_COLUMNS]
     .get(index % SAMPLE_DRAWING_COLUMNS) == 'K'
-  if (filled) 0xFF000000.toInt() else 0xFFFCFCFC.toInt()
+  if (filled) 0xFF000000.toInt() else SAMPLE_PAPER
+}
+
+/** The ring and dot that mark the cell under the animation's touch, on paper or on a painted cell. */
+private val SAMPLE_TOUCH_COLOR = Color(0xFFF2AA4C)
+
+/**
+ * One pen stroke of the drawing animation: the cells in the order a hand would move through them, and how long
+ * the drag rests between one cell and the next.
+ */
+private class DrawingStroke(val cells: IntArray, val stepMillis: Long)
+
+/**
+ * The sample drawn the way a person would draw it: the frame in one clockwise drag, then the two inner bars as
+ * L-shaped strokes. [SAMPLE_DRAWING_TOUCHES] is these strokes flattened, so the animation's painted-cell count
+ * can index it directly.
+ */
+private val SAMPLE_DRAWING_STROKES: List<DrawingStroke> by lazy {
+  fun cell(column: Int, row: Int): Int = row * SAMPLE_DRAWING_COLUMNS + column
+
+  // The 7x8 frame, clockwise from the cell after the top-left corner: top, right, bottom, left.
+  val frame = (
+    (1..7).map { cell(it, 0) } +
+      (1..7).map { cell(7, it) } +
+      (6 downTo 1).map { cell(it, 7) } +
+      (6 downTo 1).map { cell(1, it) }
+    ).toIntArray()
+
+  // The left inner divider, then the bar at the bottom of it, which runs into the frame's right side.
+  val leftDetail = (
+    (1..5).map { cell(3, it) } +
+      (4..6).map { cell(it, 5) }
+    ).toIntArray()
+
+  // The right inner divider, then its short bar, which also meets the frame's right side.
+  val rightDetail = (
+    (1..3).map { cell(5, it) } +
+      listOf(cell(6, 3))
+    ).toIntArray()
+
+  listOf(
+    // The outline is a quick, confident drag; the details are drawn more slowly.
+    DrawingStroke(frame, stepMillis = 45L),
+    DrawingStroke(leftDetail, stepMillis = 70L),
+    DrawingStroke(rightDetail, stepMillis = 70L),
+  )
+}
+
+/** Every painted cell in stroke order; the animation's painted count indexes this. */
+private val SAMPLE_DRAWING_TOUCHES: IntArray by lazy {
+  SAMPLE_DRAWING_STROKES.flatMap { it.cells.toList() }.toIntArray()
 }

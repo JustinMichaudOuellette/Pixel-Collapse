@@ -29,6 +29,9 @@ class TutorialScreenTest {
       TutorialScreen(open = true, onDismiss = { dismissed = true })
     }
 
+    rule.onNodeWithText("Draw the test pattern").assertIsDisplayed()
+    rule.onNodeWithText("Next").performClick()
+    rule.waitForIdle()
     rule.onNodeWithText("Draw a bitmap, collapse a bigger one").assertIsDisplayed()
     rule.onNodeWithText("Next").performClick()
     rule.waitForIdle()
@@ -45,6 +48,6 @@ class TutorialScreenTest {
       TutorialScreen(open = false, onDismiss = {})
     }
 
-    rule.onNodeWithText("Draw a bitmap, collapse a bigger one").assertDoesNotExist()
+    rule.onNodeWithText("Draw the test pattern").assertDoesNotExist()
   }
 }

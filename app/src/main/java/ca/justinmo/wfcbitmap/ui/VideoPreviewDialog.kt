@@ -31,6 +31,7 @@ import kotlinx.coroutines.isActive
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * A motion preview of the pan using the current preview picture.
@@ -52,7 +53,7 @@ fun VideoPreviewDialog(
   var frame by remember(open) { mutableIntStateOf(0) }
   LaunchedEffect(open, fps) {
     while (isActive) {
-      delay((1000L / max(1, fps)).coerceAtLeast(1L))
+      delay((1000L / max(1, fps)).coerceAtLeast(1L).milliseconds)
       frame++
     }
   }
