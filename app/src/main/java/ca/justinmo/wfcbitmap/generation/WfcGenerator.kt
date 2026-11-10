@@ -237,17 +237,33 @@ object WfcGenerator {
   /** How many pixels per cell the cached picture was drawn with; part of the cache key as well. */
   private var cachedPixelsPerCell: Int = PIXELS_PER_CELL
 
-  /** The reusable bitmaps the collapse is drawn into. Guarded by [cacheLock]. */
+  /** The reusable bitmaps the session's picture is drawn into. Guarded by [cacheLock]. */
   private var targets: RenderTarget? = null
 
-  private fun renderTarget(columns: Int, rows: Int, pixelsPerCell: Int): RenderTarget {
-    val existing = targets
+  /**
+   * The reusable bitmaps a demonstration is drawn into; see [generate]'s `isSessionPicture`.
+   *
+   * Kept apart from [targets] rather than sharing it: a target alternates between its two bitmaps, so a
+   * demonstration drawing into the session's target would eventually overwrite the bitmap the editor is
+   * still showing. Guarded by [cacheLock] like [targets].
+   */
+  private var sampleTargets: RenderTarget? = null
+
+  private fun renderTarget(
+    columns: Int,
+    rows: Int,
+    pixelsPerCell: Int,
+    isSessionPicture: Boolean,
+  ): RenderTarget {
+    val existing = if (isSessionPicture) targets else sampleTargets
     if (existing != null && existing.columns == columns && existing.rows == rows &&
       existing.pixelsPerCell == pixelsPerCell
     ) {
       return existing
     }
-    return RenderTarget(columns, rows, pixelsPerCell).also { targets = it }
+    return RenderTarget(columns, rows, pixelsPerCell).also {
+      if (isSessionPicture) targets = it else sampleTargets = it
+    }
   }
   private fun hedgeMillis(): Long =
     if (lastSolveMillis <= 0) FAST_SOLVER_HEDGE_MS
@@ -372,6 +388,12 @@ object WfcGenerator {
    * @param pixelsPerCell how many pixels of the picture each solved cell becomes. It changes only the size
    *   of the picture, not what it is -- the solver fills the same grid either way -- so it is a rendering
    *   choice rather than a solving one, and the save size is applied on top of it.
+   * @param isSessionPicture whether this generation is the picture the session shows. True for every
+   *   preview and every saved picture; false only for a demonstration such as the tutorial's animated
+   *   sample. A demonstration's cost, outcome and result stay out of the measurements and cache below,
+   *   because a 32x36 solve every second would otherwise tell the editor that a full-size picture costs a
+   *   few milliseconds and drop the next edit's budget to its floor. Such a caller should pass
+   *   [timeoutMillis] as well, so the sample does not inherit a retry budget meant for the editor.
    */
   suspend fun generate(
     pixels: IntArray,
@@ -390,6 +412,7 @@ object WfcGenerator {
     fixedCenters: IntArray? = null,
     fixedPatterns: IntArray? = null,
     forceRelaxedEdges: Boolean = false,
+    isSessionPicture: Boolean = true,
   ): Output = withContext(Dispatchers.Default) {
     if (sourceWidth <= 0 || sourceHeight <= 0 || pixels.size < sourceWidth * sourceHeight) {
       throw GenerationException("The drawing is empty - draw a pattern first.")
@@ -438,7 +461,7 @@ object WfcGenerator {
       }
       packed = WfcNative.packTiles(sampled)
       val reusable = cachedOutput
-      if (grouped == null && fixedCenters == null && fixedPatterns == null && reusable != null && cachedSeed == seed && columns == reusable.columns &&
+      if (isSessionPicture && grouped == null && fixedCenters == null && fixedPatterns == null && reusable != null && cachedSeed == seed && columns == reusable.columns &&
         rows == reusable.rows && cachedPacked.contentEquals(packed) &&
         cachedWrapEdges == wrapEdges && cachedMirrorHorizontal == mirrorHorizontal &&
         cachedMirrorVertical == mirrorVertical && cachedQuarterTurn == quarterTurn &&
@@ -481,7 +504,7 @@ object WfcGenerator {
      */
     val scope = this
     val shouldAbort = { !scope.isActive }
-    val isRetry = timeoutMillis == null && previousGenerationFailed()
+    val isRetry = timeoutMillis == null && isSessionPicture && previousGenerationFailed()
     val budgetMillis = timeoutMillis?.coerceAtLeast(1)
       ?: solveBudgetMillis(previousSolveMillis(), isRetry)
     if (isRetry) {
@@ -519,14 +542,14 @@ object WfcGenerator {
       relaxedEdges = tier?.result?.assignment != null
     }
     if (tier == null) {
-      noteGenerationFailed()
+      if (isSessionPicture) noteGenerationFailed()
       throw GenerationException("No pattern in this drawing can touch another, so it cannot be tiled.")
     }
     val assignment = tier.result.assignment
     if (assignment == null) {
       // The search ran out of budget or proved that nothing fits: either way this drawing did not come
       // back with a picture, so the next attempt is a retry and gets the retry budget.
-      noteGenerationFailed()
+      if (isSessionPicture) noteGenerationFailed()
       throw GenerationException(noTilingMessage(columns, rows, wrapEdges))
     }
     val millis = System.currentTimeMillis() - startedAt
@@ -534,7 +557,7 @@ object WfcGenerator {
     // kernels), and the compatibility table guarantees every neighbour relation in the result holds in
     // the drawing, under whichever sampling produced the domains.
     val renderStartedAt = System.nanoTime()
-    val target = synchronized(cacheLock) { renderTarget(columns, rows, renderScale) }
+    val target = synchronized(cacheLock) { renderTarget(columns, rows, renderScale, isSessionPicture) }
     val bitmap = target.renderSolved(
       assignment, tier.sources, tier.centers, columns, rows,
       blocks = grouped?.blocks,
@@ -576,7 +599,7 @@ object WfcGenerator {
       blocks = grouped?.blocks,
       cellSize = cell,
     )
-    if (grouped == null && fixedCenters == null && fixedPatterns == null) {
+    if (isSessionPicture && grouped == null && fixedCenters == null && fixedPatterns == null) {
       synchronized(cacheLock) {
         cachedPacked = packed
         cachedOutput = output
@@ -590,8 +613,8 @@ object WfcGenerator {
       }
     }
     // A picture came back: the next generation is measured against this solve again, not against the
-    // retry budget a failure would have bought.
-    synchronized(cacheLock) { lastGenerationFailed = false }
+    // retry budget a failure would have bought. Only the session's pictures count; see [isSessionPicture].
+    if (isSessionPicture) synchronized(cacheLock) { lastGenerationFailed = false }
     output
   }
 

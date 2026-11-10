@@ -1,6 +1,7 @@
 package ca.justinmo.wfcbitmap.ui
 
 import android.content.Intent
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -26,6 +27,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -67,7 +69,11 @@ private const val AUTHOR = "Justin Michaud-Ouellette"
  * The version is read from the package rather than written here, so a release only changes it in one place.
  */
 @Composable
-internal fun EditorInfoScreen(open: Boolean, onClose: () -> Unit) {
+internal fun EditorInfoScreen(
+  open: Boolean,
+  onClose: () -> Unit,
+  onOpenTutorial: () -> Unit = {},
+) {
   if (!open) return
 
   val context = LocalContext.current
@@ -151,6 +157,17 @@ internal fun EditorInfoScreen(open: Boolean, onClose: () -> Unit) {
         Icon(Icons.Outlined.Share, contentDescription = null)
         Spacer(Modifier.width(8.dp))
         Text("Share")
+      }
+      OutlinedButton(
+        onClick = onOpenTutorial,
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = MENU_TEXT_COLOR),
+        border = BorderStroke(1.dp, MENU_DIVIDER_COLOR),
+        contentPadding = PaddingValues(12.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(top = 10.dp),
+      ) {
+        Text("Show tutorial")
       }
     }
 

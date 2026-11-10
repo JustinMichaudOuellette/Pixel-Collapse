@@ -337,6 +337,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   }
 
   val patternGallery = remember(context) { PatternGallery(context) }
+  // Read once: the tutorial's "seen" flag only changes when this screen finishes the tour, and that is
+  // the caller's cue to stop showing it on later launches.
+  val tutorialSeen = remember { preferences.tutorialSeen(fallback = false) }
   var loadPatternDialogOpen by remember { mutableStateOf(false) }
   var cameraToolOpen by remember { mutableStateOf(false) }
   var videoExportOpen by remember { mutableStateOf(false) }
@@ -1837,6 +1840,11 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onCameraPhoto = { cameraToolOpen = true },
     onExportVideo = { videoExportOpen = true },
     onExit = { exitApp() },
+    showTutorial = !tutorialSeen,
+    onTutorialFinished = { preferences.setTutorialSeen(true) },
+    // The tutorial's first page generates the picture on screen and then its next variations, so it
+    // needs to know which seed that picture was made with.
+    previewSeed = seed,
     toolButtonSize = toolButtonSize,
     onToolButtonSizeChange = { toolButtonSize = it },
     // Only a restored session has a colour to start with; otherwise the palette's first swatch is it.

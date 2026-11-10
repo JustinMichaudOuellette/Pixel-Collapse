@@ -42,6 +42,14 @@ fun EditorInfoPreview() {
   }
 }
 
+@Preview(name = "Tutorial", heightDp = 900, widthDp = 411, backgroundColor = 0xFF000000, showBackground = true)
+@Composable
+fun TutorialPreview() {
+  WFCBitmapTheme {
+    TutorialScreen(open = true, onDismiss = {})
+  }
+}
+
 @Preview(name = "Video export", heightDp = 900, widthDp = 411, backgroundColor = 0xFF000000, showBackground = true)
 @Composable
 fun VideoExportPreview() {

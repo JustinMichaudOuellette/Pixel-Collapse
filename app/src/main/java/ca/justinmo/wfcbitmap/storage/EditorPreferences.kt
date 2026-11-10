@@ -225,6 +225,14 @@ class EditorPreferences(context: Context) {
     preferences.edit().putInt(KEY_TOOL_BUTTON_SIZE, value).apply()
   }
 
+  /** Whether the first-launch tutorial has already been shown. */
+  fun tutorialSeen(fallback: Boolean): Boolean =
+    preferences.getBoolean(KEY_TUTORIAL_SEEN, fallback)
+
+  fun setTutorialSeen(value: Boolean) {
+    preferences.edit().putBoolean(KEY_TUTORIAL_SEEN, value).apply()
+  }
+
   /**
    * The output settings, falling back per field.
    *
@@ -302,5 +310,6 @@ class EditorPreferences(context: Context) {
     const val KEY_SOLVE_ANIMATION = "solve_animation"
     const val KEY_EVOLVE_CELLS = "evolve_cells"
     const val KEY_TOOL_BUTTON_SIZE = "tool_button_size"
+    const val KEY_TUTORIAL_SEEN = "tutorial_seen"
   }
 }

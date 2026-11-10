@@ -151,6 +151,15 @@ fun PixelEditorScreen(
    * the caller closes itself rather than this screen reaching for a context to finish.
    */
   onExit: () -> Unit = {},
+  /** Whether the first-launch tutorial should be up when the editor first opens. */
+  showTutorial: Boolean = false,
+  /** Called once the tutorial is finished or skipped, so the caller can remember it. */
+  onTutorialFinished: () -> Unit = {},
+  /**
+   * The seed of the picture on screen, so the tutorial's live sample can start from the same picture
+   * instead of an unrelated one. The sample advances its own copy; this seed is never written to.
+   */
+  previewSeed: Int = 1,
   /** Size of the square tool and colour buttons, in dp; adjustable from the Settings tool. */
   toolButtonSize: Int = BUTTON_SIZE_DP_INT,
   onToolButtonSizeChange: (Int) -> Unit = {},
@@ -277,6 +286,9 @@ fun PixelEditorScreen(
   // it changes nothing about the drawing or the picture, so it belongs here rather than to the caller.
   var infoOpen by remember { mutableStateOf(false) }
   var settingsOpen by remember { mutableStateOf(false) }
+  // The first-launch tour. It is the editor's state like the info screen is: showing it changes nothing
+  // about the drawing, and the caller only needs to remember that it has been seen.
+  var tutorialOpen by remember { mutableStateOf(showTutorial) }
 
 
   // Tapping the armed mode puts the drawing back to painting; tapping another one arms that. A
@@ -955,7 +967,24 @@ fun PixelEditorScreen(
 
     // Last, so it covers the editor and the snackbar with it: it is a reading screen, and nothing under it
     // is meant to be touched while it is up.
-    EditorInfoScreen(open = infoOpen, onClose = { infoOpen = false })
+    EditorInfoScreen(
+      open = infoOpen,
+      onClose = { infoOpen = false },
+      onOpenTutorial = {
+        infoOpen = false
+        tutorialOpen = true
+      },
+    )
+    TutorialScreen(
+      open = tutorialOpen,
+      onDismiss = {
+        tutorialOpen = false
+        onTutorialFinished()
+      },
+      // The sample keeps its own drawing and its own square, low-resolution result grid; only the seed comes
+      // from the editor, so the variations start where the picture on screen left off.
+      seed = previewSeed,
+    )
   }
 }
 

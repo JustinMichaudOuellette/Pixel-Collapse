@@ -18,3 +18,4 @@ local.properties
 *.log
 design/best/*
 design/candidates/*
+design/__pycache__/*

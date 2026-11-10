@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import ca.justinmo.wfcbitmap.ui.EditorInfoScreen
@@ -39,16 +40,26 @@ class InfoScreenTest {
     }
 
     rule.onNodeWithText("About").assertIsDisplayed()
-    rule.onNodeWithText("History").assertExists()
-    // Section headings further down are composed but may be scrolled out of the window.
-    rule.onNodeWithText("Collapsing on purpose").assertExists()
-    rule.onNodeWithText("Tile grouping").assertExists()
-    rule.onNodeWithText("Saving").assertExists()
-    rule.onNodeWithText("The video").assertExists()
+    rule.onNodeWithText("Show tutorial").assertExists()
+    rule.onNodeWithText("I started experimenting with wave function collapse", substring = true)
+      .assertExists()
 
     rule.onNodeWithContentDescription("Close").performClick()
     rule.waitForIdle()
     assertTrue("the close button has to close the screen", closed)
+  }
+
+  @Test
+  fun theInfoScreenCanOpenTheTutorial() {
+    var requested = false
+    rule.setContent {
+      EditorInfoScreen(open = true, onClose = {}, onOpenTutorial = { requested = true })
+    }
+
+    rule.onNodeWithText("Show tutorial").performScrollTo().performClick()
+    rule.waitForIdle()
+
+    assertTrue("the info screen has to open the tutorial", requested)
   }
 
   @Test
