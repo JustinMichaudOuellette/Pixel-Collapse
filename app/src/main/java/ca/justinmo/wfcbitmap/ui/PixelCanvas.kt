@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -38,23 +39,25 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ca.justinmo.wfcbitmap.editor.CellRect
 import ca.justinmo.wfcbitmap.editor.PixelGridState
 import kotlin.math.floor
+import kotlin.math.roundToInt
 
 /**
  * How many cells deep the edge band is: the separator indicator marks two cells in from every side.
@@ -179,9 +182,20 @@ fun ZoomablePixelCanvas(
   onModeConsumed: () -> Unit = {},
   onTap: () -> Unit = {},
   onResize: () -> Unit = {},
+  /**
+   * On a fresh start, size the still-empty sheet to the canvas the first time the canvas is measured.
+   *
+   * The caller clears this once it has been done, so a rotation cannot resize a drawing that has been
+   * edited since, and a restored session never reaches it at all.
+   */
+  fitInitialGrid: Boolean = false,
+  /** Called after the one-time fresh-start fit, so the caller can remember not to do it again. */
+  onInitialGridFitted: () -> Unit = {},
 ) {
-  var scale by remember { mutableStateOf(1f) }
+  var scale by remember { mutableFloatStateOf(1f) }
   var offset by remember { mutableStateOf(Offset.Zero) }
+  var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+  var fitted by remember { mutableStateOf(false) }
   val haptics = LocalHapticFeedback.current
 
   /*
@@ -212,6 +226,25 @@ fun ZoomablePixelCanvas(
     modifier = Modifier
       .clipToBounds()
       .fillMaxSize()
+      .onSizeChanged { size ->
+        canvasSize = size
+        if (fitInitialGrid && !fitted && size.width > 0 && size.height > 0) {
+          // One cell on every side is the ring the + and - buttons live in; taking it off before sizing
+          // the sheet is what keeps all eight of them on screen.
+          val maxColumns = size.width / baseCellSizePx - 2
+          val maxRows = size.height / baseCellSizePx - 2
+          gridState.fitBlankToCanvas(maxColumns, maxRows, gridStep)
+          // Center the sheet, which centers the ring around it too.
+          offset =
+            Offset(
+              (size.width - gridState.columns * baseCellSizePx) / 2f,
+              (size.height - gridState.rows * baseCellSizePx) / 2f,
+            )
+          fitted = true
+          onInitialGridFitted()
+          onResize()
+        }
+      }
       // A handle for UI tests: the drawing is one Canvas and gestures are the only way to drive it, so a
       // test needs a stable way to say "this is the thing to swipe on".
       .testTag(canvasTestTag)
@@ -741,118 +774,135 @@ fun ZoomablePixelCanvas(
       drawContext.canvas.restore()
     }
 
-    // Scrollable, zoomable buttons placed next to grid edges, sized as a grid cell
-    Box(
-      modifier = Modifier
-        .fillMaxSize()
-        .graphicsLayer(
-          scaleX = scale,
-          scaleY = scale,
-          translationX = offset.x,
-          translationY = offset.y,
-          transformOrigin = TransformOrigin(0f, 0f)
-        )
-    ) {
+    // The + and - buttons for the four edges, in screen space rather than in the zoomed grid. Each pair
+    // sits just outside its edge, centred on the part of that edge which is currently visible, and keeps
+    // its normal size while the drawing is zoomed.
+    val density = LocalDensity.current
+    val cellDp = BUTTON_SIZE
+    val buttonPx = with(density) { cellDp.toPx() }
+    val viewportWidth = canvasSize.width.toFloat()
+    val viewportHeight = canvasSize.height.toFloat()
+    if (viewportWidth > 0f && viewportHeight > 0f) {
       val cs = baseCellSizePx.toFloat()
-      val cellDp = BUTTON_SIZE
+      val gridLeft = offset.x
+      val gridTop = offset.y
+      val gridRight = offset.x + gridState.columns * cs * scale
+      val gridBottom = offset.y + gridState.rows * cs * scale
 
-      val midCol = gridState.columns / 2
-      val midRow = gridState.rows / 2
+      // An edge can hold its buttons only while its line is inside the canvas and the edge runs across it.
+      val leftVisible = gridLeft in 0f..viewportWidth && gridBottom > 0f && gridTop < viewportHeight
+      val rightVisible = gridRight in 0f..viewportWidth && gridBottom > 0f && gridTop < viewportHeight
+      val topVisible = gridTop in 0f..viewportHeight && gridRight > 0f && gridLeft < viewportWidth
+      val bottomVisible = gridBottom in 0f..viewportHeight && gridRight > 0f && gridLeft < viewportWidth
 
-      val leftMinusRow = (midRow - 1).coerceIn(0, gridState.rows - 1)
-      val leftPlusRow = midRow.coerceIn(0, gridState.rows - 1)
+      // A pair is two buttons long; keeping its start inside these maxima keeps both buttons on screen.
+      val pairTopMax = (viewportHeight - buttonPx * 2f).coerceAtLeast(0f)
+      val pairLeftMax = (viewportWidth - buttonPx * 2f).coerceAtLeast(0f)
 
-      val topMinusCol = (midCol - 1).coerceIn(0, gridState.columns - 1)
-      val topPlusCol = midCol.coerceIn(0, gridState.columns - 1)
+      if (leftVisible || rightVisible) {
+        val visibleTop = maxOf(gridTop, 0f)
+        val visibleBottom = minOf(gridBottom, viewportHeight)
+        if (visibleBottom > visibleTop) {
+          // The pair is just outside the edge, centred on the visible run of that edge.
+          val pairTop = ((visibleTop + visibleBottom) / 2f - buttonPx).coerceIn(0f, pairTopMax)
+          if (leftVisible) {
+            val x = gridLeft - buttonPx
+            SubtleCellButton(
+              text = "-",
+              onClick = { gridState.removeColumnLeft(); onResize() },
+              enabled = gridState.canRemoveColumn(),
+              modifier = Modifier.size(cellDp).offset { IntOffset(x.roundToInt(), pairTop.roundToInt()) },
+            )
+            SubtleCellButton(
+              text = "+",
+              onClick = { gridState.addColumnLeft(); onResize() },
+              enabled = gridState.canAddColumn(),
+              modifier =
+                Modifier.size(cellDp).offset {
+                  IntOffset(x.roundToInt(), (pairTop + buttonPx).roundToInt())
+                },
+            )
+          }
+          if (rightVisible) {
+            val x = gridRight
+            SubtleCellButton(
+              text = "-",
+              onClick = {
+                gridState.removeColumnRight()
+                offset = Offset(offset.x + cs * scale, offset.y)
+                onResize()
+              },
+              enabled = gridState.canRemoveColumn(),
+              modifier = Modifier.size(cellDp).offset { IntOffset(x.roundToInt(), pairTop.roundToInt()) },
+            )
+            SubtleCellButton(
+              text = "+",
+              onClick = {
+                gridState.addColumnRight()
+                offset = Offset(offset.x - cs * scale, offset.y)
+                onResize()
+              },
+              enabled = gridState.canAddColumn(),
+              modifier =
+                Modifier.size(cellDp).offset {
+                  IntOffset(x.roundToInt(), (pairTop + buttonPx).roundToInt())
+                },
+            )
+          }
+        }
+      }
 
-      // Left side (- and + next to left edge at x = -cs)
-      SubtleCellButton(
-        text = "-",
-        onClick = { gridState.removeColumnLeft(); onResize() },
-        enabled = gridState.canRemoveColumn(),
-        modifier = Modifier
-          .size(cellDp)
-          .offset(x = with(LocalDensity.current) { (-cs).toDp() }, y = with(LocalDensity.current) { (leftMinusRow * cs).toDp() })
-      )
-      SubtleCellButton(
-        text = "+",
-        onClick = { gridState.addColumnLeft(); onResize() },
-        enabled = gridState.canAddColumn(),
-        modifier = Modifier
-          .size(cellDp)
-          .offset(x = with(LocalDensity.current) { (-cs).toDp() }, y = with(LocalDensity.current) { (leftPlusRow * cs).toDp() })
-      )
-
-      // Right side (- and + next to right edge at x = columns * cs). Resizing panning the canvas by the
-      // same screen distance keeps the edge buttons under the finger instead of sliding away.
-      SubtleCellButton(
-        text = "-",
-        onClick = {
-          gridState.removeColumnRight()
-          offset = Offset(offset.x + cs * scale, offset.y)
-          onResize()
-        },
-        enabled = gridState.canRemoveColumn(),
-        modifier = Modifier
-          .size(cellDp)
-          .offset(x = with(LocalDensity.current) { (gridState.columns * cs).toDp() }, y = with(LocalDensity.current) { (leftMinusRow * cs).toDp() })
-      )
-      SubtleCellButton(
-        text = "+",
-        onClick = {
-          gridState.addColumnRight()
-          offset = Offset(offset.x - cs * scale, offset.y)
-          onResize()
-        },
-        enabled = gridState.canAddColumn(),
-        modifier = Modifier
-          .size(cellDp)
-          .offset(x = with(LocalDensity.current) { (gridState.columns * cs).toDp() }, y = with(LocalDensity.current) { (leftPlusRow * cs).toDp() })
-      )
-
-      // Top side (- and + next to top edge at y = -cs)
-      SubtleCellButton(
-        text = "-",
-        onClick = { gridState.removeRowTop(); onResize() },
-        enabled = gridState.canRemoveRow(),
-        modifier = Modifier
-          .size(cellDp)
-          .offset(x = with(LocalDensity.current) { (topMinusCol * cs).toDp() }, y = with(LocalDensity.current) { (-cs).toDp() })
-      )
-      SubtleCellButton(
-        text = "+",
-        onClick = { gridState.addRowTop(); onResize() },
-        enabled = gridState.canAddRow(),
-        modifier = Modifier
-          .size(cellDp)
-          .offset(x = with(LocalDensity.current) { (topPlusCol * cs).toDp() }, y = with(LocalDensity.current) { (-cs).toDp() })
-      )
-
-      // Bottom side (- and + next to bottom edge at y = rows * cs), anchored the same way.
-      SubtleCellButton(
-        text = "-",
-        onClick = {
-          gridState.removeRowBottom()
-          offset = Offset(offset.x, offset.y + cs * scale)
-          onResize()
-        },
-        enabled = gridState.canRemoveRow(),
-        modifier = Modifier
-          .size(cellDp)
-          .offset(x = with(LocalDensity.current) { (topMinusCol * cs).toDp() }, y = with(LocalDensity.current) { (gridState.rows * cs).toDp() })
-      )
-      SubtleCellButton(
-        text = "+",
-        onClick = {
-          gridState.addRowBottom()
-          offset = Offset(offset.x, offset.y - cs * scale)
-          onResize()
-        },
-        enabled = gridState.canAddRow(),
-        modifier = Modifier
-          .size(cellDp)
-          .offset(x = with(LocalDensity.current) { (topPlusCol * cs).toDp() }, y = with(LocalDensity.current) { (gridState.rows * cs).toDp() })
-      )
+      if (topVisible || bottomVisible) {
+        val visibleLeft = maxOf(gridLeft, 0f)
+        val visibleRight = minOf(gridRight, viewportWidth)
+        if (visibleRight > visibleLeft) {
+          val pairLeft = ((visibleLeft + visibleRight) / 2f - buttonPx).coerceIn(0f, pairLeftMax)
+          if (topVisible) {
+            val y = gridTop - buttonPx
+            SubtleCellButton(
+              text = "-",
+              onClick = { gridState.removeRowTop(); onResize() },
+              enabled = gridState.canRemoveRow(),
+              modifier = Modifier.size(cellDp).offset { IntOffset(pairLeft.roundToInt(), y.roundToInt()) },
+            )
+            SubtleCellButton(
+              text = "+",
+              onClick = { gridState.addRowTop(); onResize() },
+              enabled = gridState.canAddRow(),
+              modifier =
+                Modifier.size(cellDp).offset {
+                  IntOffset((pairLeft + buttonPx).roundToInt(), y.roundToInt())
+                },
+            )
+          }
+          if (bottomVisible) {
+            val y = gridBottom
+            SubtleCellButton(
+              text = "-",
+              onClick = {
+                gridState.removeRowBottom()
+                offset = Offset(offset.x, offset.y + cs * scale)
+                onResize()
+              },
+              enabled = gridState.canRemoveRow(),
+              modifier = Modifier.size(cellDp).offset { IntOffset(pairLeft.roundToInt(), y.roundToInt()) },
+            )
+            SubtleCellButton(
+              text = "+",
+              onClick = {
+                gridState.addRowBottom()
+                offset = Offset(offset.x, offset.y - cs * scale)
+                onResize()
+              },
+              enabled = gridState.canAddRow(),
+              modifier =
+                Modifier.size(cellDp).offset {
+                  IntOffset((pairLeft + buttonPx).roundToInt(), y.roundToInt())
+                },
+            )
+          }
+        }
+      }
     }
   }
 }

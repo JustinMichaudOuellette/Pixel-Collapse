@@ -43,18 +43,28 @@ class EditorPreferences(context: Context) {
 
   init {
     /*
-     * The preview default used to be the largest size, and the app wrote it on first run. Moving the
-     * default to the smallest one means that a preference written by the old app would otherwise keep
-     * opening on the big preview: migrate that one old default once, and never touch the choice again.
+     * Migrations, run once per installed app:
+     *
+     * - The preview default used to be the largest size, and the app wrote it on first run. Moving the
+     *   default to the smallest one means that a preference written by the old app would otherwise keep
+     *   opening on the big preview: migrate that one old default once, and never touch the choice again.
+     * - The three symmetries became the default in schema 3: an install coming from an older version takes
+     *   them once, so the new default also reaches a device that already had the old false values written.
      */
-    migratePreviewDefault()
+    migrateDefaults()
   }
 
-  private fun migratePreviewDefault() {
-    if (preferences.getInt(KEY_SCHEMA_VERSION, 1) >= SCHEMA_VERSION) return
+  private fun migrateDefaults() {
+    val previousVersion = preferences.getInt(KEY_SCHEMA_VERSION, 1)
+    if (previousVersion >= SCHEMA_VERSION) return
     val editor = preferences.edit().putInt(KEY_SCHEMA_VERSION, SCHEMA_VERSION)
     if (preferences.getString(KEY_OUTPUT_PREVIEW, null) == PreviewScale.Two.name) {
       editor.putString(KEY_OUTPUT_PREVIEW, PreviewScale.Half.name)
+    }
+    if (previousVersion < 3) {
+      editor.putBoolean(KEY_MIRROR_HORIZONTAL, true)
+      editor.putBoolean(KEY_MIRROR_VERTICAL, true)
+      editor.putBoolean(KEY_QUARTER_TURN, true)
     }
     editor.apply()
   }
@@ -269,7 +279,7 @@ class EditorPreferences(context: Context) {
     const val FILE_NAME = "editor_settings"
 
     /** 2 moved the preview default from the largest size to the smallest. */
-    const val SCHEMA_VERSION = 2
+    const val SCHEMA_VERSION = 3
 
     const val KEY_SCHEMA_VERSION = "schema_version"
     const val KEY_WRAP_EDGES = "wrap_edges"

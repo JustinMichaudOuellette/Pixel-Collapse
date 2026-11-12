@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -96,7 +97,7 @@ fun WfcPreview(
   scaler: PixelArtScaler = PixelArtScaler.Nearest,
   onTap: () -> Unit = {},
 ) {
-  var zoom by remember { mutableStateOf(1f) }
+  var zoom by remember { mutableFloatStateOf(1f) }
   var pan by remember { mutableStateOf(Offset.Zero) }
 
   // The chosen upscaler is shown on screen too, not only in the saved file: a 2x pass is enough to make

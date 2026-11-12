@@ -16,7 +16,8 @@ import kotlinx.coroutines.withContext
  * The app's palettes, loaded in two stages before the editor needs them.
  *
  * The first stage resolves the one palette the editor opens on: the palette the last session was using
- * when that file still exists, otherwise `endesga-32.txt`. The UI waits only for this one, so it has
+ * when that file still exists, otherwise the default (`nintendo-entertainment-system.txt`). The UI waits
+ * only for this one, so it has
  * colours as soon as it can be composed. The second stage parses every other palette file straight after,
  * so opening the palette picker finds the whole list there.
  *
@@ -35,7 +36,7 @@ class PaletteRepository(context: Context) {
     private set
 
   /**
-   * Every palette parsed so far, with `endesga-32.txt` first once the full list is in.
+   * Every palette parsed so far, with the default palette first once the full list is in.
    *
    * It starts as the single [initialPalette] and grows to the complete list; the picker observes it and
    * simply shows what is ready.

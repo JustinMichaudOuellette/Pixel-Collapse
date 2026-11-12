@@ -70,8 +70,8 @@ data class CellRect(val left: Int, val top: Int, val right: Int, val bottom: Int
 class PixelGridState(
   /**
    * The colours the drawing may start from. The app hands over the palette it loaded from
-   * `endesga-32.txt`; the single black fallback only keeps the state constructible in previews and
-   * tests that do not care which palette they are on.
+   * `nintendo-entertainment-system.txt`; the single black fallback only keeps the state constructible in
+   * previews and tests that do not care which palette they are on.
    */
   palette: List<Color> = listOf(Color.Black),
   initialColumns: Int = 16,
@@ -599,6 +599,23 @@ class PixelGridState(
     if (newColumns == columns && newRows == rows) return
     noteEdit()
     replaceGrid(newColumns, newRows, columns, rows, pixels.toList())
+  }
+
+  /**
+   * On a fresh start, makes the blank sheet the largest one that fits the drawing area.
+   *
+   * The editor draws one drawing pixel per cell at its fixed cell size and puts its + and - buttons in
+   * the cell just outside each edge, so the sheet plus that one-cell ring has to fit: [maxColumns] and
+   * [maxRows] are the drawing-pixel counts already reduced by that ring. The sides are rounded down to
+   * whole [cellSize] cells and kept at the editor's minimum; a drawing area too small for the minimum
+   * clips rather than inventing a smaller legal grid.
+   */
+  fun fitBlankToCanvas(maxColumns: Int, maxRows: Int, cellSize: Int) {
+    val step = cellSize.coerceAtLeast(1)
+    val minSide = MIN_GRID_SIZE * step
+    val columns = ((maxColumns.coerceAtMost(MAX_GRID_SIZE) / step) * step).coerceAtLeast(minSide)
+    val rows = ((maxRows.coerceAtMost(MAX_GRID_SIZE) / step) * step).coerceAtLeast(minSide)
+    restoreDrawing(columns, rows, IntArray(columns * rows) { blankColor.toArgb() }, step)
   }
 
   /**

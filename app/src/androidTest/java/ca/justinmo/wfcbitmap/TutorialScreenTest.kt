@@ -29,13 +29,16 @@ class TutorialScreenTest {
       TutorialScreen(open = true, onDismiss = { dismissed = true })
     }
 
-    rule.onNodeWithText("Draw the test pattern").assertIsDisplayed()
+    rule.onNodeWithText("Start by drawing some pixels").assertIsDisplayed()
     rule.onNodeWithText("Next").performClick()
     rule.waitForIdle()
-    rule.onNodeWithText("Draw a bitmap, collapse a bigger one").assertIsDisplayed()
+    rule.onNodeWithText("Patterns are extracted").assertIsDisplayed()
     rule.onNodeWithText("Next").performClick()
     rule.waitForIdle()
-    rule.onNodeWithText("Your drawing becomes tiles").assertIsDisplayed()
+    rule.onNodeWithText("Countless variations can be generated").assertIsDisplayed()
+    rule.onNodeWithText("Next").performClick()
+    rule.waitForIdle()
+    rule.onNodeWithText("Long press any tool to learn about it").assertIsDisplayed()
 
     rule.onNodeWithText("Skip").performClick()
     rule.waitForIdle()
@@ -48,6 +51,6 @@ class TutorialScreenTest {
       TutorialScreen(open = false, onDismiss = {})
     }
 
-    rule.onNodeWithText("Draw the test pattern").assertDoesNotExist()
+    rule.onNodeWithText("Start by drawing some pixels").assertDoesNotExist()
   }
 }

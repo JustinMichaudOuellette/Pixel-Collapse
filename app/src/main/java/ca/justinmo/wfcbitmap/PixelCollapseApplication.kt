@@ -11,7 +11,8 @@ import kotlinx.coroutines.sync.Mutex
 /**
  * Starts the palette load before there is an editor to show it.
  *
- * The UI opens on one palette -- the last session's, or `endesga-32.txt` -- and waits only for that one.
+ * The UI opens on one palette -- the last session's, or the default Nintendo Entertainment System
+ * palette -- and waits only for that one.
  * The rest of the palette files are parsed immediately afterwards, so the picker already has its list by
  * the time it can be opened.
  */

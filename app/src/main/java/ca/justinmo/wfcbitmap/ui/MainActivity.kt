@@ -38,6 +38,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -51,7 +52,6 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import ca.justinmo.wfcbitmap.PixelCollapseApplication
-import ca.justinmo.wfcbitmap.editor.DebugTestPattern
 import ca.justinmo.wfcbitmap.editor.LatencyMeter
 import ca.justinmo.wfcbitmap.editor.PixelGridState
 import ca.justinmo.wfcbitmap.generation.TileEvolver
@@ -222,7 +222,7 @@ private const val GENERATION_FAILED =
  * wrapper is enough to make a cast fail: walking the wrappers is what makes closing the app work whatever
  * the host does with the context.
  */
-private tailrec fun Context.hostingActivity(): Activity? = when (this) {
+internal tailrec fun Context.hostingActivity(): Activity? = when (this) {
   is Activity -> this
   is ContextWrapper -> baseContext.hostingActivity()
   else -> null
@@ -251,17 +251,43 @@ private class GenerationSlot {
 @Composable
 fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? = null) {
   val context = LocalContext.current
+  val application = context.applicationContext as PixelCollapseApplication
+  val preferences = application.preferences
+
+  /*
+   * The first-launch tour, decided before anything else is composed.
+   *
+   * The tour is a dialog when it is opened from the About screen, but a first launch must not use one: a
+   * dialog is a second window and arrives a frame or two after the activity's, so the editor would be
+   * painted first and then covered by the tour. Shown inline here instead, the window's first frame is
+   * the tour itself, and the editor is not composed at all until the tour closes.
+   *
+   * This is also before the palette wait below: the tour draws its own colours and does not need the
+   * palette, so the first frame does not depend on the asset load.
+   */
+  var tutorialPending by remember {
+    mutableStateOf(!preferences.tutorialSeen(fallback = false))
+  }
+  if (tutorialPending) {
+    FirstLaunchTutorial(
+      onDismiss = {
+        preferences.setTutorialSeen(true)
+        tutorialPending = false
+      },
+      modifier = modifier,
+    )
+    return
+  }
 
   /*
    * The palettes were already being parsed before this composition existed.
    *
-   * The Application starts on the one palette the editor opens with -- the last session's, or
-   * `endesga-32.txt` -- and parses the rest immediately afterwards. Waiting only for that first palette
+   * The Application starts on the one palette the editor opens with -- the last session's, or the
+   * default Nintendo Entertainment System palette -- and parses the rest immediately afterwards. Waiting
+   * only for that first palette
    * is what lets the editor come up as soon as it has colours, while the picker fills in behind it.
    */
-  val application = context.applicationContext as PixelCollapseApplication
   val paletteRepository = application.palettes
-  val preferences = application.preferences
   val initialPalette = paletteRepository.initialPalette
   if (initialPalette == null) {
     Box(Modifier.fillMaxSize().background(Color.Black))
@@ -286,15 +312,21 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   }
 
   /*
-   * Whether this build is debuggable, read from the installed application rather than `BuildConfig.DEBUG`
-   * because the module does not enable `buildConfig`. A debug build with nothing saved opens on AGENTS.md's
-   * canonical test pattern, so a fresh install is reproducible from the moment the app starts; a session
-   * that was saved is always restored, in every build, because it is the user's drawing and not a default.
+   * Whether this is a fresh start whose blank sheet still has to be fitted to the editor.
+   *
+   * The editor measures its drawing area only while composing, so the size cannot be known here. The
+   * canvas reports the first measurement back through this flag. A restored session never fits: it keeps
+   * the size it was saved with. The flag is saveable so a rotation, or reopening after the fit, cannot
+   * resize a drawing that has been edited since.
    */
+  var fitInitialGrid by rememberSaveable { mutableStateOf(restored == null) }
+
+  // A debug build opens at the 2× preview size, so a generation or seam problem is looked at with a
+  // normal-sized preview; it is not a drawing default.
   val debugBuild = remember {
     val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     if (debuggable) {
-      Log.i(TAG, "Debug build: the canonical test pattern is the default drawing")
+      Log.i(TAG, "Debug build: opening at the 2x preview size")
     }
     debuggable
   }
@@ -322,24 +354,14 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           restored.pixels,
           cellSize = startupKernel.cellSize,
         )
-      } else if (debugBuild && restored == null) {
-        restoreDrawing(
-          DebugTestPattern.columns,
-          DebugTestPattern.rows,
-          DebugTestPattern.pixelsFor(initialPalette.colors),
-          cellSize = startupKernel.cellSize,
-        )
       }
       // The empty start is sized by the default, which a grouped kernel may not divide; doing it here
-      // covers that case and is a no-op for the two above, which were restored already fitted.
+      // covers that case and is a no-op for the restored drawing above, which was already fitted.
       fitCells(startupKernel.cellSize)
     }
   }
 
   val patternGallery = remember(context) { PatternGallery(context) }
-  // Read once: the tutorial's "seen" flag only changes when this screen finishes the tour, and that is
-  // the caller's cue to stop showing it on later launches.
-  val tutorialSeen = remember { preferences.tutorialSeen(fallback = false) }
   var loadPatternDialogOpen by remember { mutableStateOf(false) }
   var cameraToolOpen by remember { mutableStateOf(false) }
   var videoExportOpen by remember { mutableStateOf(false) }
@@ -486,11 +508,11 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * The tile set of a drawing is every window of it, so the picture can only ever be arranged from the
    * shapes as they were drawn. Mirroring each window adds the flipped versions as well: twice the patterns
    * to fit together, and therefore more arrangements of the same drawing -- at the cost of shapes facing a
-   * way the drawing does not face. Off by default for that reason.
+   * way the drawing does not face. On by default: the new document starts with the widest tile set.
    */
   var mirrorHorizontal by remember {
     mutableStateOf(
-      preferences.mirrorHorizontal(fallback = restored?.mirrorHorizontal ?: false)
+      preferences.mirrorHorizontal(fallback = restored?.mirrorHorizontal ?: true)
     )
   }
 
@@ -502,7 +524,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * one. Either is a choice about what the picture may be made of, so both regenerate like the shape does.
    */
   var mirrorVertical by remember {
-    mutableStateOf(preferences.mirrorVertical(fallback = restored?.mirrorVertical ?: false))
+    mutableStateOf(preferences.mirrorVertical(fallback = restored?.mirrorVertical ?: true))
   }
 
   /*
@@ -511,10 +533,10 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * The third symmetry setting, and the one neither mirror reaches: a mirror never turns a window on its
    * side. It is a choice about what the picture may be made of like the mirrors are, so it regenerates the
    * same way, and it composes with them -- with a mirror on as well the tile set is all eight orientations.
-   * Off by default for the same reason: a turned pattern is a shape the drawing does not contain.
+   * On by default, with the mirrors: the new document starts with every orientation available.
    */
   var quarterTurn by remember {
-    mutableStateOf(preferences.quarterTurn(fallback = restored?.quarterTurn ?: false))
+    mutableStateOf(preferences.quarterTurn(fallback = restored?.quarterTurn ?: true))
   }
 
   /*
@@ -534,7 +556,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   // The mutex lives on the application so an export that outlives the editor still serialises with it.
   val generationMutex = application.generationMutex
 
-  // The Application already picked the saved session's palette (or endesga-32.txt) as the one to parse
+  // The Application already picked the saved session's palette (or the default NES palette) as the one to parse
   // first, so the editor can open straight into it; the rest of the list arrives for the picker.
   var activePalette by remember { mutableStateOf(initialPalette) }
 
@@ -1834,14 +1856,14 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onResize = {
       requestGeneration()
     },
+    fitInitialGrid = fitInitialGrid,
+    onInitialGridFitted = { fitInitialGrid = false },
     onSave = { savePattern() },
     onShare = { sharePicture() },
     onLoadPattern = { openPatternPicker() },
     onCameraPhoto = { cameraToolOpen = true },
     onExportVideo = { videoExportOpen = true },
     onExit = { exitApp() },
-    showTutorial = !tutorialSeen,
-    onTutorialFinished = { preferences.setTutorialSeen(true) },
     // The tutorial's first page generates the picture on screen and then its next variations, so it
     // needs to know which seed that picture was made with.
     previewSeed = seed,

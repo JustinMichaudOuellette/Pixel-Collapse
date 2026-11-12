@@ -82,23 +82,23 @@ class PaletteStoreTest {
   }
 
   @Test
-  fun theDefaultPaletteIsEndesga32WhereverItAppearsInTheList() {
+  fun theDefaultPaletteIsNesWhereverItAppearsInTheList() {
     val other = Palette("mulfok32.txt", "mulfok32", listOf(Color.White))
-    val endesga = Palette("endesga-32.txt", "Endesga 32", listOf(Color.Black))
+    val nes = Palette("nintendo-entertainment-system.txt", "Nintendo Entertainment System", listOf(Color.Black))
 
-    assertEquals(endesga, PaletteStore.defaultPalette(listOf(other, endesga)))
+    assertEquals(nes, PaletteStore.defaultPalette(listOf(other, nes)))
   }
 
   @Test
   fun theDefaultPaletteIsMatchedWithoutWorryingAboutCase() {
-    val endesga = Palette("Endesga-32.TXT", "Endesga 32", listOf(Color.Black))
+    val nes = Palette("Nintendo-Entertainment-System.TXT", "Nintendo Entertainment System", listOf(Color.Black))
     val other = Palette("other.txt", "Other", listOf(Color.White))
 
-    assertEquals(endesga, PaletteStore.defaultPalette(listOf(other, endesga)))
+    assertEquals(nes, PaletteStore.defaultPalette(listOf(other, nes)))
   }
 
   @Test
-  fun fallsBackToTheFirstPaletteWhenEndesgaIsMissing() {
+  fun fallsBackToTheFirstPaletteWhenTheDefaultIsMissing() {
     val only = Palette("other.txt", "Other", listOf(Color.White))
 
     assertEquals(only, PaletteStore.defaultPalette(listOf(only)))
@@ -126,13 +126,13 @@ class PaletteStoreTest {
   }
 
   @Test
-  fun orderingMovesEndesgaToTheFront() {
+  fun orderingMovesTheDefaultPaletteToTheFront() {
     val other = Palette("mulfok32.txt", "mulfok32", listOf(Color.White))
-    val endesga = Palette("endesga-32.txt", "Endesga 32", listOf(Color.Black))
+    val nes = Palette("nintendo-entertainment-system.txt", "Nintendo Entertainment System", listOf(Color.Black))
 
     assertEquals(
-      listOf(endesga, other),
-      PaletteStore.orderWithDefaultFirst(listOf(other, endesga)),
+      listOf(nes, other),
+      PaletteStore.orderWithDefaultFirst(listOf(other, nes)),
     )
   }
 }

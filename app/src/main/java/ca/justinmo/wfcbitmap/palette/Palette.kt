@@ -27,7 +27,7 @@ data class Palette(
 
 object PaletteStore {
 
-  const val DEFAULT_PALETTE_ID = "endesga-32.txt"
+  const val DEFAULT_PALETTE_ID = "nintendo-entertainment-system.txt"
 
   /**
    * Parses a paint.net format palette stream (.txt file).
@@ -35,7 +35,7 @@ object PaletteStore {
    * Hex color lines are 8 (AARRGGBB) or 6 (RRGGBB) hex chars.
    *
    * A file with no colour lines comes back with no colours: the default palette is read from
-   * `endesga-32.txt` like any other, so there is no built-in list to fall back to.
+   * `nintendo-entertainment-system.txt` like any other, so there is no built-in list to fall back to.
    */
   fun parsePalette(id: String, inputStream: InputStream): Palette {
     var name = id.removeSuffix(".txt").replace('-', ' ').replace('_', ' ')
@@ -116,7 +116,7 @@ object PaletteStore {
   }
 
   /**
-   * Loads every palette file in the app's assets folder, with `endesga-32.txt` first.
+   * Loads every palette file in the app's assets folder, with the default palette first.
    *
    * The files are read and parsed on [Dispatchers.IO]. The Application uses [paletteFiles] and
    * [loadPalette] to load the first palette before this full list, but this remains the one call that
@@ -127,7 +127,7 @@ object PaletteStore {
     return orderWithDefaultFirst(palettes)
   }
 
-  /** The same list with `endesga-32.txt` moved to the front, when it is present. */
+  /** The same list with the default palette moved to the front, when it is present. */
   fun orderWithDefaultFirst(palettes: List<Palette>): List<Palette> {
     val defaultIndex = palettes.indexOfFirst {
       it.id.equals(DEFAULT_PALETTE_ID, ignoreCase = true)
@@ -140,8 +140,8 @@ object PaletteStore {
   }
 
   /**
-   * The palette the editor starts on: `endesga-32.txt`, or the first loaded palette when the asset is
-   * missing.
+   * The palette the editor starts on: the default palette, or the first loaded palette when that asset
+   * is missing.
    */
   fun defaultPalette(palettes: List<Palette>): Palette {
     require(palettes.isNotEmpty()) { "No palettes were loaded" }

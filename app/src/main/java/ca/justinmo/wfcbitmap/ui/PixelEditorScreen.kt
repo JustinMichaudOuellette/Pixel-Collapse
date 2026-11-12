@@ -74,6 +74,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -106,7 +107,8 @@ import androidx.compose.material.icons.filled.Palette as PaletteIcon
  * The palette a preview or UI test sees when the caller supplies none.
  *
  * The app always passes the palettes it parsed from assets; this one exists so the screen can be
- * composed on its own, and it is deliberately not the app's default -- that is `endesga-32.txt`.
+ * composed on its own, and it is deliberately not the app's default -- that is the Nintendo Entertainment
+ * System palette.
  */
 private val PREVIEW_PALETTE = Palette(
   id = "preview.txt",
@@ -134,6 +136,14 @@ fun PixelEditorScreen(
   onTap: () -> Unit = {},
   onResize: () -> Unit = {},
   /**
+   * On a fresh start, size the blank drawing to the canvas the editor measures.
+   *
+   * The caller clears it after the one-time fit, so rotating or reopening an edited drawing cannot
+   * resize it again. A restored session passes false and keeps the size it was saved with.
+   */
+  fitInitialGrid: Boolean = false,
+  onInitialGridFitted: () -> Unit = {},
+  /**
    * Called when the Save tool is tapped: it writes the pattern PNG with its JSON metadata into the
    * gallery. The caller owns the snapshot and the naming dialog.
    */
@@ -151,10 +161,6 @@ fun PixelEditorScreen(
    * the caller closes itself rather than this screen reaching for a context to finish.
    */
   onExit: () -> Unit = {},
-  /** Whether the first-launch tutorial should be up when the editor first opens. */
-  showTutorial: Boolean = false,
-  /** Called once the tutorial is finished or skipped, so the caller can remember it. */
-  onTutorialFinished: () -> Unit = {},
   /**
    * The seed of the picture on screen, so the tutorial's live sample can start from the same picture
    * instead of an unrelated one. The sample advances its own copy; this seed is never written to.
@@ -284,12 +290,13 @@ fun PixelEditorScreen(
   var paletteMenuOpen by remember { mutableStateOf(false) }
   // The explanation of the app, over everything. It is the editor's own state like the menus are: reading
   // it changes nothing about the drawing or the picture, so it belongs here rather than to the caller.
-  var infoOpen by remember { mutableStateOf(false) }
-  var settingsOpen by remember { mutableStateOf(false) }
-  // The first-launch tour. It is the editor's state like the info screen is: showing it changes nothing
-  // about the drawing, and the caller only needs to remember that it has been seen.
-  var tutorialOpen by remember { mutableStateOf(showTutorial) }
-
+  // Saved so a rotation does not close the screen the person is reading.
+  var infoOpen by rememberSaveable { mutableStateOf(false) }
+  var settingsOpen by rememberSaveable { mutableStateOf(false) }
+  // The tour, opened from the About screen. The first-launch tour is not this one: it is shown by the
+  // caller as the screen's own content, before the editor is composed at all. Saved for the same reason:
+  // turning the device while reading it must not dismiss it.
+  var tutorialOpen by rememberSaveable { mutableStateOf(false) }
 
   // Tapping the armed mode puts the drawing back to painting; tapping another one arms that. A
   // selection belongs to the select tool, so arming any other tool forgets it rather than leaving a
@@ -844,6 +851,8 @@ fun PixelEditorScreen(
             onModeConsumed = { mode = EditorMode.Paint },
             onTap = onTap,
             onResize = onResize,
+            fitInitialGrid = fitInitialGrid,
+            onInitialGridFitted = onInitialGridFitted,
           )
         }
       }
@@ -884,6 +893,8 @@ fun PixelEditorScreen(
             onModeConsumed = { mode = EditorMode.Paint },
             onTap = onTap,
             onResize = onResize,
+            fitInitialGrid = fitInitialGrid,
+            onInitialGridFitted = onInitialGridFitted,
           )
         }
 
@@ -977,10 +988,7 @@ fun PixelEditorScreen(
     )
     TutorialScreen(
       open = tutorialOpen,
-      onDismiss = {
-        tutorialOpen = false
-        onTutorialFinished()
-      },
+      onDismiss = { tutorialOpen = false },
       // The sample keeps its own drawing and its own square, low-resolution result grid; only the seed comes
       // from the editor, so the variations start where the picture on screen left off.
       seed = previewSeed,
