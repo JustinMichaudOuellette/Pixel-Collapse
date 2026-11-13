@@ -25,37 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AspectRatio
-import androidx.compose.material.icons.filled.AutoFixHigh
-import androidx.compose.material.icons.filled.ChangeHistory
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Colorize
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Crop
-import androidx.compose.material.icons.filled.CropFree
-import androidx.compose.material.icons.filled.CropSquare
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.FindReplace
-import androidx.compose.material.icons.filled.Flip
-import androidx.compose.material.icons.filled.FormatColorFill
-import androidx.compose.material.icons.filled.GridOn
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Movie
-import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.RadioButtonUnchecked
-import androidx.compose.material.icons.filled.Redo
-import androidx.compose.material.icons.filled.Repeat
-import androidx.compose.material.icons.filled.Rotate90DegreesCw
-import androidx.compose.material.icons.filled.RotateRight
-import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material.icons.filled.SwapVert
-import androidx.compose.material.icons.filled.Timeline
-import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -101,7 +71,6 @@ import ca.justinmo.wfcbitmap.palette.Palette
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
-import androidx.compose.material.icons.filled.Palette as PaletteIcon
 
 /**
  * The palette a preview or UI test sees when the caller supplies none.
@@ -393,320 +362,131 @@ fun PixelEditorScreen(
 
   // One entry per tool, top to bottom: modes first, then history, then whole-drawing edits, then output
   // and the actions that leave the app. Rebuilt on every recomposition so the lambdas see current state.
-  val editorTools = listOf(
-    EditorTool(
-      icon = Icons.Default.Colorize,
-      contentDescription = "Pick a colour from the drawing",
-      explanation = "Takes the colour under your finger and makes it the one you draw with.",
-      selected = mode == EditorMode.Eyedropper,
-    ) { arm(EditorMode.Eyedropper) },
-    EditorTool(
-      icon = Icons.Default.FormatColorFill,
-      contentDescription = "Fill a connected area with the selected colour",
-      explanation = "Paints the whole joined area of the tapped colour, up to anything drawn in another colour.",
-      selected = mode == EditorMode.Fill,
-    ) { arm(EditorMode.Fill) },
-    EditorTool(
-      icon = Icons.Default.FindReplace,
-      contentDescription = "Replace the tapped colour everywhere with the selected colour",
-      explanation = "Swaps the tapped colour for the selected one everywhere on the drawing.",
-      selected = mode == EditorMode.ReplaceColor,
-    ) { arm(EditorMode.ReplaceColor) },
-    EditorTool(
-      icon = Icons.Default.Timeline,
-      contentDescription = "Draw a line",
-      explanation = "Drag from one cell to another; the line between the two points is painted.",
-      selected = mode == EditorMode.Line,
-      startsGroup = true,
-    ) { arm(EditorMode.Line) },
-    EditorTool(
-      icon = Icons.Default.CropSquare,
-      contentDescription = "Draw a rectangle",
-      explanation = "Drag out a box; its outline is painted and the cells inside it are left alone.",
-      selected = mode == EditorMode.Rectangle,
-    ) { arm(EditorMode.Rectangle) },
-    EditorTool(
-      icon = Icons.Default.RadioButtonUnchecked,
-      contentDescription = "Draw an ellipse",
-      explanation = "Drag out a box; an ellipse filling it is painted as an outline, not a fill.",
-      selected = mode == EditorMode.Ellipse,
-    ) { arm(EditorMode.Ellipse) },
-    EditorTool(
-      icon = Icons.Default.ChangeHistory,
-      contentDescription = "Draw a triangle",
-      explanation = "Drag out a box; a triangle standing on its bottom edge is painted as an outline.",
-      selected = mode == EditorMode.Triangle,
-    ) { arm(EditorMode.Triangle) },
-    EditorTool(
-      icon = Icons.Default.CropFree,
-      contentDescription = "Select an area to move",
-      explanation = "Drag out a rectangle to select it, then drag inside it to move what it holds.",
-      selected = mode == EditorMode.Select,
-    ) { arm(EditorMode.Select) },
-    // One tool, used in two steps: drag out an area to copy, then drag the copy. It sits with the select
-    // tool because it is that gesture plus a duplicate -- the original stays where it is.
-    EditorTool(
-      icon = Icons.Default.ContentCopy,
-      contentDescription = "Copy an area: drag out the area, then drag the copy",
-      explanation = "Drag out an area to copy it, then drag the copy where it belongs. The original " +
-        "stays where it is.",
-      selected = mode == EditorMode.Duplicate,
-    ) { arm(EditorMode.Duplicate) },
-
-    EditorTool(
-      icon = Icons.Default.Undo,
-      contentDescription = "Undo",
-      explanation = "Takes back the last edit, however many cells it touched.",
-      enabled = gridState.canUndo(),
-      startsGroup = true,
-    ) {
-      gridState.undo()
-      onResize()
-    },
-    EditorTool(
-      icon = Icons.Default.Redo,
-      contentDescription = "Redo",
-      explanation = "Puts back the edit you just took back.",
-      enabled = gridState.canRedo(),
-    ) {
-      gridState.redo()
-      onResize()
-    },
-
-    /*
-     * The flips and the turn are off while the matching symmetry is being applied to every pattern.
-     * Mirroring or turning the drawing as well would say the same thing twice -- the picture already has
-     * those orientations of everything -- and a button that looks live but cannot change the picture is
-     * worse than one that says so.
-     */
-    EditorTool(
-      icon = Icons.Default.Flip,
-      contentDescription = "Mirror the drawing left to right",
-      explanation = if (mirrorHorizontal) {
-        "Off while the patterns are mirrored left to right: the picture already has both orientations."
-      } else {
-        "Flips the drawing horizontally, like a mirror held to one side."
-      },
-      enabled = !mirrorHorizontal,
-      startsGroup = true,
-    ) {
-      gridState.flipHorizontal()
-      onResize()
-    },
-    EditorTool(
-      icon = Icons.Default.Flip,
-      contentDescription = "Mirror the drawing top to bottom",
-      explanation = if (mirrorVertical) {
-        "Off while the patterns are mirrored top to bottom: the picture already has both orientations."
-      } else {
-        "Flips the drawing vertically, like a mirror laid underneath."
-      },
-      enabled = !mirrorVertical,
-      iconRotationDegrees = 90f,
-    ) {
-      gridState.flipVertical()
-      onResize()
-    },
-    EditorTool(
-      icon = Icons.Default.RotateRight,
-      contentDescription = "Turn the drawing a quarter turn",
-      explanation = if (quarterTurn) {
-        "Off while the patterns are turned a quarter turn: the picture already has every turning."
-      } else {
-        "Turns the whole drawing a quarter turn clockwise, which swaps its width and height."
-      },
-      enabled = !quarterTurn,
-    ) {
-      gridState.rotateClockwise()
-      onResize()
-    },
-    /*
-     * Crops to what is drawn, keeping the margin the solver needs: one cell when the edges wrap (the
-     * pattern can run off the drawing and back on), two when the drawing's border is the picture's
-     * border, because then a window centred on a border cell has to be complete. The border colour is
-     * the drawing's own background, detected from its cells.
-     */
-    EditorTool(
-      icon = Icons.Default.Crop,
-      contentDescription = "Crop the drawing to what is drawn on it",
-      explanation = if (wrapEdges || !edgeRuleKept) {
-        "Trims the empty background around the drawing, leaving one cell of it, which is what the " +
-          "pattern needs to wrap around the edges."
-      } else {
-        "Trims the empty background around the drawing, leaving two cells of it, which is what the " +
-          "drawing's border needs to be the picture's border."
-      },
-    ) {
-      if (gridState.cropToContent(borderCells = if (wrapEdges || !edgeRuleKept) 1 else 2)) onResize()
-    },
-
-    EditorTool(
-      icon = Icons.Default.PaletteIcon,
-      contentDescription = "Select color palette",
-      explanation = "Chooses the color palette to draw with.",
-      startsGroup = true,
-    ) { paletteMenuOpen = true },
-    EditorTool(
-      icon = Icons.Default.AspectRatio,
-      contentDescription = "Output shape and preview size",
-      explanation = "Chooses the shape of the picture and the resolution it is generated and previewed at.",
-    ) { outputMenuOpen = true },
-    // How big one cell of the 3x3 kernel is: one drawing pixel, or a group of 2x2 up to 8x8 pixels.
-    EditorTool(
-      icon = Icons.Default.GridOn,
-      contentDescription = "Choose how many pixels make one tile",
-      explanation = "Groups the drawing into cells for the 3x3 kernel: 3x3 means one pixel per cell, " +
-        "6x6 means 2x2 cells, up to 24x24 means 8x8 cells.",
-      selected = output.kernel.grouped,
-    ) { kernelMenuOpen = true },
-    // A saving decision, not a drawing one: EPX only changes the file, never the grid being painted.
-    // The save-size multiplier lives here too, because the algorithm is what decides which sizes exist.
-    EditorTool(
-      icon = Icons.Default.AutoFixHigh,
-      contentDescription = "Choose the pixel-art upscaling and save size",
-      explanation = "Chooses how a saved file is enlarged -- square blocks, EPX or Scale3x -- and the " +
-        "multiplier it is saved at.",
-      selected = output.scaler != PixelArtScaler.Nearest,
-    ) { scalerMenuOpen = true },
-    // A generation setting rather than an edit, which is why it sits with the output menu and not with
-    // the drawing tools: it changes what the picture is allowed to be made of, not the drawing.
-    EditorTool(
-      icon = Icons.Default.Repeat,
-      contentDescription = "Wrap the pattern around the drawing's edges",
-      explanation = "On: the drawing's edges are not edges, so the pattern wraps around them. " +
-        "Off: the drawing's border is the picture's border. It lights up on its own when the picture " +
-        "could not keep that border.",
-      /*
-       * Armed means the picture has no border to keep, which is true in two cases: wrapping was asked for,
-       * or the edge rule could not be held and the solver dropped it (see WfcGenerator.Output.relaxedEdges).
-       * Both leave the drawing's outer row and column out of the picture's border, so the button says the
-       * same thing either way -- a button that stayed dark while the picture was busy relaxing its edges
-       * would be telling the person drawing that their border was kept, which is exactly what is not true.
-       */
-      selected = wrapEdges || !edgeRuleKept,
-      onClick = { onWrapEdgesChange(!wrapEdges) },
-    ),
-    /*
-     * The symmetry row: the two mirrors and the quarter turn, one button each and none of them switching
-     * another on.
-     *
-     * The mirrors between them are the three flips a 3x3 window has -- one axis, the other, and the half
-     * turn the two make -- so a drawing with both on is arranged from four times the shapes it was drawn
-     * with. The turn is the move the first two cannot give, which is why it is its own setting rather than a
-     * third mirror: with all three on the picture may use all eight orientations of every window, the
-     * whole symmetry group of a square.
-     */
-    EditorTool(
-      icon = Icons.Default.SwapHoriz,
-      contentDescription = "Mirror every pattern left to right, giving the picture more arrangements",
-      explanation = "On: every 3x3 pattern is also available flipped left to right, so there are more " +
-        "patterns to arrange. Off: only the patterns exactly as drawn.",
-      // Armed means mirrored: the picture may then use shapes facing the other way.
-      selected = mirrorHorizontal,
-      onClick = { onMirrorHorizontalChange(!mirrorHorizontal) },
-    ),
-    EditorTool(
-      icon = Icons.Default.SwapVert,
-      contentDescription = "Mirror every pattern top to bottom, giving the picture more arrangements",
-      explanation = "On: every 3x3 pattern is also available flipped top to bottom. Off: only the " +
-        "patterns exactly as drawn. With the left-to-right mirror on as well, the half turn comes too.",
-      // The other axis; the two do not depend on each other.
-      selected = mirrorVertical,
-      onClick = { onMirrorVerticalChange(!mirrorVertical) },
-    ),
-    EditorTool(
-      icon = Icons.Default.Rotate90DegreesCw,
-      contentDescription = "Turn every pattern a quarter turn, giving the picture more arrangements",
-      explanation = "On: every 3x3 pattern is also available turned a quarter turn clockwise, so the " +
-        "picture can use shapes lying on their side -- something neither mirror can offer. With the " +
-        "mirrors on as well, every window has all eight orientations.",
-      // A third axis of its own: a mirror never turns a pattern on its side, so this is not the two
-      // mirrors by another name.
-      selected = quarterTurn,
-      onClick = { onQuarterTurnChange(!quarterTurn) },
-    ),
-
-    // The single save writes the pattern, not a flattened picture: the PNG carries the drawing and its
-    // JSON description, and the picker reads it back from the gallery.
-    EditorTool(
-      icon = Icons.Default.PhotoLibrary,
-      contentDescription = "Choose a pattern from the gallery",
-      explanation = "Opens the app's pattern picker over the gallery and loads the drawing, palette and " +
-        "settings from the selected pattern.",
-      startsGroup = true,
-    ) { onLoadPattern() },
-
-    // A photo as a new drawing: downscale, posterise to the selected palette, dither, then generate.
-    EditorTool(
-      icon = Icons.Default.PhotoCamera,
-      contentDescription = "Use a camera photo as the drawing",
-      explanation = "Takes a photo, reduces it to a small grid, posterises it to the selected palette, " +
-        "dithers it, and uses that as the drawing to generate from. You can adjust each step before " +
-        "applying it.",
-      startsGroup = true,
-    ) { onCameraPhoto() },
-
-    // A movie of the drawing: a wide panorama is generated and a frame-sized window pans across it, looping.
-    EditorTool(
-      icon = Icons.Default.Movie,
-      contentDescription = "Make a panning video",
-      explanation = "Generates a wide picture and pans across it left to right, looping back to the start. " +
-        "Saved as an animated GIF or an MP4; the loop length and frame rate are adjustable.",
-      startsGroup = true,
-    ) { onExportVideo() },
-
-    EditorTool(
-      icon = Icons.Default.Save,
-      contentDescription = "Save the pattern to the gallery",
-      explanation = "Writes the drawing, its palette and its generation settings into the gallery as a " +
-        "PNG with an extensible JSON description. This is the single save for the app.",
-      startsGroup = true,
-    ) { onSave() },
-    EditorTool(
-      icon = Icons.Default.Share,
-      contentDescription = "Share the picture",
-      explanation = "Hands the picture to another app, like a message or a photo editor.",
-    ) { onShare() },
-    // Clearing changes the drawing but not its size; regeneration is requested all the same so the
-    // preview does not keep showing a picture of pixels that are gone.
-    EditorTool(
-      icon = Icons.Default.Delete,
-      contentDescription = "Clear the drawing",
-      explanation = "Empties the drawing back to one colour. The size of the grid is kept.",
-    ) {
-      gridState.clear()
-      onResize()
-    },
-
-    EditorTool(
-      icon = Icons.Default.Settings,
-      contentDescription = "Settings",
-      explanation = "Adjusts the size of the tool and colour buttons.",
-      startsGroup = true,
-    ) { settingsOpen = true },
-
-    // What the app does, in its own words. Its own group, next to the close button: reading is not editing,
-    // and the tools that change the drawing should not have to be passed on the way to it.
-    EditorTool(
-      icon = Icons.Default.Info,
-      contentDescription = "About this app",
-      explanation = "Explains what the picture is, what the sizes and the edge settings change, and where " +
-        "saved files go.",
-      startsGroup = true,
-    ) { infoOpen = true },
-
-    // Last, in its own group, and as far from the tools that edit the drawing as the strip goes: closing
-    // the app throws away a drawing that has never been saved anywhere, so it must not be a button the
-    // thumb can reach while it is painting. A held press says exactly that before it is tapped.
-    EditorTool(
-      icon = Icons.Default.PowerSettingsNew,
-      contentDescription = "Close the app",
-      explanation = "Closes the app. The drawing is kept and comes back next time; Save writes it out " +
-        "as a picture.",
-      startsGroup = true,
-    ) { onExit() },
-  )
-
+  // One entry per tool, in the catalog's order. Rebuilt on every recomposition so the lambdas see current
+  // state; the glyphs, descriptions and default explanations come from the shared catalog.
+  val editorTools =
+    editorToolInfos.map { info ->
+      when (info.id) {
+        EditorToolId.Eyedropper ->
+          EditorTool(info, selected = mode == EditorMode.Eyedropper) { arm(EditorMode.Eyedropper) }
+        EditorToolId.Fill ->
+          EditorTool(info, selected = mode == EditorMode.Fill) { arm(EditorMode.Fill) }
+        EditorToolId.ReplaceColor ->
+          EditorTool(info, selected = mode == EditorMode.ReplaceColor) { arm(EditorMode.ReplaceColor) }
+        EditorToolId.Line ->
+          EditorTool(info, selected = mode == EditorMode.Line) { arm(EditorMode.Line) }
+        EditorToolId.Rectangle ->
+          EditorTool(info, selected = mode == EditorMode.Rectangle) { arm(EditorMode.Rectangle) }
+        EditorToolId.Ellipse ->
+          EditorTool(info, selected = mode == EditorMode.Ellipse) { arm(EditorMode.Ellipse) }
+        EditorToolId.Triangle ->
+          EditorTool(info, selected = mode == EditorMode.Triangle) { arm(EditorMode.Triangle) }
+        EditorToolId.Select ->
+          EditorTool(info, selected = mode == EditorMode.Select) { arm(EditorMode.Select) }
+        EditorToolId.Duplicate ->
+          EditorTool(info, selected = mode == EditorMode.Duplicate) { arm(EditorMode.Duplicate) }
+        EditorToolId.Undo ->
+          EditorTool(info, enabled = gridState.canUndo()) {
+            gridState.undo()
+            onResize()
+          }
+        EditorToolId.Redo ->
+          EditorTool(info, enabled = gridState.canRedo()) {
+            gridState.redo()
+            onResize()
+          }
+        EditorToolId.FlipHorizontal ->
+          EditorTool(
+            info,
+            explanation =
+              if (mirrorHorizontal) {
+                "Off while the patterns are mirrored left to right: the picture already has both orientations."
+              } else {
+                info.explanation
+              },
+            enabled = !mirrorHorizontal,
+          ) {
+            gridState.flipHorizontal()
+            onResize()
+          }
+        EditorToolId.FlipVertical ->
+          EditorTool(
+            info,
+            explanation =
+              if (mirrorVertical) {
+                "Off while the patterns are mirrored top to bottom: the picture already has both orientations."
+              } else {
+                info.explanation
+              },
+            enabled = !mirrorVertical,
+          ) {
+            gridState.flipVertical()
+            onResize()
+          }
+        EditorToolId.Rotate ->
+          EditorTool(
+            info,
+            explanation =
+              if (quarterTurn) {
+                "Off while the patterns are turned a quarter turn: the picture already has every turning."
+              } else {
+                info.explanation
+              },
+            enabled = !quarterTurn,
+          ) {
+            gridState.rotateClockwise()
+            onResize()
+          }
+        EditorToolId.Crop ->
+          EditorTool(
+            info,
+            explanation =
+              if (wrapEdges || !edgeRuleKept) {
+                info.explanation
+              } else {
+                "Trims the empty background around the drawing, leaving two cells of it, which is what the " +
+                  "drawing's border needs to be the picture's border."
+              },
+          ) {
+            if (gridState.cropToContent(borderCells = if (wrapEdges || !edgeRuleKept) 1 else 2)) onResize()
+          }
+        EditorToolId.Palette -> EditorTool(info) { paletteMenuOpen = true }
+        EditorToolId.Output -> EditorTool(info) { outputMenuOpen = true }
+        EditorToolId.Kernel ->
+          EditorTool(info, selected = output.kernel.grouped) { kernelMenuOpen = true }
+        EditorToolId.Scaler ->
+          EditorTool(info, selected = output.scaler != PixelArtScaler.Nearest) { scalerMenuOpen = true }
+        EditorToolId.Wrap ->
+          EditorTool(info, selected = wrapEdges || !edgeRuleKept, onClick = { onWrapEdgesChange(!wrapEdges) })
+        EditorToolId.MirrorHorizontal ->
+          EditorTool(
+            info,
+            selected = mirrorHorizontal,
+            onClick = { onMirrorHorizontalChange(!mirrorHorizontal) },
+          )
+        EditorToolId.MirrorVertical ->
+          EditorTool(
+            info,
+            selected = mirrorVertical,
+            onClick = { onMirrorVerticalChange(!mirrorVertical) },
+          )
+        EditorToolId.QuarterTurn ->
+          EditorTool(info, selected = quarterTurn, onClick = { onQuarterTurnChange(!quarterTurn) })
+        EditorToolId.PhotoLibrary -> EditorTool(info) { onLoadPattern() }
+        EditorToolId.PhotoCamera -> EditorTool(info) { onCameraPhoto() }
+        EditorToolId.Movie -> EditorTool(info) { onExportVideo() }
+        EditorToolId.Save -> EditorTool(info) { onSave() }
+        EditorToolId.Share -> EditorTool(info) { onShare() }
+        EditorToolId.Clear ->
+          EditorTool(info) {
+            gridState.clear()
+            onResize()
+          }
+        EditorToolId.Settings -> EditorTool(info) { settingsOpen = true }
+        EditorToolId.Info -> EditorTool(info) { infoOpen = true }
+        EditorToolId.Exit -> EditorTool(info) { onExit() }
+      }
+    }
   val density = LocalDensity.current
   // The panel's horizontal position. Until the slot is measured there is nothing to clamp to, so the
   // first frame falls back to the leftmost position and the effect below stores it as the real value.
@@ -981,10 +761,9 @@ fun PixelEditorScreen(
     EditorInfoScreen(
       open = infoOpen,
       onClose = { infoOpen = false },
-      onOpenTutorial = {
-        infoOpen = false
-        tutorialOpen = true
-      },
+      // The tour opens over the About screen and leaves it underneath: closing the tour returns to the
+      // screen it was started from instead of dropping the person back into the editor.
+      onOpenTutorial = { tutorialOpen = true },
     )
     TutorialScreen(
       open = tutorialOpen,

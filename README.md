@@ -124,8 +124,7 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 
 ## TODOs
 
-- **Info screen** simplify, explain the history, intent and purpose
-- **Onboarding** tutorial that is shown the first time and accessible from the info screen
+- **Metal Shader** needs some ui work and a better nicer output
 
 ## License
 

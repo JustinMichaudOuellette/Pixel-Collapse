@@ -36,6 +36,19 @@ internal object NativeSolverPool {
     }
   }
 
+  /**
+   * Destroys [handle] instead of retaining it.
+   *
+   * Used for a solver whose buffers were sized for a >1,024-tile model: those are hundreds of
+   * megabytes at the largest grids, and a pooled copy would make every later small collapse inherit
+   * that footprint. Re-creating a solver for the next large solve is cheap relative to that solve.
+   */
+  @Synchronized
+  fun discard(handle: Long) {
+    if (handle == 0L) return
+    WfcNative.solverDestroy(handle)
+  }
+
   /** Drops every idle handle. Only useful when the native library is going away. */
   @Synchronized
   fun clear() {

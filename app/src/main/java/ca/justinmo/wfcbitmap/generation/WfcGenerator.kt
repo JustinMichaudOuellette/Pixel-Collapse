@@ -302,8 +302,23 @@ object WfcGenerator {
     synchronized(cacheLock) { lastGenerationFailed = true }
   }
 
-  /** The solver packs tile domains into 64-bit words and a 4-bit word index; this is its ceiling. */
-  private const val MAX_TILES = 1024
+  /**
+   * The solver packs tile domains into 64-bit words and a 6-bit word index; this is its ceiling.
+   *
+   * Must match `WFC_MAX_TILES` in wfc.h. The native check is a second guard: raising this without the
+   * native constant only produces the generic "no tiling" error further down.
+   */
+  private const val MAX_TILES = 4096
+
+  /**
+   * Largest tile set that keeps the two-worker, pooled fast path.
+   *
+   * Above this a solver's domains are 32+ words wide, so one worker alone needs hundreds of megabytes
+   * at the largest grids and a second worker would double that for a bandwidth-bound search. Turning
+   * the portfolio down to one worker here is what keeps the 4,096-pattern tier from regressing the
+   * memory behaviour of the ≤1,024 path.
+   */
+  internal const val FAST_TILE_LIMIT = 1024
 
   class GenerationException(message: String) : Exception(message)
 
@@ -748,12 +763,16 @@ object WfcGenerator {
           NativeTileSolver(nativeModel, workerColumns, workerRows, workerSeed, fixedCenters, fixedPatterns)
         },
       )
+      // Large tile sets are memory-bound and their domains are 32+ words wide, so a second worker
+      // duplicates hundreds of megabytes of bitsets for very little wall-clock gain. The fast path
+      // (≤1,024 patterns, 16 words) keeps both workers exactly as before.
+      val workers = if (tileCount > FAST_TILE_LIMIT) 1 else WORKERS
       // Hand the caller's cancellation down to the search. Without this the solve would run to its
       // deadline even though the editor had already replaced the drawing it was working on: the
       // collapse is blocking, so cancelling the coroutine alone cannot stop it.
       val result = portfolio.solve(
         seed = seed,
-        workers = WORKERS,
+        workers = workers,
         deadlineNanos = deadlineNanos,
         maxDecisions = MAX_DECISIONS,
         shouldAbort = shouldAbort,

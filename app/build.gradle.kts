@@ -69,6 +69,8 @@ android {
   }
   buildFeatures {
     compose = true
+    // The tool catalog reads BuildConfig.DEBUG to keep the camera tool out of release builds.
+    buildConfig = true
   }
 }
 

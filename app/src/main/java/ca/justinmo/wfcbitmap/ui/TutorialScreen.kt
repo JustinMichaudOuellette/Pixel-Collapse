@@ -38,37 +38,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.automirrored.filled.Redo
-import androidx.compose.material.icons.automirrored.filled.RotateRight
-import androidx.compose.material.icons.automirrored.filled.Undo
-import androidx.compose.material.icons.filled.AspectRatio
-import androidx.compose.material.icons.filled.AutoFixHigh
-import androidx.compose.material.icons.filled.ChangeHistory
-import androidx.compose.material.icons.filled.Colorize
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Crop
-import androidx.compose.material.icons.filled.CropFree
-import androidx.compose.material.icons.filled.CropSquare
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.FindReplace
-import androidx.compose.material.icons.filled.Flip
-import androidx.compose.material.icons.filled.FormatColorFill
-import androidx.compose.material.icons.filled.GridOn
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Movie
-import androidx.compose.material.icons.filled.Palette
-import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.RadioButtonUnchecked
-import androidx.compose.material.icons.filled.Repeat
-import androidx.compose.material.icons.filled.Rotate90DegreesCw
-import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material.icons.filled.SwapVert
-import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -92,6 +61,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -100,7 +70,6 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -347,8 +316,14 @@ private fun TutorialPageView(page: TutorialPage, seed: Int, active: Boolean) {
           TutorialArtKind.Draw -> DrawingTutorialArt(Modifier.size(minOf(300.dp, pictureSize)))
           TutorialArtKind.Extract -> ExtractionTutorialArt(Modifier.size(minOf(300.dp, pictureSize)))
           TutorialArtKind.PatternResult -> PatternResultArt(seed)
-          TutorialArtKind.Tools ->
-              ToolsTutorialArt(Modifier.fillMaxWidth().height(toolsHeight), active = active)
+          TutorialArtKind.Tools -> {
+            val tour = rememberToolsTourState(active)
+            ToolsTutorialArt(
+                tour,
+                Modifier.fillMaxWidth().height(toolsHeight),
+                landscape = false,
+            )
+          }
         }
         /*
          * The title and the body share whatever height the picture leaves, and are centred in it rather than
@@ -396,6 +371,10 @@ private fun TutorialPageView(page: TutorialPage, seed: Int, active: Boolean) {
  */
 @Composable
 private fun LandscapeTutorialPage(page: TutorialPage, seed: Int, active: Boolean) {
+  if (page.art == TutorialArtKind.Tools) {
+    LandscapeToolsTutorialPage(page, active)
+    return
+  }
   Row(
       modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 8.dp),
       verticalAlignment = Alignment.CenterVertically,
@@ -408,11 +387,66 @@ private fun LandscapeTutorialPage(page: TutorialPage, seed: Int, active: Boolean
         TutorialArtKind.Draw -> DrawingTutorialArt(Modifier.fillMaxSize())
         TutorialArtKind.Extract -> ExtractionTutorialArt(Modifier.fillMaxSize())
         TutorialArtKind.PatternResult -> PatternResultArt(seed)
-        TutorialArtKind.Tools -> ToolsTutorialArt(Modifier.fillMaxSize(), active = active)
+        TutorialArtKind.Tools -> Unit
       }
     }
     Box(
         modifier = Modifier.weight(0.44f).fillMaxHeight(),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+      Column(
+          modifier =
+              Modifier.fillMaxWidth()
+                  .verticalScroll(rememberScrollState())
+                  .padding(horizontal = 8.dp, vertical = 8.dp),
+          horizontalAlignment = Alignment.Start,
+      ) {
+        Text(
+            text = page.title,
+            color = MENU_TEXT_COLOR,
+            fontSize = 23.sp,
+            lineHeight = 28.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Start,
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            text = page.body,
+            color = MENU_TEXT_COLOR.copy(alpha = 0.72f),
+            fontSize = 12.5f.sp,
+            lineHeight = 18.sp,
+            textAlign = TextAlign.Start,
+            modifier = Modifier.widthIn(max = 460.dp),
+        )
+      }
+    }
+  }
+}
+
+/**
+ * The tools page in landscape: the toolbar and its explanation stay together on the left, with almost no
+ * top margin, and the text sits on the right. The toolbar turns to eleven columns over three rows so its
+ * buttons keep the portrait size while still leaving the snackbar the strip below it.
+ */
+@Composable
+private fun LandscapeToolsTutorialPage(page: TutorialPage, active: Boolean) {
+  val tour = rememberToolsTourState(active)
+  Row(
+      modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 4.dp),
+      verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Box(
+        modifier = Modifier.weight(0.62f).fillMaxHeight(),
+        contentAlignment = Alignment.Center,
+    ) {
+      ToolsTutorialArt(
+          tour,
+          Modifier.fillMaxSize(),
+          landscape = true,
+      )
+    }
+    Box(
+        modifier = Modifier.weight(0.38f).fillMaxHeight(),
         contentAlignment = Alignment.CenterStart,
     ) {
       Column(
@@ -1077,148 +1111,6 @@ private fun PixelBitmap(image: ImageBitmap?, modifier: Modifier) {
   }
 }
 
-/** One tool in the tour's toolbar: the app's own icon and the sentence a long press puts up. */
-private class TutorialTool(val icon: ImageVector, val explanation: String)
-
-/**
- * Every tool in the editor, in the order the toolbar lists them, with the sentence the app shows when
- * it is held. The tools page walks this list from the first tool to the last, then starts again.
- */
-private val TUTORIAL_TOOLS = listOf(
-  TutorialTool(
-    Icons.Default.Colorize,
-    "Takes the colour under your finger and makes it the one you draw with.",
-  ),
-  TutorialTool(
-    Icons.Default.FormatColorFill,
-    "Paints the whole joined area of the tapped colour, up to anything drawn in another colour.",
-  ),
-  TutorialTool(
-    Icons.Default.FindReplace,
-    "Swaps the tapped colour for the selected one everywhere on the drawing.",
-  ),
-  TutorialTool(
-    Icons.Default.Timeline,
-    "Drag from one cell to another; the line between the two points is painted.",
-  ),
-  TutorialTool(
-    Icons.Default.CropSquare,
-    "Drag out a box; its outline is painted and the cells inside it are left alone.",
-  ),
-  TutorialTool(
-    Icons.Default.RadioButtonUnchecked,
-    "Drag out a box; an ellipse filling it is painted as an outline, not a fill.",
-  ),
-  TutorialTool(
-    Icons.Default.ChangeHistory,
-    "Drag out a box; a triangle standing on its bottom edge is painted as an outline.",
-  ),
-  TutorialTool(
-    Icons.Default.CropFree,
-    "Drag out a rectangle to select it, then drag inside it to move what it holds.",
-  ),
-  TutorialTool(
-    Icons.Default.ContentCopy,
-    "Drag out an area to copy it, then drag the copy where it belongs. The original stays where it is.",
-  ),
-  TutorialTool(Icons.AutoMirrored.Filled.Undo, "Takes back the last edit, however many cells it touched."),
-  TutorialTool(Icons.AutoMirrored.Filled.Redo, "Puts back the edit you just took back."),
-  TutorialTool(
-    Icons.Default.Flip,
-    "Flips the drawing horizontally, like a mirror held to one side.",
-  ),
-  TutorialTool(
-    Icons.Default.Flip,
-    "Flips the drawing vertically, like a mirror laid underneath.",
-  ),
-  TutorialTool(
-    Icons.AutoMirrored.Filled.RotateRight,
-    "Turns the whole drawing a quarter turn clockwise, which swaps its width and height.",
-  ),
-  TutorialTool(
-    Icons.Default.Crop,
-    "Trims the empty background around the drawing, leaving one cell of it, which is what the " +
-      "pattern needs to wrap around the edges.",
-  ),
-  TutorialTool(Icons.Default.Palette, "Chooses the color palette to draw with."),
-  TutorialTool(
-    Icons.Default.AspectRatio,
-    "Chooses the shape of the picture and the resolution it is generated and previewed at.",
-  ),
-  TutorialTool(
-    Icons.Default.GridOn,
-    "Groups the drawing into cells for the 3x3 kernel: 3x3 means one pixel per cell, 6x6 means " +
-      "2x2 cells, up to 24x24 means 8x8 cells.",
-  ),
-  TutorialTool(
-    Icons.Default.AutoFixHigh,
-    "Chooses how a saved file is enlarged -- square blocks, EPX or Scale3x -- and the multiplier " +
-      "it is saved at.",
-  ),
-  TutorialTool(
-    Icons.Default.Repeat,
-    "On: the drawing's edges are not edges, so the pattern wraps around them. Off: the drawing's " +
-      "border is the picture's border. It lights up on its own when the picture could not keep that border.",
-  ),
-  TutorialTool(
-    Icons.Default.SwapHoriz,
-    "On: every 3x3 pattern is also available flipped left to right, so there are more patterns to " +
-      "arrange. Off: only the patterns exactly as drawn.",
-  ),
-  TutorialTool(
-    Icons.Default.SwapVert,
-    "On: every 3x3 pattern is also available flipped top to bottom. Off: only the patterns exactly " +
-      "as drawn. With the left-to-right mirror on as well, the half turn comes too.",
-  ),
-  TutorialTool(
-    Icons.Default.Rotate90DegreesCw,
-    "On: every 3x3 pattern is also available turned a quarter turn clockwise, so the picture can " +
-      "use shapes lying on their side -- something neither mirror can offer. With the mirrors on as " +
-      "well, every window has all eight orientations.",
-  ),
-  TutorialTool(
-    Icons.Default.PhotoLibrary,
-    "Opens the app's pattern picker over the gallery and loads the drawing, palette and settings " +
-      "from the selected pattern.",
-  ),
-  TutorialTool(
-    Icons.Default.PhotoCamera,
-    "Takes a photo, reduces it to a small grid, posterises it to the selected palette, dithers it, " +
-      "and uses that as the drawing to generate from. You can adjust each step before applying it.",
-  ),
-  TutorialTool(
-    Icons.Default.Movie,
-    "Generates a wide picture and pans across it left to right, looping back to the start. Saved as " +
-      "an animated GIF or an MP4; the loop length and frame rate are adjustable.",
-  ),
-  TutorialTool(
-    Icons.Default.Save,
-    "Writes the drawing, its palette and its generation settings into the gallery as a PNG with an " +
-      "extensible JSON description. This is the single save for the app.",
-  ),
-  TutorialTool(
-    Icons.Default.Share,
-    "Hands the picture to another app, like a message or a photo editor.",
-  ),
-  TutorialTool(
-    Icons.Default.Delete,
-    "Empties the drawing back to one colour. The size of the grid is kept.",
-  ),
-  TutorialTool(
-    Icons.Default.Settings,
-    "Adjusts the size of the tool and colour buttons.",
-  ),
-  TutorialTool(
-    Icons.Default.Info,
-    "Explains what the picture is, what the sizes and the edge settings change, and where saved " +
-      "files go.",
-  ),
-  TutorialTool(
-    Icons.Default.PowerSettingsNew,
-    "Closes the app. The drawing is kept and comes back next time; Save writes it out as a picture.",
-  ),
-)
-
 /** Pause on the empty toolbar when the page is entered, before the first touch appears. */
 private const val TOOLS_INITIAL_DELAY_MILLIS = 800L
 
@@ -1233,6 +1125,14 @@ private const val TOUCH_FADE_STEPS = 8
 private fun toolReadingMillis(explanation: String): Long =
   (1_200L + explanation.length * 40L).coerceIn(2_000L, 7_000L)
 
+/** The animation state the toolbar and, in landscape, the explanation beside it both read. */
+private class ToolsTourState {
+  var current by mutableIntStateOf(0)
+  var snackbarVisible by mutableStateOf(false)
+  var pressProgress by mutableFloatStateOf(0f)
+  var touchAlpha by mutableFloatStateOf(1f)
+}
+
 /**
  * The tools page's animation: the full toolbar, walking from the first tool to the last. The touch
  * circle expands on the current button, the snackbar slides in with that tool's own explanation, and the
@@ -1240,83 +1140,104 @@ private fun toolReadingMillis(explanation: String): Long =
  * length of the sentence before the circle moves on.
  */
 @Composable
-private fun ToolsTutorialArt(modifier: Modifier, active: Boolean) {
-  var current by remember { mutableIntStateOf(0) }
-  var snackbarVisible by remember { mutableStateOf(false) }
-  var pressProgress by remember { mutableFloatStateOf(0f) }
-  var touchAlpha by remember { mutableFloatStateOf(1f) }
+private fun rememberToolsTourState(active: Boolean): ToolsTourState {
+  val state = remember { ToolsTourState() }
   LaunchedEffect(active) {
     if (!active) return@LaunchedEffect
     // Start on the first tool every time the page is entered, not from wherever the animation was.
-    current = 0
-    snackbarVisible = false
-    pressProgress = 0f
+    state.current = 0
+    state.snackbarVisible = false
+    state.pressProgress = 0f
     // Hold the bare toolbar for a moment before the first touch, so the page has settled first.
-    touchAlpha = 0f
+    state.touchAlpha = 0f
     delay(TOOLS_INITIAL_DELAY_MILLIS.milliseconds)
     while (isActive) {
-      for (index in TUTORIAL_TOOLS.indices) {
-        current = index
-        snackbarVisible = false
-        pressProgress = 0f
-        touchAlpha = 1f
+      for (index in editorToolInfos.indices) {
+        state.current = index
+        state.snackbarVisible = false
+        state.pressProgress = 0f
+        state.touchAlpha = 1f
         // The same press-then-hold the first page uses: the circle grows while the tool is held.
         delay(DRAWING_PRESS_MILLIS.milliseconds)
         for (step in 1..DRAWING_LONG_PRESS_STEPS) {
-          pressProgress = step / DRAWING_LONG_PRESS_STEPS.toFloat()
+          state.pressProgress = step / DRAWING_LONG_PRESS_STEPS.toFloat()
           delay((DRAWING_LONG_PRESS_MILLIS / DRAWING_LONG_PRESS_STEPS).milliseconds)
         }
-        snackbarVisible = true
+        state.snackbarVisible = true
         // The snackbar is the feedback now: let the touch circle fade out under it.
         for (step in 1..TOUCH_FADE_STEPS) {
-          touchAlpha = 1f - step / TOUCH_FADE_STEPS.toFloat()
+          state.touchAlpha = 1f - step / TOUCH_FADE_STEPS.toFloat()
           delay((TOUCH_FADE_MILLIS / TOUCH_FADE_STEPS).milliseconds)
         }
-        touchAlpha = 0f
-        delay((toolReadingMillis(TUTORIAL_TOOLS[index].explanation) - TOUCH_FADE_MILLIS).coerceAtLeast(0L).milliseconds)
-        snackbarVisible = false
+        state.touchAlpha = 0f
+        delay(
+            (toolReadingMillis(editorToolInfos[index].explanation) - TOUCH_FADE_MILLIS)
+                .coerceAtLeast(0L)
+                .milliseconds,
+        )
+        state.snackbarVisible = false
         delay(TOOL_HIDE_MILLIS.milliseconds)
       }
     }
   }
+  return state
+}
+
+/**
+ * The toolbar for the tools page.
+ *
+ * [landscape] decides the grid: portrait keeps the editor's tall four columns over eight rows; landscape
+ * turns it on its side into eleven columns over three rows. That keeps the buttons at the portrait size
+ * while leaving room under the toolbar for the snackbar. [showSnackbar] is false only when the caller is
+ * showing the explanation itself.
+ */
+@Composable
+private fun ToolsTutorialArt(
+    state: ToolsTourState,
+    modifier: Modifier,
+    landscape: Boolean,
+    showSnackbar: Boolean = true,
+) {
   Column(
-    modifier = modifier.padding(4.dp),
+    modifier = modifier.padding(if (landscape) 2.dp else 4.dp),
     horizontalAlignment = Alignment.CenterHorizontally,
   ) {
     BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
-      // Landscape has more width than height, so the toolbar uses twice the columns and half the rows;
-      // the buttons stay legible instead of shrinking to fit eight rows.
-      val columns = if (maxWidth > maxHeight) 8 else 4
-      val rows = (TUTORIAL_TOOLS.size + columns - 1) / columns
+      // Portrait keeps the editor's tall four-column toolbar; landscape needs fewer rows so the snackbar
+      // still fits below it at the same button size.
+      val columns = if (landscape) 11 else 4
+      val rows = (editorToolInfos.size + columns - 1) / columns
       // The circle grows to the full touch size, so the toolbar keeps a margin for its blur all round.
+      // 38dp is the editor's smallest tool size; both orientations land on it.
+      val marginFactor = if (landscape) 1.05f else 1.1f
       val button =
           minOf(
-              maxWidth / (columns + 2.2f),
-              maxHeight / (rows + 2.2f),
-              44.dp,
+              maxWidth / (columns + 2f * marginFactor),
+              maxHeight / (rows + 2f * marginFactor),
+              38.dp,
           )
-      val margin = button * 1.1f
+      val margin = button * marginFactor
       Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         ToolsGrid(
           button = button,
           margin = margin,
-          current = current,
-          pressProgress = pressProgress,
-          touchAlpha = touchAlpha,
+          current = state.current,
+          pressProgress = state.pressProgress,
+          touchAlpha = state.touchAlpha,
           columns = columns,
         )
       }
     }
-    Box(
-      modifier = Modifier
-        .fillMaxWidth()
-        .height(96.dp),
-      contentAlignment = Alignment.BottomCenter,
-    ) {
-      ToolSnackbar(
-        visible = snackbarVisible,
-        message = TUTORIAL_TOOLS[current].explanation,
-      )
+    if (showSnackbar) {
+      Box(
+        modifier = Modifier.fillMaxWidth().height(if (landscape) 64.dp else 96.dp),
+        contentAlignment = Alignment.BottomCenter,
+      ) {
+        ToolSnackbar(
+          visible = state.snackbarVisible,
+          message = editorToolInfos[state.current].explanation,
+        )
+      }
     }
   }
 }
@@ -1358,23 +1279,23 @@ private fun ToolsGrid(
     touchAlpha: Float,
     columns: Int,
 ) {
-  val rows = (TUTORIAL_TOOLS.size + columns - 1) / columns
+  val rows = (editorToolInfos.size + columns - 1) / columns
   Box(
     modifier = Modifier
       .width(button * columns.toFloat() + margin * 2f)
       .height(button * rows.toFloat() + margin * 2f),
   ) {
     Column(modifier = Modifier.offset(x = margin, y = margin)) {
-      TUTORIAL_TOOLS.chunked(columns).forEach { rowTools ->
+      editorToolInfos.chunked(columns).forEach { rowTools ->
         Row {
           rowTools.forEach { tool ->
-            ToolButton(icon = tool.icon, size = button)
+            ToolButton(tool = tool, size = button)
           }
         }
       }
     }
     Canvas(modifier = Modifier.matchParentSize()) {
-      if (current in TUTORIAL_TOOLS.indices) {
+      if (current in editorToolInfos.indices) {
         val buttonPx = button.toPx()
         val marginPx = margin.toPx()
         drawTouchCircle(
@@ -1393,7 +1314,7 @@ private fun ToolsGrid(
 
 /** One tool button, styled like the editor's: square, thin border, white glyph, black translucent fill. */
 @Composable
-private fun ToolButton(icon: ImageVector, size: Dp) {
+private fun ToolButton(tool: EditorToolInfo, size: Dp) {
   val shape = RoundedCornerShape(2.dp)
   Box(
     modifier = Modifier
@@ -1404,10 +1325,10 @@ private fun ToolButton(icon: ImageVector, size: Dp) {
     contentAlignment = Alignment.Center,
   ) {
     Icon(
-      imageVector = icon,
+      imageVector = tool.icon,
       contentDescription = null,
       tint = Color.White.copy(alpha = 0.9f),
-      modifier = Modifier.size(size * (20f / 38f)),
+      modifier = Modifier.size(size * (20f / 38f)).rotate(tool.iconRotationDegrees),
     )
   }
 }

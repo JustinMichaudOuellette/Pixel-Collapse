@@ -14,6 +14,17 @@
 
 #define WFC_DIRS 8
 
+/*
+ * Largest tile set the model accepts.
+ *
+ * 4096 tiles is 64 domain words, which the six-bit word index in a trail key addresses exactly. The
+ * limit is practical rather than arithmetic: the compatibility table is O(tiles^2), and a solver's
+ * domains are O(cells * words), so a 4x preview of a 4096-tile set already needs hundreds of megabytes
+ * per worker. The int index `v * word_count + word` would still hold at 8192 tiles (128 words, seven-bit
+ * trail), but going past that needs 64-bit cell indices as well as a wider trail key.
+ */
+#define WFC_MAX_TILES 4096
+
 /* Kernel slot for each direction, in Direction2d8 declaration order (LEFT, UP_LEFT, UP, ...). */
 extern const int WFC_DIR_SLOT[WFC_DIRS];
 
@@ -40,8 +51,8 @@ typedef struct wfc_solver wfc_solver;
  *                pattern and its outward pixels are simply not drawn. The strict rule can be impossible
  *                for a drawing whose border cannot repeat around the bitmap's, which is the only reason
  *                the relaxed one exists: it makes the instance the ordinary overlapping model.
- * @return a model, or NULL when the arguments are unusable (tile_count outside 1..1024, a grid that
- *         is not positive).
+ * @return a model, or NULL when the arguments are unusable (tile_count outside 1..WFC_MAX_TILES, a grid
+ *         that is not positive).
  */
 wfc_model *wfc_model_create(const int32_t *tiles, int tile_count, int columns, int rows,
                             int relaxed_edges);

@@ -21,6 +21,38 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.RotateRight
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.ChangeHistory
+import androidx.compose.material.icons.filled.Colorize
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Crop
+import androidx.compose.material.icons.filled.CropFree
+import androidx.compose.material.icons.filled.CropSquare
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FindReplace
+import androidx.compose.material.icons.filled.Flip
+import androidx.compose.material.icons.filled.FormatColorFill
+import androidx.compose.material.icons.filled.GridOn
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.Rotate90DegreesCw
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -36,6 +68,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import ca.justinmo.wfcbitmap.BuildConfig
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.roundToInt
@@ -174,32 +207,340 @@ internal fun shapeCells(
 }
 
 
+/** A stable name for every tool, so the editor can attach behaviour without repeating the tool data. */
+enum class EditorToolId {
+  Eyedropper,
+  Fill,
+  ReplaceColor,
+  Line,
+  Rectangle,
+  Ellipse,
+  Triangle,
+  Select,
+  Duplicate,
+  Undo,
+  Redo,
+  FlipHorizontal,
+  FlipVertical,
+  Rotate,
+  Crop,
+  Palette,
+  Output,
+  Kernel,
+  Scaler,
+  Wrap,
+  MirrorHorizontal,
+  MirrorVertical,
+  QuarterTurn,
+  PhotoLibrary,
+  PhotoCamera,
+  Movie,
+  Save,
+  Share,
+  Clear,
+  Settings,
+  Info,
+  Exit,
+}
+
 /**
- * One entry in the vertical toolbar between the preview and the drawing.
+ * What a tool is, independent of the editor's current state: its glyph, its name for accessibility, and
+ * the sentence a hold explains it with.
  *
- * @param icon glyph drawn in the square button, from the Material icon set.
- * @param contentDescription what the glyph means. The button has no visible label, so this is the
- *   only thing a screen reader (or a UI test) can read.
- * @param explanation one sentence saying what the tool does, shown in a snackbar when the button is
- *   held down. A glyph cannot teach a tool it does not resemble, and this toolbar has no room for a
- *   caption, so holding is how you ask what a button is before using it on a drawing you care about.
- * @param selected null for a plain action; true or false for a *mode* tool, which changes what the next
- *   gesture on the drawing does. A mode shows whether it is armed, to the eye and to a screen reader.
- * @param enabled false draws the button greyed out and ignores clicks.
- * @param iconRotationDegrees turns the glyph, which is how one icon serves both mirror directions.
- * @param startsGroup draws a divider above the button, to group tools that read together.
- * @param onClick run when the button is clicked.
+ * The editor attaches the action and the current selected/enabled state to one of these; the first-launch
+ * tour reads the same entries, so its toolbar cannot drift from the real one.
  */
-class EditorTool(
+data class EditorToolInfo(
+  val id: EditorToolId,
   val icon: ImageVector,
   val contentDescription: String,
   val explanation: String,
+  val startsGroup: Boolean = false,
+  val iconRotationDegrees: Float = 0f,
+)
+
+/**
+ * Every tool, in toolbar order, including the debug-only camera tool.
+ *
+ * [editorToolInfos] is the list both the editor and the tour walk; the editor supplies the actions and
+ * the current state, while the tour only needs the icon and the explanation.
+ */
+private val allEditorToolInfos: List<EditorToolInfo> =
+  listOf(
+    EditorToolInfo(
+      id = EditorToolId.Eyedropper,
+      icon = Icons.Default.Colorize,
+      contentDescription = "Pick a colour from the drawing",
+      explanation = "Takes the colour under your finger and makes it the one you draw with.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Fill,
+      icon = Icons.Default.FormatColorFill,
+      contentDescription = "Fill a connected area with the selected colour",
+      explanation =
+        "Paints the whole joined area of the tapped colour, up to anything drawn in another colour.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.ReplaceColor,
+      icon = Icons.Default.FindReplace,
+      contentDescription = "Replace the tapped colour everywhere with the selected colour",
+      explanation = "Swaps the tapped colour for the selected one everywhere on the drawing.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Line,
+      icon = Icons.Default.Timeline,
+      contentDescription = "Draw a line",
+      explanation = "Drag from one cell to another; the line between the two points is painted.",
+      startsGroup = true,
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Rectangle,
+      icon = Icons.Default.CropSquare,
+      contentDescription = "Draw a rectangle",
+      explanation = "Drag out a box; its outline is painted and the cells inside it are left alone.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Ellipse,
+      icon = Icons.Default.RadioButtonUnchecked,
+      contentDescription = "Draw an ellipse",
+      explanation = "Drag out a box; an ellipse filling it is painted as an outline, not a fill.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Triangle,
+      icon = Icons.Default.ChangeHistory,
+      contentDescription = "Draw a triangle",
+      explanation = "Drag out a box; a triangle standing on its bottom edge is painted as an outline.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Select,
+      icon = Icons.Default.CropFree,
+      contentDescription = "Select an area to move",
+      explanation = "Drag out a rectangle to select it, then drag inside it to move what it holds.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Duplicate,
+      icon = Icons.Default.ContentCopy,
+      contentDescription = "Copy an area: drag out the area, then drag the copy",
+      explanation =
+        "Drag out an area to copy it, then drag the copy where it belongs. The original stays where it is.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Undo,
+      icon = Icons.AutoMirrored.Filled.Undo,
+      contentDescription = "Undo",
+      explanation = "Takes back the last edit, however many cells it touched.",
+      startsGroup = true,
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Redo,
+      icon = Icons.AutoMirrored.Filled.Redo,
+      contentDescription = "Redo",
+      explanation = "Puts back the edit you just took back.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.FlipHorizontal,
+      icon = Icons.Default.Flip,
+      contentDescription = "Mirror the drawing left to right",
+      explanation = "Flips the drawing horizontally, like a mirror held to one side.",
+      startsGroup = true,
+    ),
+    EditorToolInfo(
+      id = EditorToolId.FlipVertical,
+      icon = Icons.Default.Flip,
+      contentDescription = "Mirror the drawing top to bottom",
+      explanation = "Flips the drawing vertically, like a mirror laid underneath.",
+      iconRotationDegrees = 90f,
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Rotate,
+      icon = Icons.AutoMirrored.Filled.RotateRight,
+      contentDescription = "Turn the drawing a quarter turn",
+      explanation = "Turns the whole drawing a quarter turn clockwise, which swaps its width and height.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Crop,
+      icon = Icons.Default.Crop,
+      contentDescription = "Crop the drawing to what is drawn on it",
+      explanation =
+        "Trims the empty background around the drawing, leaving one cell of it, which is what the pattern " +
+          "needs to wrap around the edges.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Palette,
+      icon = Icons.Default.Palette,
+      contentDescription = "Select color palette",
+      explanation = "Chooses the color palette to draw with.",
+      startsGroup = true,
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Output,
+      icon = Icons.Default.AspectRatio,
+      contentDescription = "Output shape and preview size",
+      explanation = "Chooses the shape of the picture and the resolution it is generated and previewed at.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Kernel,
+      icon = Icons.Default.GridOn,
+      contentDescription = "Choose how many pixels make one tile",
+      explanation =
+        "Groups the drawing into cells for the 3x3 kernel: 3x3 means one pixel per cell, 6x6 means 2x2 " +
+          "cells, up to 24x24 means 8x8 cells.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Scaler,
+      icon = Icons.Default.AutoFixHigh,
+      contentDescription = "Choose the pixel-art upscaling and save size",
+      explanation =
+        "Chooses how a saved file is enlarged -- square blocks, EPX or Scale3x -- and the multiplier it is " +
+          "saved at.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Wrap,
+      icon = Icons.Default.Repeat,
+      contentDescription = "Wrap the pattern around the drawing's edges",
+      explanation =
+        "On: the drawing's edges are not edges, so the pattern wraps around them. Off: the drawing's " +
+          "border is the picture's border. It lights up on its own when the picture could not keep that border.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.MirrorHorizontal,
+      icon = Icons.Default.SwapHoriz,
+      contentDescription = "Mirror every pattern left to right, giving the picture more arrangements",
+      explanation =
+        "On: every 3x3 pattern is also available flipped left to right, so there are more patterns to " +
+          "arrange. Off: only the patterns exactly as drawn.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.MirrorVertical,
+      icon = Icons.Default.SwapVert,
+      contentDescription = "Mirror every pattern top to bottom, giving the picture more arrangements",
+      explanation =
+        "On: every 3x3 pattern is also available flipped top to bottom. Off: only the patterns exactly as " +
+          "drawn. With the left-to-right mirror on as well, the half turn comes too.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.QuarterTurn,
+      icon = Icons.Default.Rotate90DegreesCw,
+      contentDescription = "Turn every pattern a quarter turn, giving the picture more arrangements",
+      explanation =
+        "On: every 3x3 pattern is also available turned a quarter turn clockwise, so the picture can use " +
+          "shapes lying on their side -- something neither mirror can offer. With the mirrors on as well, " +
+          "every window has all eight orientations.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.PhotoLibrary,
+      icon = Icons.Default.PhotoLibrary,
+      contentDescription = "Choose a pattern from the gallery",
+      explanation =
+        "Opens the app's pattern picker over the gallery and loads the drawing, palette and settings from " +
+          "the selected pattern.",
+      startsGroup = true,
+    ),
+    EditorToolInfo(
+      id = EditorToolId.PhotoCamera,
+      icon = Icons.Default.PhotoCamera,
+      contentDescription = "Use a camera photo as the drawing",
+      explanation =
+        "Takes a photo, reduces it to a small grid, posterises it to the selected palette, dithers it, and " +
+          "uses that as the drawing to generate from. You can adjust each step before applying it.",
+      startsGroup = true,
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Movie,
+      icon = Icons.Default.Movie,
+      contentDescription = "Make a panning video",
+      explanation =
+        "Generates a wide picture and pans across it left to right, looping back to the start. Saved as an " +
+          "animated GIF or an MP4; the loop length and frame rate are adjustable.",
+      startsGroup = true,
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Save,
+      icon = Icons.Default.Save,
+      contentDescription = "Save the pattern to the gallery",
+      explanation =
+        "Writes the drawing, its palette and its generation settings into the gallery as a PNG with an " +
+          "extensible JSON description. This is the single save for the app.",
+      startsGroup = true,
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Share,
+      icon = Icons.Default.Share,
+      contentDescription = "Share the picture",
+      explanation = "Hands the picture to another app, like a message or a photo editor.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Clear,
+      icon = Icons.Default.Delete,
+      contentDescription = "Clear the drawing",
+      explanation = "Empties the drawing back to one colour. The size of the grid is kept.",
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Settings,
+      icon = Icons.Default.Settings,
+      contentDescription = "Settings",
+      explanation = "Adjusts the size of the tool and colour buttons.",
+      startsGroup = true,
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Info,
+      icon = Icons.Default.Info,
+      contentDescription = "About this app",
+      explanation =
+        "Explains what the picture is, what the sizes and the edge settings change, and where saved files go.",
+      startsGroup = true,
+    ),
+    EditorToolInfo(
+      id = EditorToolId.Exit,
+      icon = Icons.Default.PowerSettingsNew,
+      contentDescription = "Close the app",
+      explanation =
+        "Closes the app. The drawing is kept and comes back next time; Save writes it out as a picture.",
+      startsGroup = true,
+    ),
+  )
+
+/**
+ * The tool catalog for a build that either has the camera tool or does not.
+ *
+ * The camera tool is still being developed, so it is only offered by debug builds. Keeping the filter
+ * here rather than in the toolbar means the editor and the tour cannot disagree about which tools
+ * exist: both read [editorToolInfos], and the first-launch tour lays its grid out from the same list.
+ */
+internal fun editorToolInfosFor(includeCamera: Boolean): List<EditorToolInfo> =
+  if (includeCamera) {
+    allEditorToolInfos
+  } else {
+    allEditorToolInfos.filterNot { it.id == EditorToolId.PhotoCamera }
+  }
+
+/** The tools this build offers; release builds leave the camera tool out. */
+internal val editorToolInfos: List<EditorToolInfo> = editorToolInfosFor(BuildConfig.DEBUG)
+
+/**
+ * One entry in the vertical toolbar between the preview and the drawing: a catalog entry plus the
+ * editor's current state and the action a tap runs.
+ *
+ * @param info the glyph, name and default explanation from [editorToolInfos].
+ * @param explanation the sentence a hold shows; it differs from [EditorToolInfo.explanation] only where a
+ *   setting changes what the tool can do (the mirrors, the turn and the crop).
+ * @param selected null for a plain action; true or false for a *mode* tool, which changes what the next
+ *   gesture on the drawing does. A mode shows whether it is armed, to the eye and to a screen reader.
+ * @param enabled false draws the button greyed out and ignores clicks.
+ * @param onClick run when the button is clicked.
+ */
+class EditorTool(
+  val info: EditorToolInfo,
+  val explanation: String = info.explanation,
   val selected: Boolean? = null,
   val enabled: Boolean = true,
-  val iconRotationDegrees: Float = 0f,
-  val startsGroup: Boolean = false,
   val onClick: () -> Unit,
-)
+) {
+  val icon: ImageVector get() = info.icon
+  val contentDescription: String get() = info.contentDescription
+  val iconRotationDegrees: Float get() = info.iconRotationDegrees
+  val startsGroup: Boolean get() = info.startsGroup
+}
 
 /**
  * Strip or grid of editor tools, scrolled: there are more tools than fit on a phone in one column.

@@ -47,9 +47,27 @@ static const int OPPOSITE[WFC_DIRS] = {4, 5, 6, 7, 0, 1, 2, 3};
 static const int DX[WFC_DIRS] = {-1, -1, 0, 1, 1, 1, 0, -1};
 static const int DY[WFC_DIRS] = {0, -1, -1, -1, 0, 1, 1, 1};
 
-/* Direction bits are packed with the word index in the low four bits of trail and queue entries. */
-#define PACK_BITS 4
-#define PACK_MASK ((1 << PACK_BITS) - 1)
+/*
+ * The arc queue packs a direction below the variable: (variable << QUEUE_PACK_BITS) | direction.
+ * Three bits would do (there are eight directions); four keeps the previous key layout and leaves
+ * room for a ninth direction without touching any decoder.
+ */
+#define QUEUE_PACK_BITS 4
+#define QUEUE_PACK_MASK ((1 << QUEUE_PACK_BITS) - 1)
+
+/*
+ * The trail packs the domain word index below the variable: (variable << TRAIL_PACK_BITS) | word.
+ * Six bits address 64 words, i.e. 4096 tiles (WFC_MAX_TILES). The shift still fits an int at the
+ * 2^24-cell grid cap: 2^24 << 6 plus a 6-bit word is below INT_MAX. Keep this in step with
+ * WFC_MAX_TILES; a trail key with a truncated word index silently restores the wrong domain word.
+ */
+#define TRAIL_PACK_BITS 6
+#define TRAIL_PACK_MASK ((1 << TRAIL_PACK_BITS) - 1)
+
+_Static_assert(WFC_MAX_TILES <= 64 << TRAIL_PACK_BITS,
+               "trail packing cannot address every tile in WFC_MAX_TILES");
+_Static_assert(((int64_t)1 << 24) * WFC_MAX_TILES / 64 + 63 <= INT32_MAX,
+               "variable * word_count no longer fits an int at the grid cap");
 
 /* Check the clock every this many revisions: a syscall per arc would dominate short revisions. */
 #define CLOCK_EVERY 512
@@ -310,7 +328,7 @@ static inline int ctz(uint64_t value) { return __builtin_ctzll(value); }
 
 wfc_model *wfc_model_create(const int32_t *raw, int tile_count, int columns, int rows,
                             int relaxed_edges) {
-  if (raw == NULL || tile_count <= 0 || tile_count > 1024) return NULL;
+  if (raw == NULL || tile_count <= 0 || tile_count > WFC_MAX_TILES) return NULL;
   if (columns <= 0 || rows <= 0) return NULL;
   /* Keeping the variable count in an int keeps every index computation exact. */
   if ((int64_t)columns * rows > (int64_t)1 << 24) return NULL;
@@ -889,14 +907,21 @@ int wfc_model_cell_alternatives(const wfc_model *m, const int32_t *assignment, i
 int wfc_model_evolve(const wfc_model *m, int32_t *assignment, const int32_t *cells, int count,
                      uint32_t seed) {
   if (m == NULL || assignment == NULL || cells == NULL || count <= 0) return 0;
+  /*
+   * One allocation for the whole call rather than a fixed 1024-entry stack pair: the tile set can now
+   * hold up to WFC_MAX_TILES patterns, and an alternative list longer than the array was a stack
+   * overflow. Evolve already scans the tile set for every cell, so one malloc per call is noise.
+   */
+  int *scratch = malloc((size_t)m->tile_count * 2 * sizeof(int));
+  if (scratch == NULL) return 0;
+  int *candidates = scratch;
+  int *weights = scratch + m->tile_count;
   int changed = 0;
   for (int index = 0; index < count; index++) {
     int cell = cells[index];
     if (cell < 0 || cell >= m->variable_count) continue;
     int current = assignment[cell];
     int current_centre = m->tiles[current].centre;
-    int candidates[1024];
-    int weights[1024];
     int alternatives = 0;
     uint32_t total_weight = 0;
     for (int tile = 0; tile < m->tile_count; tile++) {
@@ -935,6 +960,7 @@ int wfc_model_evolve(const wfc_model *m, int32_t *assignment, const int32_t *cel
       changed++;
     }
   }
+  free(scratch);
   return changed;
 }
 
@@ -1008,7 +1034,7 @@ static int push_trail(wfc_solver *s, int v, int word, uint64_t old) {
     s->trail_value = values;
     s->trail_cap = grown;
   }
-  s->trail_key[s->trail_size] = (v << PACK_BITS) | word;
+  s->trail_key[s->trail_size] = (v << TRAIL_PACK_BITS) | word;
   s->trail_value[s->trail_size] = old;
   s->trail_size++;
   return 1;
@@ -1029,8 +1055,8 @@ static void undo(wfc_solver *s, int mark) {
   while (s->trail_size > mark) {
     s->trail_size--;
     int key = s->trail_key[s->trail_size];
-    int v = key >> PACK_BITS;
-    int word = key & PACK_MASK;
+    int v = key >> TRAIL_PACK_BITS;
+    int word = key & TRAIL_PACK_MASK;
     int index = v * words + word;
     uint64_t old = s->trail_value[s->trail_size];
     /*
@@ -1105,7 +1131,7 @@ static void enqueue(wfc_solver *s, int v, int d) {
   int word = index >> 6;
   if ((s->in_queue[word] & mask) != 0) return;
   s->in_queue[word] |= mask;
-  if (!queue_push(s, (v << PACK_BITS) | d)) {
+  if (!queue_push(s, (v << QUEUE_PACK_BITS) | d)) {
     /* Undo the "already queued" mark so a retry is not silently skipped. */
     s->in_queue[word] &= ~mask;
   }
@@ -1284,8 +1310,8 @@ static int propagate(wfc_solver *s, int64_t deadline_nanos) {
       if (s->abort_flag != 0 || now_nanos() > deadline_nanos) return 0;
     }
     int packed = queue_pop(s);
-    int v = packed >> PACK_BITS;
-    int d = packed & PACK_MASK;
+    int v = packed >> QUEUE_PACK_BITS;
+    int d = packed & QUEUE_PACK_MASK;
     mark_out(s, v, d);
     if (!revise(s, v, d)) return 0;
   }
@@ -1578,12 +1604,14 @@ static int search(wfc_solver *s, int64_t deadline_nanos, int max_decisions) {
 static int initialise_domains(wfc_solver *s) {
   const wfc_model *m = s->model;
   /*
-   * Clear every bitset row the buffer has, not just the rows up to the previous solve's largest domain
-   * size: a model with fewer tiles than the last one would otherwise leave rows that this solve never
-   * writes and select_variable still reads. The whole buffer is a few hundred KB at 152x270, so clearing
-   * it is tens of microseconds.
+   * Clear the rows this solve can observe, not the whole capacity. Rows above m->tile_count are
+   * unreachable: set_size_bit drops any size above the tile count, and select_variable stops at it.
+   * Clearing the capacity instead made every small collapse after a large one memset several times the
+   * bits it could read -- with a 4096-tile model once in the pool, a 1024-tile solve paid for 4096 rows
+   * on every keystroke. A row this solve does use is still cleared here before anything writes it, so
+   * allocator leftovers can never be read as candidates.
    */
-  memset(s->size_bits, 0, sizeof(uint64_t) * (size_t)(s->capacity_tiles + 1) * s->bitset_words);
+  memset(s->size_bits, 0, sizeof(uint64_t) * (size_t)(m->tile_count + 1) * s->bitset_words);
   memset(s->in_queue, 0, sizeof(uint64_t) * (((size_t)m->variable_count * WFC_DIRS + 63) / 64));
   s->smallest = m->tile_count + 1;
   for (int v = 0; v < m->variable_count; v++) {

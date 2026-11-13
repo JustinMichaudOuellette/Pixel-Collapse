@@ -23,6 +23,7 @@ internal class NativeTileSolver(
 ) : TileSolver {
 
   private val handle: Long = if (model == 0L) 0L else NativeSolverPool.acquire()
+  private val tileCount: Int = if (model == 0L) 0 else WfcNative.modelTileCount(model)
   private val assignment = IntArray(columns * rows)
   private var closed = false
 
@@ -91,7 +92,16 @@ internal class NativeTileSolver(
   override fun close() {
     if (closed) return
     closed = true
-    // Back to the pool rather than destroyed: the next collapse reuses the buffers.
-    NativeSolverPool.release(handle)
+    /*
+     * Back to the pool only while the handle's buffers are still small. A solver that ran a >1,024-tile
+     * model keeps 32–64-word domains and a 4,096-row size bitset for the rest of the process; retaining
+     * a few of those is what would make the next small drawing pay a large solve's memory. Large
+     * handles are destroyed instead, so the fast path cannot inherit them.
+     */
+    if (tileCount in 1..WfcGenerator.FAST_TILE_LIMIT) {
+      NativeSolverPool.release(handle)
+    } else {
+      NativeSolverPool.discard(handle)
+    }
   }
 }
