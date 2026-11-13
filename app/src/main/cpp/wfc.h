@@ -168,6 +168,31 @@ int wfc_model_tile_center(const wfc_model *model, int tile);
 int wfc_model_evolve(const wfc_model *model, int32_t *assignment, const int32_t *cells, int count,
                      uint32_t seed);
 
+/*
+ * Best-effort fill: assigns every cell without backtracking, always returns a complete grid.
+ *
+ * Cells are filled in reading order. Each one first takes the highest-weight tile compatible with every
+ * already-assigned neighbour; when that set is empty -- the case an exact search would call a
+ * contradiction -- it takes the highest-weight tile allowed by the cell's own domain instead and the
+ * result is an approximation, not a tiling. Pins are placed first and honoured wherever the tile set
+ * still contains the requested pattern.
+ *
+ * Among the tiles that do fit, the choice is weighted-random (on a compressed frequency scale) rather
+ * than "always the commonest", because the commonest pattern is usually a large blank background and
+ * taking it at every cell produces a uniform background instead of a picture.
+ *
+ * @param preferred_centers optional per-cell centre colour taken from the source drawing. When the
+ *        cell's compatible tiles include one with that centre, it is preferred; the source layout is
+ *        what stops a background-heavy drawing from filling with background alone. Pass NULL to let
+ *        the weights and the usage balance decide.
+ * @param seed makes the fill reproducible; the same seed and model produce the same picture.
+ * @return how many cells end up with at least one incompatible neighbour (0 means the fill happened to
+ *         be a valid tiling), or -1 when the arguments are unusable or an allocation fails.
+ */
+int wfc_model_fill_best_effort(const wfc_model *model, int32_t *assignment,
+                               const int32_t *fixed_centers, const int32_t *fixed_patterns,
+                               const int32_t *preferred_centers, uint32_t seed);
+
 /* How many non-current tiles at [cell] are compatible with its current neighbours. */
 int wfc_model_cell_alternatives(const wfc_model *model, const int32_t *assignment, int cell);
 

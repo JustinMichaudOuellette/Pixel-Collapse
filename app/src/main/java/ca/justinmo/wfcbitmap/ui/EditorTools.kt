@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.GridOn
+import androidx.compose.material.icons.filled.Healing
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Palette
@@ -232,6 +233,7 @@ enum class EditorToolId {
   MirrorHorizontal,
   MirrorVertical,
   QuarterTurn,
+  BestEffort,
   PhotoLibrary,
   PhotoCamera,
   Movie,
@@ -260,7 +262,7 @@ data class EditorToolInfo(
 )
 
 /**
- * Every tool, in toolbar order, including the debug-only camera tool.
+ * Every tool, in toolbar order, including the debug-only camera and best-effort tools.
  *
  * [editorToolInfos] is the list both the editor and the tour walk; the editor supplies the actions and
  * the current state, while the tour only needs the icon and the explanation.
@@ -428,6 +430,15 @@ private val allEditorToolInfos: List<EditorToolInfo> =
           "every window has all eight orientations.",
     ),
     EditorToolInfo(
+      id = EditorToolId.BestEffort,
+      icon = Icons.Default.Healing,
+      contentDescription = "Best effort: fill the picture when the drawing cannot be tiled exactly",
+      explanation =
+        "Best effort: when no exact tiling fits, every cell that has none is filled with the most likely " +
+          "pattern instead. The picture stays made of the drawing's shapes, but it is an approximation: " +
+          "the preview says how many cells could not be made to fit.",
+    ),
+    EditorToolInfo(
       id = EditorToolId.PhotoLibrary,
       icon = Icons.Default.PhotoLibrary,
       contentDescription = "Choose a pattern from the gallery",
@@ -501,20 +512,23 @@ private val allEditorToolInfos: List<EditorToolInfo> =
   )
 
 /**
- * The tool catalog for a build that either has the camera tool or does not.
+ * The tool catalog for a build that either has the debug tools or does not.
  *
- * The camera tool is still being developed, so it is only offered by debug builds. Keeping the filter
- * here rather than in the toolbar means the editor and the tour cannot disagree about which tools
- * exist: both read [editorToolInfos], and the first-launch tour lays its grid out from the same list.
+ * The camera and best-effort tools are still being developed, so they are only offered by debug
+ * builds. Keeping the filter here rather than in the toolbar means the editor and the tour cannot
+ * disagree about which tools exist: both read [editorToolInfos], and the first-launch tour lays its
+ * grid out from the same list.
  */
-internal fun editorToolInfosFor(includeCamera: Boolean): List<EditorToolInfo> =
-  if (includeCamera) {
+internal fun editorToolInfosFor(includeDebugTools: Boolean): List<EditorToolInfo> =
+  if (includeDebugTools) {
     allEditorToolInfos
   } else {
-    allEditorToolInfos.filterNot { it.id == EditorToolId.PhotoCamera }
+    allEditorToolInfos.filterNot {
+      it.id == EditorToolId.PhotoCamera || it.id == EditorToolId.BestEffort
+    }
   }
 
-/** The tools this build offers; release builds leave the camera tool out. */
+/** The tools this build offers; release builds leave the camera and best-effort tools out. */
 internal val editorToolInfos: List<EditorToolInfo> = editorToolInfosFor(BuildConfig.DEBUG)
 
 /**

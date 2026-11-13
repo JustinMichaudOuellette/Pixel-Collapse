@@ -97,6 +97,19 @@ class EditorPreferences(context: Context) {
     preferences.edit().putBoolean(KEY_QUARTER_TURN, value).apply()
   }
 
+  /**
+   * Whether generation falls back to a best-effort fill when no exact tiling fits.
+   *
+   * Unlike the edge and symmetry settings this is not part of a saved pattern: it is a choice about how
+   * hard the app should try, not about what the picture may be made of.
+   */
+  fun bestEffort(fallback: Boolean): Boolean =
+    preferences.getBoolean(KEY_BEST_EFFORT, fallback)
+
+  fun setBestEffort(value: Boolean) {
+    preferences.edit().putBoolean(KEY_BEST_EFFORT, value).apply()
+  }
+
   fun autoMigrateColors(fallback: Boolean): Boolean =
     preferences.getBoolean(KEY_AUTO_MIGRATE_COLORS, fallback)
 
@@ -286,6 +299,7 @@ class EditorPreferences(context: Context) {
     const val KEY_MIRROR_HORIZONTAL = "mirror_horizontal"
     const val KEY_MIRROR_VERTICAL = "mirror_vertical"
     const val KEY_QUARTER_TURN = "quarter_turn"
+    const val KEY_BEST_EFFORT = "best_effort"
     const val KEY_AUTO_MIGRATE_COLORS = "auto_migrate_colors"
     const val KEY_OUTPUT_ASPECT = "output_aspect"
     const val KEY_OUTPUT_PREVIEW = "output_preview"

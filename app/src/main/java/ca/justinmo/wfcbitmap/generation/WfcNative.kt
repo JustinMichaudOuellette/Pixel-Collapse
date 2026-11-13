@@ -97,6 +97,29 @@ internal object WfcNative {
   external fun modelTileCenter(model: Long, tile: Int): Int
 
   /**
+   * Best-effort fill: assigns every cell without backtracking and always returns a complete grid.
+   *
+   * A cell takes a tile compatible with every already-assigned neighbour, preferring the source
+   * drawing's colour from [preferredCenters] and spreading the choice over the least-used patterns so
+   * a blank background cannot swallow the picture. When none fits -- the case an exact search calls a
+   * contradiction -- it takes the most likely tile the cell may show instead, still preferring the
+   * source colour. Pins are placed first. [assignment] is filled with model-tile indices.
+   *
+   * @param preferredCenters optional per-cell source colour, row-major, or null to use the weights
+   *   alone.
+   * @return how many cells end up with at least one incompatible neighbour, or -1 when the arguments
+   *   are unusable. A non-zero result is an approximation, not a tiling.
+   */
+  external fun modelFillBestEffort(
+    model: Long,
+    assignment: IntArray,
+    fixedCenters: IntArray?,
+    fixedPatterns: IntArray?,
+    preferredCenters: IntArray?,
+    seed: Int,
+  ): Int
+
+  /**
    * Local Evolve: resample each cell in [cells] to a random tile compatible with its solved neighbours.
    * [assignment] is updated in place; returns how many cells changed.
    */

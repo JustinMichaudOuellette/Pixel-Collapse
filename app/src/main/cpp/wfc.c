@@ -964,6 +964,235 @@ int wfc_model_evolve(const wfc_model *m, int32_t *assignment, const int32_t *cel
   return changed;
 }
 
+/* Ascending by the packed key: high weight first, then the lower tile index. */
+static int compare_tile_order(const void *a, const void *b) {
+  uint64_t left = *(const uint64_t *)a;
+  uint64_t right = *(const uint64_t *)b;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/* The first tile of [order] still present in [bits], or -1. */
+static int first_in_order(const uint64_t *bits, const uint64_t *order, int tiles) {
+  for (int i = 0; i < tiles; i++) {
+    int tile = (int)(order[i] & 0xFFFFFFFFu);
+    if ((bits[tile >> 6] & (1ull << (tile & 63))) != 0) return tile;
+  }
+  return -1;
+}
+
+/*
+ * A frequency for the fill, compressed so one dominant background pattern cannot swallow the picture.
+ *
+ * Raw window counts are extremely top-heavy: a drawing with a large blank area gives the background
+ * window hundreds of occurrences and every motif window a handful. Picking the raw maximum at every
+ * cell therefore produces a uniform background. The fill still prefers common patterns, but on a log
+ * scale: weight 1-2 -> 1-2, 100 -> 7, 10,000 -> 14. That keeps the drawing's bias without turning the
+ * fill into a single-tile flood.
+ */
+static uint32_t fill_weight(int weight) {
+  if (weight <= 1) return 1;
+  return 1u + (uint32_t)(31 - __builtin_clz((unsigned)weight));
+}
+
+/*
+ * Picks among the compatible tiles that have been used least so far, weighted by their (compressed)
+ * drawing frequency.
+ *
+ * Taking the most frequent compatible tile at every cell is what made the fill a plain background: the
+ * commonest pattern is usually a blank one and it supports itself, so it wins every cell. Spreading
+ * the choice over the least-used compatible patterns keeps the fill moving through the tile set; the
+ * frequency weighting only breaks ties between equally unused patterns, so the drawing's bias still
+ * shows without letting it swallow the picture.
+ */
+static int choose_least_used(const wfc_model *m, const uint64_t *bits, const uint32_t *weights,
+                             const uint32_t *used, int tiles, int wanted_centre, uint32_t *rng) {
+  int use_preferred = wanted_centre != INT32_MIN;
+  uint32_t least = 0xFFFFFFFFu;
+  int preferred_seen = 0;
+  for (int tile = 0; tile < tiles; tile++) {
+    if ((bits[tile >> 6] & (1ull << (tile & 63))) == 0) continue;
+    if (use_preferred && m->tiles[tile].centre != wanted_centre) continue;
+    preferred_seen = 1;
+    if (used[tile] < least) least = used[tile];
+  }
+  if (!preferred_seen) {
+    /* The source cell's colour is not available here; fall back to the whole candidate set. */
+    use_preferred = 0;
+    least = 0xFFFFFFFFu;
+    for (int tile = 0; tile < tiles; tile++) {
+      if ((bits[tile >> 6] & (1ull << (tile & 63))) == 0) continue;
+      if (used[tile] < least) least = used[tile];
+    }
+  }
+  uint64_t total = 0;
+  int chosen = -1;
+  for (int tile = 0; tile < tiles; tile++) {
+    if ((bits[tile >> 6] & (1ull << (tile & 63))) == 0) continue;
+    if (use_preferred && m->tiles[tile].centre != wanted_centre) continue;
+    if (used[tile] != least) continue;
+    uint32_t weight = weights[tile] == 0 ? 1 : weights[tile];
+    total += weight;
+    uint64_t roll = ((uint64_t)rng_next(rng) << 32) | rng_next(rng);
+    if (roll % total < weight) chosen = tile;
+  }
+  return chosen;
+}
+
+int wfc_model_fill_best_effort(const wfc_model *m, int32_t *assignment,
+                               const int32_t *fixed_centers, const int32_t *fixed_patterns,
+                               const int32_t *preferred_centers, uint32_t seed) {
+  if (m == NULL || assignment == NULL || m->variable_count <= 0 || m->tile_count <= 0) return -1;
+  const int vars = m->variable_count;
+  const int tiles = m->tile_count;
+  const int words = m->word_count;
+
+  uint64_t *candidate = malloc((size_t)words * sizeof(uint64_t));
+  uint64_t *order = malloc((size_t)tiles * sizeof(uint64_t));
+  uint32_t *weights = malloc((size_t)tiles * sizeof(uint32_t));
+  uint32_t *used = calloc((size_t)tiles, sizeof(uint32_t));
+  unsigned char *bad = calloc((size_t)vars, sizeof(unsigned char));
+  if (candidate == NULL || order == NULL || weights == NULL || used == NULL || bad == NULL) {
+    free(candidate);
+    free(order);
+    free(weights);
+    free(used);
+    free(bad);
+    return -1;
+  }
+
+  /*
+   * Pick the most likely tile by sorting on frequency once. The key puts the weight in the high half
+   * (inverted, so a plain ascending sort is highest-weight first) and the tile index in the low half,
+   * which makes equal weights deterministic.
+   */
+  for (int t = 0; t < tiles; t++) {
+    int raw_weight = m->tiles[t].weight;
+    if (raw_weight < 1) raw_weight = 1;
+    uint32_t weight = (uint32_t)raw_weight;
+    order[t] = ((uint64_t)(0xFFFFFFFFu - weight) << 32) | (uint32_t)t;
+    weights[t] = fill_weight(raw_weight);
+  }
+  qsort(order, (size_t)tiles, sizeof(uint64_t), compare_tile_order);
+
+  uint32_t rng = seed == 0 ? 0x9E3779B9u : seed;
+  for (int v = 0; v < vars; v++) assignment[v] = -1;
+
+  /*
+   * Pins first, so the whole fill can see them. A pin whose pattern did not survive the model's own
+   * pruning is not failable here -- this is the best-effort path -- so it falls back to the requested
+   * centre and finally to the cell's ordinary domain.
+   */
+  if (fixed_centers != NULL || fixed_patterns != NULL) {
+    for (int v = 0; v < vars; v++) {
+      int wanted_centre = fixed_centers != NULL ? fixed_centers[v] : INT32_MIN;
+      int wanted_pattern = fixed_patterns != NULL ? fixed_patterns[v] : INT32_MIN;
+      if (wanted_centre == INT32_MIN && wanted_pattern == INT32_MIN) continue;
+      const uint64_t *base = m->domain_by_present + (size_t)m->present[v] * words;
+      int chosen = -1;
+      /* The exact pin first, then the centre alone, then no pin at all. */
+      for (int pass = 0; pass < 2 && chosen < 0; pass++) {
+        int pin_pattern = pass == 0 ? wanted_pattern : INT32_MIN;
+        if (pass == 1 && wanted_centre == INT32_MIN) break;
+        for (int i = 0; i < tiles; i++) {
+          int tile = (int)(order[i] & 0xFFFFFFFFu);
+          if ((base[tile >> 6] & (1ull << (tile & 63))) == 0) continue;
+          if (wanted_centre != INT32_MIN && m->tiles[tile].centre != wanted_centre) continue;
+          if (pin_pattern != INT32_MIN && m->source[tile] != pin_pattern) continue;
+          chosen = tile;
+          break;
+        }
+      }
+      if (chosen >= 0) {
+        assignment[v] = chosen;
+        used[chosen]++;
+      }
+    }
+  }
+
+  /*
+   * Reading order. A cell has its left, upper-left, up and upper-right neighbours already decided, so
+   * the intersection below is a real four-direction constraint rather than an empty one.
+   */
+  for (int y = 0; y < m->rows; y++) {
+    for (int x = 0; x < m->columns; x++) {
+      int v = y * m->columns + x;
+      if (assignment[v] >= 0) continue;
+      const uint64_t *base = m->domain_by_present + (size_t)m->present[v] * words;
+      memcpy(candidate, base, (size_t)words * sizeof(uint64_t));
+      for (int d = 0; d < WFC_DIRS; d++) {
+        if (((m->present[v] >> d) & 1) == 0) continue;
+        int neighbour = v + m->step_offset[d];
+        int other = assignment[neighbour];
+        if (other < 0) continue;
+        const uint64_t *row = m->compat + ((size_t)OPPOSITE[d] * tiles + other) * words;
+        for (int k = 0; k < words; k++) candidate[k] &= row[k];
+      }
+      int wanted_centre = preferred_centers != NULL ? preferred_centers[v] : INT32_MIN;
+      int chosen = choose_least_used(m, candidate, weights, used, tiles, wanted_centre, &rng);
+      if (chosen < 0) {
+        /*
+         * No tile fits every decided neighbour. Prefer a tile showing the source pixel's colour if one
+         * exists in the cell's domain -- that keeps a motif visible where the constraints had to give --
+         * and otherwise take the most likely pattern the cell may show.
+         */
+        if (wanted_centre != INT32_MIN) {
+          for (int i = 0; i < tiles; i++) {
+            int tile = (int)(order[i] & 0xFFFFFFFFu);
+            if ((base[tile >> 6] & (1ull << (tile & 63))) == 0) continue;
+            if (m->tiles[tile].centre != wanted_centre) continue;
+            chosen = tile;
+            break;
+          }
+        }
+        if (chosen < 0) chosen = first_in_order(base, order, tiles);
+      }
+      if (chosen < 0) chosen = (int)(order[0] & 0xFFFFFFFFu); /* an empty edge class */
+      assignment[v] = chosen;
+      used[chosen]++;
+    }
+  }
+
+  /* How many cells disagree with at least one neighbour -- the honest quality number. */
+  int conflicts = 0;
+#define MARK_BAD(cell)                                  \
+  do {                                                  \
+    if (bad[cell] == 0) {                               \
+      bad[cell] = 1;                                    \
+      conflicts++;                                      \
+    }                                                   \
+  } while (0)
+  for (int v = 0; v < vars; v++) {
+    int a = assignment[v];
+    if (a < 0 || a >= tiles) {
+      MARK_BAD(v);
+      continue;
+    }
+    for (int d = 0; d < WFC_DIRS; d++) {
+      if (((m->present[v] >> d) & 1) == 0) continue;
+      int neighbour = v + m->step_offset[d];
+      int b = assignment[neighbour];
+      if (b < 0 || b >= tiles) {
+        MARK_BAD(v);
+        MARK_BAD(neighbour);
+        continue;
+      }
+      const uint64_t *row = m->compat + ((size_t)d * tiles + a) * words;
+      if ((row[b >> 6] & (1ull << (b & 63))) == 0) {
+        MARK_BAD(v);
+        MARK_BAD(neighbour);
+      }
+    }
+  }
+#undef MARK_BAD
+
+  free(candidate);
+  free(order);
+  free(weights);
+  free(used);
+  free(bad);
+  return conflicts;
+}
+
 int wfc_model_variable_count(const wfc_model *model) {
   return model == NULL ? 0 : model->variable_count;
 }

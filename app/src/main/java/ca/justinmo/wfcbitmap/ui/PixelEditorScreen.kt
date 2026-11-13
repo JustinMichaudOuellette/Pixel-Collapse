@@ -210,6 +210,15 @@ fun PixelEditorScreen(
   /** Called when the quarter-turn toggle is tapped, with the state it should have afterwards. */
   onQuarterTurnChange: (Boolean) -> Unit = {},
   /**
+   * Whether generation falls back to a best-effort fill when no exact tiling fits; see [EditorTool].
+   *
+   * The editor only reports it. On, a drawing that cannot be tiled produces an approximate picture with
+   * its unfittable cells filled by the most likely pattern instead of showing an error.
+   */
+  bestEffort: Boolean = false,
+  /** Called when the best-effort toggle is tapped, with the state it should have afterwards. */
+  onBestEffortChange: (Boolean) -> Unit = {},
+  /**
    * Whether the edge rule held for the picture on screen. False once the generator had to drop it, which
    * means the drawing's border is not the picture's border any more.
    *
@@ -472,6 +481,8 @@ fun PixelEditorScreen(
           )
         EditorToolId.QuarterTurn ->
           EditorTool(info, selected = quarterTurn, onClick = { onQuarterTurnChange(!quarterTurn) })
+        EditorToolId.BestEffort ->
+          EditorTool(info, selected = bestEffort, onClick = { onBestEffortChange(!bestEffort) })
         EditorToolId.PhotoLibrary -> EditorTool(info) { onLoadPattern() }
         EditorToolId.PhotoCamera -> EditorTool(info) { onCameraPhoto() }
         EditorToolId.Movie -> EditorTool(info) { onExportVideo() }

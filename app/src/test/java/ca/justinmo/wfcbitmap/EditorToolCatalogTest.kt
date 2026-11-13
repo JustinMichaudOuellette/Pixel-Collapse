@@ -8,30 +8,37 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The camera tool is a debug-only entry, and removing it leaves the rest of the toolbar alone. */
+/** The debug-only tools are filtered as a group, and removing them leaves the toolbar order alone. */
 class EditorToolCatalogTest {
 
+  private val debugOnly = listOf(EditorToolId.PhotoCamera, EditorToolId.BestEffort)
+
   @Test
-  fun theCameraToolOnlyExistsWhenAskedFor() {
-    assertTrue(
-      "the debug catalog must offer the camera tool",
-      editorToolInfosFor(includeCamera = true).any { it.id == EditorToolId.PhotoCamera },
-    )
-    assertFalse(
-      "the release catalog must not offer the camera tool",
-      editorToolInfosFor(includeCamera = false).any { it.id == EditorToolId.PhotoCamera },
-    )
-    // Unit tests run against the debug variant, so the shipping catalog here is the debug one.
-    assertTrue(
-      "the debug build must actually use the catalog that includes the camera",
-      editorToolInfos.any { it.id == EditorToolId.PhotoCamera },
-    )
+  fun debugOnlyToolsOnlyExistWhenAskedFor() {
+    for (tool in debugOnly) {
+      assertTrue(
+        "the debug catalog must offer $tool",
+        editorToolInfosFor(includeDebugTools = true).any { it.id == tool },
+      )
+      assertFalse(
+        "the release catalog must not offer $tool",
+        editorToolInfosFor(includeDebugTools = false).any { it.id == tool },
+      )
+      // Unit tests run against the debug variant, so the shipping catalog here is the debug one.
+      assertTrue(
+        "the debug build must actually use the catalog that includes $tool",
+        editorToolInfos.any { it.id == tool },
+      )
+    }
   }
 
   @Test
-  fun hidingTheCameraToolKeepsEveryOtherToolInOrder() {
-    val withCamera = editorToolInfosFor(includeCamera = true)
-    val withoutCamera = editorToolInfosFor(includeCamera = false)
-    assertEquals(withCamera.filterNot { it.id == EditorToolId.PhotoCamera }, withoutCamera)
+  fun hidingDebugToolsKeepsEveryOtherToolInOrder() {
+    val withDebugTools = editorToolInfosFor(includeDebugTools = true)
+    val withoutDebugTools = editorToolInfosFor(includeDebugTools = false)
+    assertEquals(
+      withDebugTools.filterNot { it.id in debugOnly },
+      withoutDebugTools,
+    )
   }
 }

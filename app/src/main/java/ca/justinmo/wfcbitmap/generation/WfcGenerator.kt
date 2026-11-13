@@ -350,6 +350,17 @@ object WfcGenerator {
      * [edgeRuleNotice] for the line that says so.
      */
     val relaxedEdges: Boolean = false,
+    /**
+     * True when the exact search found no tiling and the picture was filled best-effort instead. The
+     * picture is made of the drawing's patterns but is not guaranteed to be a tiling; [relaxedCells]
+     * says how much of it could not be made to fit.
+     */
+    val bestEffort: Boolean = false,
+    /**
+     * In a best-effort picture, how many cells have at least one incompatible neighbour. Zero is
+     * possible: the fill may happen to produce a valid tiling even when the search could not prove one.
+     */
+    val relaxedCells: Int = 0,
     /** Time spent turning the solved cells into pixels, in milliseconds. */
     val renderMillis: Long = 0,
     /** Time the solver portfolio reported for itself, in milliseconds. */
@@ -400,6 +411,9 @@ object WfcGenerator {
    * @param quarterTurn also offer every window turned a quarter turn clockwise, the third symmetry setting.
    *   Independent of the mirrors, and composing with them: with all three on the tile set carries all eight
    *   orientations of every window (see [BitmapWaveFunctionCell.createCells]).
+   * @param bestEffort when the exact search finds no tiling, fill every cell with the most likely pattern
+   *   instead of reporting failure. The picture is an approximation with seams, not a tiling; see
+   *   [Output.bestEffort]. Exact output is still used whenever the search finds it.
    * @param pixelsPerCell how many pixels of the picture each solved cell becomes. It changes only the size
    *   of the picture, not what it is -- the solver fills the same grid either way -- so it is a rendering
    *   choice rather than a solving one, and the save size is applied on top of it.
@@ -421,6 +435,7 @@ object WfcGenerator {
     mirrorHorizontal: Boolean = false,
     mirrorVertical: Boolean = false,
     quarterTurn: Boolean = false,
+    bestEffort: Boolean = false,
     pixelsPerCell: Int = PIXELS_PER_CELL,
     cellSize: Int = 1,
     timeoutMillis: Long? = null,
@@ -480,7 +495,10 @@ object WfcGenerator {
         rows == reusable.rows && cachedPacked.contentEquals(packed) &&
         cachedWrapEdges == wrapEdges && cachedMirrorHorizontal == mirrorHorizontal &&
         cachedMirrorVertical == mirrorVertical && cachedQuarterTurn == quarterTurn &&
-        cachedPixelsPerCell == renderScale
+        cachedPixelsPerCell == renderScale &&
+        // An exact picture is valid for either setting. A best-effort one must not be handed back
+        // after the toggle is turned off, or normal mode would silently show an approximation.
+        (!reusable.bestEffort || bestEffort)
       ) {
         // The picture from the cache is a picture: whatever failed before is no longer the last answer.
         lastGenerationFailed = false
@@ -556,6 +574,36 @@ object WfcGenerator {
       ensureActive()
       relaxedEdges = tier?.result?.assignment != null
     }
+    /*
+     * The last resort. The exact attempts above still run first, so a drawing that can be tiled keeps
+     * today's picture exactly. Two cases reach the fill: no exact picture at all, and an exact picture
+     * that is a single colour -- usually a large blank background with every cell taking the same
+     * pattern. The second case is why the tool has to look at the result rather than only at failure:
+     * the solver can succeed and still show nothing.
+     */
+    val exactAssignment = tier?.result?.assignment
+    // Only inspect the colours when the tool is on; normal mode must not pay for a scan it will not use.
+    val exactIsPlain = bestEffort && exactAssignment != null && isPlainField(tier!!, exactAssignment)
+    if (bestEffort && (exactAssignment == null || exactIsPlain)) {
+      val filled = bestEffortTier(
+        packed = packed,
+        columns = columns,
+        rows = rows,
+        seed = seed,
+        sourcePixels = sourcePixels,
+        sourceColumns = sourceColumns,
+        sourceRows = sourceRows,
+        fixedCenters = fixedCenters,
+        fixedPatterns = fixedPatterns,
+      )
+      ensureActive()
+      if (filled != null) {
+        tier = filled
+        // A wrapped drawing already dropped the edge rule by choice; only a genuinely relaxed border
+        // should add "Edges relaxed" to the best-effort notice.
+        relaxedEdges = !wrapEdges
+      }
+    }
     if (tier == null) {
       if (isSessionPicture) noteGenerationFailed()
       throw GenerationException("No pattern in this drawing can touch another, so it cannot be tiled.")
@@ -600,9 +648,11 @@ object WfcGenerator {
       tileCount = tier.tileCount,
       millis = millis,
       seed = seed,
-      wonBySeed = tier.result.seed,
-      workers = tier.result.entries.size,
+      wonBySeed = if (tier.bestEffort) null else tier.result.seed,
+      workers = if (tier.bestEffort) 0 else tier.result.entries.size,
       relaxedEdges = relaxedEdges,
+      bestEffort = tier.bestEffort,
+      relaxedCells = tier.relaxedCells,
       renderMillis = renderMillis,
       solveMillis = solveMillis,
       extractMillis = extractNanos / 1_000_000,
@@ -714,12 +764,33 @@ object WfcGenerator {
     }
   }
 
+  /**
+   * True when one colour fills at least 90% of the picture, i.e. the exact solve produced something
+   * that reads as a plain field. Nine tenths is deliberately conservative: a picture with a real motif
+   * spread through it is left alone, while a solver that took the background pattern everywhere (the
+   * usual way an exact solve "succeeds" and still shows nothing) is replaced by the guided fill.
+   */
+  private fun isPlainField(tier: Tier, assignment: IntArray): Boolean {
+    if (assignment.isEmpty()) return false
+    val counts = HashMap<Int, Int>()
+    var largest = 0
+    for (cell in assignment) {
+      val colour = tier.centers[cell]
+      val count = (counts[colour] ?: 0) + 1
+      counts[colour] = count
+      if (count > largest) largest = count
+    }
+    return largest * 10 >= assignment.size * 9
+  }
+
   /** One model plus the solve on it, kept together because the mapping is needed to render. */
   private class Tier(
     val result: net.akachaki.processing.engine.wavefunctioncollapse.bitmap.PortfolioResult,
     val sources: IntArray,
     val centers: IntArray,
     val tileCount: Int,
+    val bestEffort: Boolean = false,
+    val relaxedCells: Int = 0,
   )
 
   /**
@@ -781,6 +852,108 @@ object WfcGenerator {
     } finally {
       WfcNative.modelDestroy(nativeModel)
     }
+  }
+
+  /**
+   * Fills the grid without backtracking, when the exact attempts failed or produced a one-colour field.
+   *
+   * The fill always produces every cell, so there is no "no tiling" answer here: the only failures are
+   * a model that contains no placeable pattern and an allocation error. Relaxed edges are used because
+   * the strict border rule is the usual reason the exact attempts had nowhere to go, and the source
+   * colours guide the fill so a background-heavy drawing does not collapse to its background.
+   * [Tier.relaxedCells] reports how many cells could not be made compatible with all their neighbours.
+   */
+  private fun bestEffortTier(
+    packed: IntArray,
+    columns: Int,
+    rows: Int,
+    seed: Int,
+    sourcePixels: IntArray,
+    sourceColumns: Int,
+    sourceRows: Int,
+    fixedCenters: IntArray? = null,
+    fixedPatterns: IntArray? = null,
+  ): Tier? {
+    val nativeModel = WfcNative.modelCreate(
+      packed,
+      packed.size / WfcNative.PACKED_TILE_INTS,
+      columns,
+      rows,
+      relaxedEdges = true,
+    )
+    if (nativeModel == 0L) return null
+    return try {
+      val tileCount = WfcNative.modelTileCount(nativeModel)
+      val sources = IntArray(tileCount) { tile -> WfcNative.modelTileSource(nativeModel, tile) }
+      val centers = IntArray(tileCount) { tile -> WfcNative.modelTileCenter(nativeModel, tile) }
+      val assignment = IntArray(columns * rows)
+      val preferredCenters = sourceCentersForOutput(
+        sourcePixels = sourcePixels,
+        sourceColumns = sourceColumns,
+        sourceRows = sourceRows,
+        columns = columns,
+        rows = rows,
+      )
+      val startedAt = System.currentTimeMillis()
+      val relaxedCells = WfcNative.modelFillBestEffort(
+        nativeModel,
+        assignment,
+        fixedCenters,
+        fixedPatterns,
+        preferredCenters,
+        seed,
+      )
+      if (relaxedCells < 0) return null
+      val result = net.akachaki.processing.engine.wavefunctioncollapse.bitmap.PortfolioResult(
+        assignment = assignment,
+        seed = null,
+        millis = System.currentTimeMillis() - startedAt,
+        entries = emptyList(),
+      )
+      Tier(
+        result = result,
+        sources = sources,
+        centers = centers,
+        tileCount = tileCount,
+        bestEffort = true,
+        relaxedCells = relaxedCells,
+      )
+    } finally {
+      WfcNative.modelDestroy(nativeModel)
+    }
+  }
+
+  /**
+   * The source colour each output cell should prefer in a best-effort fill.
+   *
+   * The exact search has no notion of where in the drawing a pattern came from, but the best-effort
+   * fallback needs one: without it, a drawing that is mostly blank gives the fill no reason to put the
+   * motif anywhere, and the picture becomes a plain background. This repeats the source over the
+   * output grid at its own pixel scale -- or shrinks it when the drawing is larger than the picture --
+   * and lets the native fill prefer a tile showing that colour whenever one is compatible. It is a
+   * guide, not a constraint: when no tile with that centre fits, the fill falls back to its usual
+   * choice.
+   */
+  private fun sourceCentersForOutput(
+    sourcePixels: IntArray,
+    sourceColumns: Int,
+    sourceRows: Int,
+    columns: Int,
+    rows: Int,
+  ): IntArray = IntArray(columns * rows) { index ->
+    val x = index % columns
+    val y = index / columns
+    val sourceX = if (sourceColumns <= columns) {
+      x % sourceColumns
+    } else {
+      (x.toLong() * sourceColumns / columns).toInt().coerceIn(0, sourceColumns - 1)
+    }
+    val sourceY = if (sourceRows <= rows) {
+      y % sourceRows
+    } else {
+      (y.toLong() * sourceRows / rows).toInt().coerceIn(0, sourceRows - 1)
+    }
+    sourcePixels[sourceY * sourceColumns + sourceX]
   }
 
   /**
@@ -1043,6 +1216,33 @@ internal fun renderCellCenters(
  * @param relaxedEdges the edge rule was dropped to get a tiling at all (see [WfcGenerator.Output]).
  */
 fun edgeRuleNotice(relaxedEdges: Boolean): String? = if (relaxedEdges) "Edges relaxed" else null
+
+/**
+ * What to say when the picture is a best-effort fill rather than a tiling, or null for an exact one.
+ *
+ * The cell count is the point: it says the picture is an approximation and how large the approximation
+ * is. Zero is still a best-effort result -- the fill happened to fit -- so it is named without a count.
+ */
+fun bestEffortNotice(bestEffort: Boolean, relaxedCells: Int): String? = when {
+  !bestEffort -> null
+  relaxedCells <= 0 -> "Best effort"
+  else -> "Best effort: $relaxedCells cells"
+}
+
+/** The one notice line for a picture: the edge rule and the best-effort fill are separate facts. */
+internal fun generationNotice(
+  relaxedEdges: Boolean,
+  bestEffort: Boolean,
+  relaxedCells: Int,
+): String? {
+  val edge = edgeRuleNotice(relaxedEdges)
+  val best = bestEffortNotice(bestEffort, relaxedCells)
+  return when {
+    edge == null -> best
+    best == null -> edge
+    else -> "$edge · $best"
+  }
+}
 
 /**
  * What to say instead of a picture when the solver found no tiling for the drawing, with the edge rule or

@@ -1,6 +1,8 @@
 package ca.justinmo.wfcbitmap
 
+import ca.justinmo.wfcbitmap.generation.bestEffortNotice
 import ca.justinmo.wfcbitmap.generation.edgeRuleNotice
+import ca.justinmo.wfcbitmap.generation.generationNotice
 import ca.justinmo.wfcbitmap.generation.noTilingMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -32,6 +34,33 @@ class GenerationNoticeTest {
     // It is a snackbar over the picture now, and the picture is what is being looked at: the news is that
     // the edges were relaxed, not an essay about why.
     assertEquals("Edges relaxed", edgeRuleNotice(relaxedEdges = true))
+  }
+
+  // ---------------------------------------------------------------------------
+  // A best-effort picture
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun anExactPictureHasNoBestEffortNotice() {
+    assertNull(bestEffortNotice(bestEffort = false, relaxedCells = 12))
+  }
+
+  @Test
+  fun bestEffortNamesItselfAndTheCellCount() {
+    assertEquals("Best effort", bestEffortNotice(bestEffort = true, relaxedCells = 0))
+    assertEquals("Best effort: 12 cells", bestEffortNotice(bestEffort = true, relaxedCells = 12))
+  }
+
+  @Test
+  fun theNoticeCombinesRelaxedEdgesAndBestEffortWhenBothApply() {
+    assertEquals(
+      "Edges relaxed · Best effort: 3 cells",
+      generationNotice(relaxedEdges = true, bestEffort = true, relaxedCells = 3),
+    )
+    assertEquals(
+      "Best effort: 3 cells",
+      generationNotice(relaxedEdges = false, bestEffort = true, relaxedCells = 3),
+    )
   }
 
   // ---------------------------------------------------------------------------

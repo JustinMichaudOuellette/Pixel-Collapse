@@ -51,12 +51,13 @@ import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import ca.justinmo.wfcbitmap.BuildConfig
 import ca.justinmo.wfcbitmap.PixelCollapseApplication
 import ca.justinmo.wfcbitmap.editor.LatencyMeter
 import ca.justinmo.wfcbitmap.editor.PixelGridState
 import ca.justinmo.wfcbitmap.generation.TileEvolver
 import ca.justinmo.wfcbitmap.generation.WfcGenerator
-import ca.justinmo.wfcbitmap.generation.edgeRuleNotice
+import ca.justinmo.wfcbitmap.generation.generationNotice
 import ca.justinmo.wfcbitmap.generation.generationPlan
 import ca.justinmo.wfcbitmap.generation.renderCellCenters
 import ca.justinmo.wfcbitmap.output.EditorMessage
@@ -540,6 +541,17 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   }
 
   /*
+   * Whether generation may fall back to a best-effort fill.
+   *
+   * Off by default, and available only in debug builds: the tool is still being developed. The
+   * preference is kept so the choice survives a debug reinstall, but release builds force it off even
+   * if a debug build once left it set.
+   */
+  var bestEffort by remember {
+    mutableStateOf(BuildConfig.DEBUG && preferences.bestEffort(fallback = false))
+  }
+
+  /*
    * Generation is started straight from the gesture, not from observing the drawing.
    *
    * Observing costs a frame: `revision` is snapshot state, Compose delivers apply-notifications on a
@@ -577,6 +589,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(mirrorHorizontal) { preferences.setMirrorHorizontal(mirrorHorizontal) }
   LaunchedEffect(mirrorVertical) { preferences.setMirrorVertical(mirrorVertical) }
   LaunchedEffect(quarterTurn) { preferences.setQuarterTurn(quarterTurn) }
+  LaunchedEffect(bestEffort) { preferences.setBestEffort(bestEffort) }
   LaunchedEffect(outputSettings) { preferences.setOutputSettings(outputSettings) }
   LaunchedEffect(autoMigrateColors) { preferences.setAutoMigrateColors(autoMigrateColors) }
   LaunchedEffect(videoScreens) { preferences.setVideoScreens(videoScreens) }
@@ -679,6 +692,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
               mirrorHorizontal = mirrorHorizontal,
               mirrorVertical = mirrorVertical,
               quarterTurn = quarterTurn,
+              bestEffort = bestEffort,
               pixelsPerCell = plan.pixelsPerCell,
               cellSize = plan.cellSize,
             )
@@ -713,9 +727,20 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
               "${generated.millis} ms (extract ${generated.extractMillis} ms, " +
               "solve ${generated.solveMillis} ms, render ${generated.renderMillis} ms)",
           )
+          if (generated.bestEffort) {
+            Log.i(
+              TAG,
+              "Best effort: no exact tiling, filled the picture with the most likely patterns " +
+                "(${generated.relaxedCells} cells have an incompatible neighbour)",
+            )
+          }
           output = generated
           error = null
-          notice = edgeRuleNotice(generated.relaxedEdges)
+          notice = generationNotice(
+            relaxedEdges = generated.relaxedEdges,
+            bestEffort = generated.bestEffort,
+            relaxedCells = generated.relaxedCells,
+          )
           latency.registerCommit(view, generationStart, generationEnd, generated)
         } else {
           /*
@@ -753,6 +778,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(mirrorHorizontal) { requestGeneration() }
   LaunchedEffect(mirrorVertical) { requestGeneration() }
   LaunchedEffect(quarterTurn) { requestGeneration() }
+
+  // A best-effort toggle changes what may be drawn when the exact search finds nothing, so it rebuilds.
+  LaunchedEffect(bestEffort) { requestGeneration() }
 
   /*
    * Sharing writes the picture that is on screen, which is the generated bitmap.
@@ -1337,6 +1365,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
                 mirrorHorizontal = mirrorHorizontal,
                 mirrorVertical = mirrorVertical,
                 quarterTurn = quarterTurn,
+                bestEffort = bestEffort,
                 pixelsPerCell = video.pixelsPerCell,
                 cellSize = video.cellSize,
                 timeoutMillis = PANORAMA_TIMEOUT_MILLIS,
@@ -1478,6 +1507,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
                   mirrorHorizontal = mirrorHorizontal,
                   mirrorVertical = mirrorVertical,
                   quarterTurn = quarterTurn,
+                  bestEffort = bestEffort,
                   pixelsPerCell = video.pixelsPerCell,
                   cellSize = video.cellSize,
                   timeoutMillis = 15_000L,
@@ -1833,6 +1863,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onMirrorVerticalChange = { mirrorVertical = it },
     quarterTurn = quarterTurn,
     onQuarterTurnChange = { quarterTurn = it },
+    // The best-effort fallback is also the caller's: the screen only reports the toggle.
+    bestEffort = bestEffort,
+    onBestEffortChange = { bestEffort = it },
     // The drawing marks its edge cells while the picture on screen really does keep the drawing's border.
     edgeRuleKept = output?.relaxedEdges != true,
     palettes = availablePalettes,

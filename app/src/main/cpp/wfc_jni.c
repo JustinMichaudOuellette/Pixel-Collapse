@@ -103,6 +103,70 @@ Java_ca_justinmo_wfcbitmap_generation_WfcNative_modelEvolve(JNIEnv *env, jobject
   return changed;
 }
 
+JNIEXPORT jint JNICALL
+Java_ca_justinmo_wfcbitmap_generation_WfcNative_modelFillBestEffort(
+    JNIEnv *env, jobject thiz, jlong model, jintArray assignment, jintArray fixed_centers,
+    jintArray fixed_patterns, jintArray preferred_centers, jint seed) {
+  (void)thiz;
+  const wfc_model *native_model = (const wfc_model *)from_handle(model);
+  if (native_model == NULL || assignment == NULL) return -1;
+  int variables = wfc_model_variable_count(native_model);
+  if ((*env)->GetArrayLength(env, assignment) < variables) return -1;
+  if (fixed_centers != NULL && (*env)->GetArrayLength(env, fixed_centers) < variables) return -1;
+  if (fixed_patterns != NULL && (*env)->GetArrayLength(env, fixed_patterns) < variables) return -1;
+  if (preferred_centers != NULL && (*env)->GetArrayLength(env, preferred_centers) < variables) {
+    return -1;
+  }
+
+  jint *values = (*env)->GetIntArrayElements(env, assignment, NULL);
+  if (values == NULL) return -1;
+  jint *centers = NULL;
+  jint *patterns = NULL;
+  jint *preferred = NULL;
+  if (fixed_centers != NULL) {
+    centers = (*env)->GetIntArrayElements(env, fixed_centers, NULL);
+    if (centers == NULL) {
+      (*env)->ReleaseIntArrayElements(env, assignment, values, JNI_ABORT);
+      return -1;
+    }
+  }
+  if (fixed_patterns != NULL) {
+    patterns = (*env)->GetIntArrayElements(env, fixed_patterns, NULL);
+    if (patterns == NULL) {
+      if (centers != NULL) {
+        (*env)->ReleaseIntArrayElements(env, fixed_centers, centers, JNI_ABORT);
+      }
+      (*env)->ReleaseIntArrayElements(env, assignment, values, JNI_ABORT);
+      return -1;
+    }
+  }
+  if (preferred_centers != NULL) {
+    preferred = (*env)->GetIntArrayElements(env, preferred_centers, NULL);
+    if (preferred == NULL) {
+      if (centers != NULL) {
+        (*env)->ReleaseIntArrayElements(env, fixed_centers, centers, JNI_ABORT);
+      }
+      if (patterns != NULL) {
+        (*env)->ReleaseIntArrayElements(env, fixed_patterns, patterns, JNI_ABORT);
+      }
+      (*env)->ReleaseIntArrayElements(env, assignment, values, JNI_ABORT);
+      return -1;
+    }
+  }
+
+  int conflicts = wfc_model_fill_best_effort(native_model, (int32_t *)values,
+                                             (const int32_t *)centers,
+                                             (const int32_t *)patterns,
+                                             (const int32_t *)preferred, (uint32_t)seed);
+  (*env)->ReleaseIntArrayElements(env, assignment, values, 0);
+  if (centers != NULL) (*env)->ReleaseIntArrayElements(env, fixed_centers, centers, JNI_ABORT);
+  if (patterns != NULL) (*env)->ReleaseIntArrayElements(env, fixed_patterns, patterns, JNI_ABORT);
+  if (preferred != NULL) {
+    (*env)->ReleaseIntArrayElements(env, preferred_centers, preferred, JNI_ABORT);
+  }
+  return conflicts;
+}
+
 JNIEXPORT void JNICALL
 Java_ca_justinmo_wfcbitmap_generation_WfcNative_modelDestroy(JNIEnv *env, jobject thiz, jlong model) {
   (void)env;
