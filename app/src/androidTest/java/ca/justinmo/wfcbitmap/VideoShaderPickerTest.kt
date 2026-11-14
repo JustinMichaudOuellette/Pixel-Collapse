@@ -16,6 +16,7 @@ import ca.justinmo.wfcbitmap.ui.VideoExportScreen
 import ca.justinmo.wfcbitmap.video.MetalSettings
 import ca.justinmo.wfcbitmap.video.VideoFormat
 import ca.justinmo.wfcbitmap.video.VideoLook
+import ca.justinmo.wfcbitmap.video.VideoMode
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -23,7 +24,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** The shader is a menu, and Metal 3D's settings live behind the gear rather than inline. */
+/** The video type, shader, inline material controls and fixed preview. */
 @RunWith(AndroidJUnit4::class)
 class VideoShaderPickerTest {
 
@@ -54,17 +55,21 @@ class VideoShaderPickerTest {
     outputWidth: Int = 80,
     outputHeight: Int = 80,
     format: VideoFormat = VideoFormat.Gif,
+    mode: VideoMode = VideoMode.Panorama,
     onFormatChange: (VideoFormat) -> Unit = {},
+    onModeChange: (VideoMode) -> Unit = {},
     metal: MetalSettings = MetalSettings(),
     onMetalChange: (MetalSettings) -> Unit = {},
   ) {
     val lookState = mutableStateOf(look)
     val formatState = mutableStateOf(format)
+    val modeState = mutableStateOf(mode)
     val metalState = mutableStateOf(metal)
     rule.setContent {
       VideoExportScreen(
         open = true,
         format = formatState.value,
+        mode = modeState.value,
         screens = 2,
         fps = 16,
         frameColumns = 20,
@@ -82,6 +87,10 @@ class VideoShaderPickerTest {
         exporting = false,
         onScreensChange = {},
         onLookChange = { lookState.value = it },
+        onModeChange = {
+          modeState.value = it
+          onModeChange(it)
+        },
         onFpsChange = {},
         onFormatChange = {
           formatState.value = it
@@ -99,41 +108,48 @@ class VideoShaderPickerTest {
   }
 
   @Test
-  fun theShaderIsAMenuAndMetalHasASettingsButton() {
-    showScreen(VideoLook.Metal)
-    rule.onNodeWithContentDescription("Shader picker").assertExists()
-    rule.onNodeWithContentDescription("Metal 3D shader settings").assertExists()
-
-    rule.onNodeWithContentDescription("Shader picker").performClick()
+  fun theVideoTypeIsADropdownInTheTitlebar() {
+    var selected: VideoMode? = null
+    showScreen(VideoLook.Flat, format = VideoFormat.Gif, onModeChange = { selected = it })
+    rule.onNodeWithText("Video export").assertDoesNotExist()
+    rule.onNodeWithText("Preview motion").assertDoesNotExist()
+    rule.onNodeWithContentDescription("Export video").assertExists()
+    rule.onNodeWithContentDescription("Video type picker").performClick()
     rule.waitForIdle()
-    rule.onNodeWithText("Flat").assertExists()
-    // Once as the field's current value, once as the selected menu row.
-    rule.onAllNodesWithText("Metal 3D").assertCountEquals(2)
-
-    rule.onNodeWithText("Flat").performClick()
+    rule.onNodeWithText("Solve").performClick()
     rule.waitForIdle()
-    rule.onNodeWithContentDescription("Metal 3D shader settings").assertDoesNotExist()
+    assertEquals(VideoMode.Solve, selected)
+    rule.onNodeWithText("A replay of the real solver", substring = true).assertExists()
   }
 
   @Test
-  fun theGearOpensTheShaderSettings() {
-    showScreen(VideoLook.Metal)
-    rule.onNodeWithContentDescription("Metal 3D shader settings").performClick()
+  fun theMetalControlsAreInlineAndThePreviewIsAlwaysVisible() {
+    showScreen(VideoLook.Metal, withPreview = true, format = VideoFormat.Mp4)
+    rule.onNodeWithContentDescription("Metal preview").assertExists()
+    rule.onNodeWithContentDescription("Metal 3D shader settings").assertDoesNotExist()
+    rule.onNodeWithText("Metal finish").performScrollTo().assertExists()
+
+    rule.onNodeWithContentDescription("Shader picker").performClick()
     rule.waitForIdle()
-    rule.onNodeWithText("Metal 3D shader").assertExists()
-    rule.onNodeWithText("Metal finish").assertExists()
-    rule.onNodeWithContentDescription("Close shader settings").performClick()
+    // Once as the field's current value, once as the selected menu row.
+    rule.onAllNodesWithText("Metal 3D").assertCountEquals(2)
+    rule.onNodeWithText("Flat").performClick()
     rule.waitForIdle()
-    rule.onNodeWithText("Metal 3D shader").assertDoesNotExist()
+    rule.onNodeWithText("Metal finish").assertDoesNotExist()
+    rule.onNodeWithContentDescription("Video preview").assertExists()
   }
 
   @Test
   fun thePreviewZoomsToTheExportPixelSizeAndBackToFit() {
     // The preview bitmap is 1000 px square and the export is 2000 px: one exported pixel is twice
     // the size of one preview pixel, so the ceiling must be 2x rather than 1x.
-    showScreen(VideoLook.Metal, withPreview = true, outputWidth = 2000, outputHeight = 2000)
-    rule.onNodeWithContentDescription("Metal 3D shader settings").performClick()
-    rule.waitForIdle()
+    showScreen(
+      VideoLook.Metal,
+      withPreview = true,
+      outputWidth = 2000,
+      outputHeight = 2000,
+      format = VideoFormat.Mp4,
+    )
     rule.onNodeWithText("Export 2×").assertExists()
     rule.onNodeWithText("Export 2×").performClick()
     rule.waitForIdle()
@@ -146,10 +162,7 @@ class VideoShaderPickerTest {
   @Test
   fun eachLightSwitchTurnsItsSourceOff() {
     var latest: MetalSettings? = null
-    showScreen(VideoLook.Metal, onMetalChange = { latest = it })
-    rule.onNodeWithContentDescription("Metal 3D shader settings").performClick()
-    rule.waitForIdle()
-
+    showScreen(VideoLook.Metal, format = VideoFormat.Mp4, onMetalChange = { latest = it })
     rule.onNodeWithContentDescription("Turn off Key light").performScrollTo().performClick()
     rule.waitForIdle()
     assertEquals(false, latest?.keyLightEnabled)
@@ -162,9 +175,7 @@ class VideoShaderPickerTest {
 
   @Test
   fun tappingThePreviewPausesAndResumesIt() {
-    showScreen(VideoLook.Metal, withPreview = true)
-    rule.onNodeWithContentDescription("Metal 3D shader settings").performClick()
-    rule.waitForIdle()
+    showScreen(VideoLook.Metal, withPreview = true, format = VideoFormat.Mp4)
     rule.onNodeWithText("Paused").assertDoesNotExist()
     rule.onNodeWithContentDescription("Metal preview").performClick()
     rule.waitForIdle()

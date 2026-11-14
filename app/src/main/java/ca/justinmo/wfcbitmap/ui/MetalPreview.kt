@@ -28,6 +28,10 @@ internal fun MetalPreview(
   cellPixels: Int,
   settings: MetalSettings,
   paused: Boolean = false,
+  panX: Float = 0f,
+  panY: Float = 0f,
+  wrapX: Boolean = false,
+  wrapY: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
   AndroidView(
@@ -37,6 +41,7 @@ internal fun MetalPreview(
       view.setImage(pixels, width, height, cellPixels)
       view.setSettings(settings)
       view.setPaused(paused)
+      view.setPan(panX, panY, wrapX, wrapY)
     },
   )
 }
@@ -50,6 +55,10 @@ private class MetalPreviewView(context: Context) : GLSurfaceView(context) {
   private var lastCell = -1
   private var lastSettings: MetalSettings? = null
   private var lastPaused = false
+  private var lastPanX = 0f
+  private var lastPanY = 0f
+  private var lastWrapX = false
+  private var lastWrapY = false
 
   init {
     setEGLContextClientVersion(3)
@@ -88,6 +97,15 @@ private class MetalPreviewView(context: Context) : GLSurfaceView(context) {
     lastPaused = paused
     queueEvent { previewRenderer.setPaused(paused) }
   }
+
+  fun setPan(panX: Float, panY: Float, wrapX: Boolean, wrapY: Boolean) {
+    if (panX == lastPanX && panY == lastPanY && wrapX == lastWrapX && wrapY == lastWrapY) return
+    lastPanX = panX
+    lastPanY = panY
+    lastWrapX = wrapX
+    lastWrapY = wrapY
+    queueEvent { previewRenderer.setPan(panX, panY, wrapX, wrapY) }
+  }
 }
 
 private class MetalPreviewRenderer : GLSurfaceView.Renderer {
@@ -103,6 +121,10 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
   private var lastFrameNanos = 0L
   private var elapsedNanos = 0L
   private var paused = false
+  private var panX = 0f
+  private var panY = 0f
+  private var wrapX = false
+  private var wrapY = false
 
   fun setImage(pixels: IntArray, width: Int, height: Int, cellPixels: Int) {
     this.pixels = pixels
@@ -120,6 +142,13 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
     this.paused = paused
     // Start the next unpaused frame from now rather than counting the time spent paused.
     lastFrameNanos = System.nanoTime()
+  }
+
+  fun setPan(panX: Float, panY: Float, wrapX: Boolean, wrapY: Boolean) {
+    this.panX = panX
+    this.panY = panY
+    this.wrapX = wrapX
+    this.wrapY = wrapY
   }
 
   override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -165,6 +194,10 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
         height = surfaceHeight,
         viewportAspect = surfaceWidth.toFloat() / surfaceHeight,
         imageAspect = imageWidth.toFloat() / imageHeight,
+        uvOffsetX = panX,
+        uvOffsetY = panY,
+        wrapX = wrapX,
+        wrapY = wrapY,
         stepTexels = stepTexels,
         turns = turns,
         settings = settings,

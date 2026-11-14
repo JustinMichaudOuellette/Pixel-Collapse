@@ -1,5 +1,8 @@
 package ca.justinmo.wfcbitmap.ui
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,7 +36,6 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
@@ -50,6 +52,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -59,11 +62,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -87,7 +94,10 @@ import ca.justinmo.wfcbitmap.video.VideoMode
 import ca.justinmo.wfcbitmap.video.estimatedVideoBytes
 import ca.justinmo.wfcbitmap.video.formatByteSize
 import ca.justinmo.wfcbitmap.video.videoPlan
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import java.util.Locale
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -138,13 +148,12 @@ fun VideoExportScreen(
   onLookChange: (VideoLook) -> Unit = {},
   onMetalChange: (MetalSettings) -> Unit = {},
   onFormatChange: (VideoFormat) -> Unit,
-  onPreview: () -> Unit = {},
   onDismiss: () -> Unit,
   onExport: () -> Unit,
 ) {
   if (!open) return
   var shaderMenuOpen by remember { mutableStateOf(false) }
-  var metalEditorOpen by remember { mutableStateOf(false) }
+  var modeMenuOpen by remember { mutableStateOf(false) }
   val gifAllowed = look == VideoLook.Flat
   val exportPixelScale = if (previewWidth > 0) {
     maxOf(
@@ -167,6 +176,29 @@ fun VideoExportScreen(
   )
   val solveSteps = (fps * 2).coerceIn(24, 90)
   val solveTotal = if (format == VideoFormat.Gif) solveSteps * 2 - 1 else solveSteps
+  val previewFps = if (format == VideoFormat.Gif) {
+    (100f / maxOf(plan.frameDelayCentiseconds, 10)).roundToInt()
+  } else {
+    fps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS)
+  }
+  var previewFrame by remember(mode) { mutableIntStateOf(0) }
+  LaunchedEffect(mode, previewFps, pixelsPerFrame, previewPixels) {
+    if (mode != VideoMode.Panorama || previewPixels == null) return@LaunchedEffect
+    while (isActive) {
+      delay((1000L / previewFps.coerceAtLeast(1)).coerceAtLeast(1L))
+      previewFrame++
+    }
+  }
+  val verticalPreview = scrollDirection.isVertical
+  val previewSpan = if (verticalPreview) previewHeight else previewWidth
+  val previewShift = if (previewSpan <= 0) {
+    0
+  } else {
+    val raw = ((previewFrame.toLong() * pixelsPerFrame) % previewSpan).toInt()
+    val reverse = scrollDirection == ScrollDirection.RightToLeft || scrollDirection == ScrollDirection.Up
+    if (reverse && raw != 0) previewSpan - raw else raw
+  }
+  val previewFraction = if (previewSpan <= 0) 0f else previewShift.toFloat() / previewSpan
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -189,12 +221,6 @@ fun VideoExportScreen(
             .padding(horizontal = 16.dp, vertical = 8.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          Text(
-            text = "Video export",
-            color = MENU_TEXT_COLOR,
-            fontSize = 20.sp,
-            modifier = Modifier.weight(1f),
-          )
           IconButton(onClick = onDismiss) {
             Icon(
               Icons.Default.Close,
@@ -202,25 +228,82 @@ fun VideoExportScreen(
               tint = MENU_TEXT_COLOR,
             )
           }
+          VideoModePicker(
+            mode = mode,
+            enabled = !exporting,
+            expanded = modeMenuOpen,
+            onExpandedChange = { modeMenuOpen = it },
+            onModeChange = onModeChange,
+            modifier = Modifier.weight(1f),
+          )
+          Button(
+            onClick = onExport,
+            enabled = !exporting && (format != VideoFormat.Gif || gifAllowed),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+            modifier = Modifier
+              .height(36.dp)
+              .semantics { contentDescription = "Export video" },
+            colors = ButtonDefaults.buttonColors(
+              containerColor = MENU_TEXT_COLOR,
+              contentColor = Color.Black,
+            ),
+          ) {
+            Text(if (exporting) "…" else "Export", fontSize = 13.sp)
+          }
         }
 
-        Row(
+        /*
+         * The preview is fixed above the controls: it is the thing every setting below changes, so it
+         * must not scroll away with them. It stays visible for both looks and whichever format is set;
+         * GIF cannot carry the shader, so a shader preview is only shown for MP4.
+         */
+        Box(
           modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .weight(0.34f)
+            .background(Color.Black),
+          contentAlignment = Alignment.Center,
         ) {
-          VideoMode.entries.forEach { option ->
-            val chosen = option == mode
-            Button(
-              onClick = { onModeChange(option) },
-              modifier = Modifier.weight(1f),
-              colors = ButtonDefaults.buttonColors(
-                containerColor = if (chosen) MENU_TEXT_COLOR else MENU_TEXT_COLOR.copy(alpha = 0.12f),
-                contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
-              ),
-            ) {
-              Text(option.label, fontSize = 13.sp)
+          when {
+            previewPixels == null || previewWidth <= 0 || previewHeight <= 0 -> {
+              Text(
+                "Solve a picture first to preview the video.",
+                color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+                fontSize = 11.sp,
+              )
+            }
+            look == VideoLook.Metal && format == VideoFormat.Mp4 -> {
+              ZoomableMetalPreview(
+                pixels = previewPixels,
+                width = previewWidth,
+                height = previewHeight,
+                cellPixels = previewCellPixels,
+                settings = metal,
+                maxZoom = exportPixelScale,
+                panX = if (mode == VideoMode.Panorama && !verticalPreview) previewFraction else 0f,
+                panY = if (mode == VideoMode.Panorama && verticalPreview) previewFraction else 0f,
+                wrapX = mode == VideoMode.Panorama && !verticalPreview,
+                wrapY = mode == VideoMode.Panorama && verticalPreview,
+                modifier = Modifier.fillMaxSize(),
+              )
+            }
+            mode == VideoMode.Panorama -> {
+              PanoramaFlatPreview(
+                pixels = previewPixels,
+                width = previewWidth,
+                height = previewHeight,
+                shiftPixels = previewShift,
+                vertical = verticalPreview,
+                modifier = Modifier.fillMaxSize(),
+              )
+            }
+            else -> {
+              FlatPreview(
+                pixels = previewPixels,
+                width = previewWidth,
+                height = previewHeight,
+                modifier = Modifier.fillMaxSize(),
+              )
             }
           }
         }
@@ -228,7 +311,7 @@ fun VideoExportScreen(
         Column(
           modifier = Modifier
             .fillMaxWidth()
-            .weight(1f)
+            .weight(0.66f)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp),
         ) {
@@ -263,28 +346,24 @@ fun VideoExportScreen(
               onExpandedChange = { shaderMenuOpen = it },
               onLookChange = { selected ->
                 onLookChange(selected)
-                if (selected != VideoLook.Metal) metalEditorOpen = false
                 if (selected != VideoLook.Flat && format == VideoFormat.Gif) {
                   onFormatChange(VideoFormat.Mp4)
                 }
               },
               modifier = Modifier.weight(1f),
             )
-            if (look == VideoLook.Metal) {
-              IconButton(
-                onClick = { metalEditorOpen = true },
-                enabled = !exporting,
-              ) {
-                Icon(
-                  Icons.Default.Settings,
-                  contentDescription = "Metal 3D shader settings",
-                  tint = MENU_TEXT_COLOR,
-                )
-              }
-            }
           }
 
-          // The Metal 3D shader's preview and controls live in MetalShaderDialog.
+          // The material controls belong to this screen now; the live preview above stays put while
+          // these scroll.
+          if (look == VideoLook.Metal) {
+            MetalShaderControls(
+              metal = metal,
+              exporting = exporting,
+              onMetalChange = onMetalChange,
+            )
+          }
+
           if (mode == VideoMode.Solve) {
             Spacer(Modifier.height(18.dp))
             SettingLabel("Animation", solveAnimation.label)
@@ -494,50 +573,150 @@ fun VideoExportScreen(
             )
           }
 
-          if (mode == VideoMode.Panorama) {
-            Spacer(Modifier.height(16.dp))
-            Button(
-              onClick = onPreview,
-              enabled = !exporting,
-              modifier = Modifier
-                .fillMaxWidth()
-                .height(44.dp),
-              colors = ButtonDefaults.buttonColors(
-                containerColor = MENU_TEXT_COLOR.copy(alpha = 0.16f),
-                contentColor = MENU_TEXT_COLOR,
-              ),
-            ) {
-              Text("Preview motion", fontSize = 13.sp)
-            }
-          }
-
           Spacer(Modifier.height(16.dp))
           FormatToggle(
             format = format,
             enabled = !exporting,
             gifEnabled = gifAllowed,
-            exporting = exporting,
             onFormatChange = onFormatChange,
-            onExport = onExport,
           )
           Spacer(Modifier.height(16.dp))
         }
       }
     }
   }
+}
 
-  if (look == VideoLook.Metal && metalEditorOpen) {
-    MetalShaderDialog(
-      metal = metal,
-      previewPixels = previewPixels,
-      previewWidth = previewWidth,
-      previewHeight = previewHeight,
-      previewCellPixels = previewCellPixels,
-      maxZoom = exportPixelScale,
-      exporting = exporting,
-      onMetalChange = onMetalChange,
-      onDismiss = { metalEditorOpen = false },
-    )
+/** The video type as a compact field in the titlebar, with the modes in a menu. */
+@Composable
+private fun VideoModePicker(
+  mode: VideoMode,
+  enabled: Boolean,
+  expanded: Boolean,
+  onExpandedChange: (Boolean) -> Unit,
+  onModeChange: (VideoMode) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val itemColors = MenuDefaults.itemColors(
+    textColor = MENU_TEXT_COLOR,
+    leadingIconColor = MENU_TEXT_COLOR,
+    trailingIconColor = MENU_TEXT_COLOR,
+  )
+  Box(modifier = modifier) {
+    Surface(
+      modifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(8.dp))
+        .border(1.dp, MENU_DIVIDER_COLOR, RoundedCornerShape(8.dp))
+        .clickable(enabled = enabled) { onExpandedChange(true) }
+        .semantics { contentDescription = "Video type picker" },
+      color = MENU_TEXT_COLOR.copy(alpha = 0.08f),
+      shape = RoundedCornerShape(8.dp),
+    ) {
+      Row(
+        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text(mode.label, color = MENU_TEXT_COLOR, fontSize = 13.sp)
+        Icon(
+          Icons.Default.KeyboardArrowDown,
+          contentDescription = null,
+          tint = MENU_TEXT_COLOR.copy(alpha = 0.7f),
+          modifier = Modifier.padding(start = 4.dp),
+        )
+      }
+    }
+    DropdownMenu(
+      expanded = expanded,
+      onDismissRequest = { onExpandedChange(false) },
+      containerColor = PANEL_BACKGROUND,
+    ) {
+      VideoMode.entries.forEach { option ->
+        DropdownMenuItem(
+          text = { Text(option.label) },
+          onClick = {
+            onExpandedChange(false)
+            onModeChange(option)
+          },
+          colors = itemColors,
+          trailingIcon = {
+            if (option == mode) {
+              Icon(Icons.Default.Check, contentDescription = "Selected", tint = MENU_TEXT_COLOR)
+            }
+          },
+        )
+      }
+    }
+  }
+}
+
+/** The picture as it will be exported flat: the fallback preview and the GIF preview. */
+@Composable
+private fun FlatPreview(
+  pixels: IntArray,
+  width: Int,
+  height: Int,
+  modifier: Modifier = Modifier,
+) {
+  val image = remember(pixels, width, height) {
+    Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888).asImageBitmap()
+  }
+  Image(
+    bitmap = image,
+    contentDescription = "Video preview",
+    contentScale = ContentScale.Fit,
+    modifier = modifier,
+  )
+}
+
+/**
+ * The flat panorama preview: the solved frame repeated and slid past the window at the export's own
+ * pace. This is deliberately the same picture repeated, not a second panorama solve; the export still
+ * builds its own wide panorama.
+ */
+@Composable
+private fun PanoramaFlatPreview(
+  pixels: IntArray,
+  width: Int,
+  height: Int,
+  shiftPixels: Int,
+  vertical: Boolean,
+  modifier: Modifier = Modifier,
+) {
+  val image = remember(pixels, width, height) {
+    Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888).asImageBitmap()
+  }
+  Canvas(modifier.semantics { contentDescription = "Video preview" }) {
+    val aspect = image.width.toFloat() / image.height
+    val viewWidth = min(size.width, size.height * aspect)
+    val viewHeight = viewWidth / aspect
+    val left = (size.width - viewWidth) / 2f
+    val top = (size.height - viewHeight) / 2f
+    val scale = viewWidth / image.width
+    val offset = shiftPixels * scale
+    clipRect(left, top, left + viewWidth, top + viewHeight) {
+      if (vertical) {
+        var y = top - offset
+        while (y < top + viewHeight) {
+          drawImage(
+            image = image,
+            dstOffset = IntOffset(left.roundToInt(), y.roundToInt()),
+            dstSize = IntSize(viewWidth.roundToInt(), viewHeight.roundToInt()),
+          )
+          y += viewHeight
+        }
+      } else {
+        var x = left - offset
+        while (x < left + viewWidth) {
+          drawImage(
+            image = image,
+            dstOffset = IntOffset(x.roundToInt(), top.roundToInt()),
+            dstSize = IntSize(viewWidth.roundToInt(), viewHeight.roundToInt()),
+          )
+          x += viewWidth
+        }
+      }
+    }
   }
 }
 
@@ -631,6 +810,10 @@ private fun ZoomableMetalPreview(
   cellPixels: Int,
   settings: MetalSettings,
   maxZoom: Float,
+  panX: Float = 0f,
+  panY: Float = 0f,
+  wrapX: Boolean = false,
+  wrapY: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
   BoxWithConstraints(
@@ -678,6 +861,10 @@ private fun ZoomableMetalPreview(
       cellPixels = cellPixels,
       settings = settings,
       paused = paused,
+      panX = panX,
+      panY = panY,
+      wrapX = wrapX,
+      wrapY = wrapY,
       modifier = Modifier
         .size(imageWidth * scale, imageHeight * scale)
         .offset { IntOffset(pan.x.roundToInt(), pan.y.roundToInt()) }
@@ -751,99 +938,19 @@ private fun ZoomableMetalPreview(
 }
 
 /**
- * The Metal 3D shader's live preview and controls, in a window of their own.
+ * The Metal 3D material controls, inline under the shader picker.
  *
- * Opened by the gear beside the shader picker. The preview is the same GPU shader the exporter runs,
- * so a slider and the material it changes are in the same place; closing it leaves the settings as
- * they are, because every change is applied to the caller's state as it is made.
+ * The preview above the scroll is the same GPU shader the exporter runs, so a slider and the material
+ * it changes are visible together. Every change is applied to the caller's state as it is made.
  */
 @Composable
-private fun MetalShaderDialog(
+private fun MetalShaderControls(
   metal: MetalSettings,
-  previewPixels: IntArray?,
-  previewWidth: Int,
-  previewHeight: Int,
-  previewCellPixels: Int,
-  maxZoom: Float,
   exporting: Boolean,
   onMetalChange: (MetalSettings) -> Unit,
-  onDismiss: () -> Unit,
+  modifier: Modifier = Modifier,
 ) {
-  Dialog(
-    onDismissRequest = onDismiss,
-    properties = DialogProperties(
-      usePlatformDefaultWidth = false,
-      decorFitsSystemWindows = false,
-    ),
-  ) {
-    Surface(
-      modifier = Modifier
-        .fillMaxSize()
-        .windowInsetsPadding(WindowInsets.safeDrawing)
-        .padding(16.dp),
-      color = Color.Black,
-      shape = RoundedCornerShape(12.dp),
-    ) {
-      Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.Black)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Text(
-            text = "Metal 3D shader",
-            color = MENU_TEXT_COLOR,
-            fontSize = 18.sp,
-            modifier = Modifier.weight(1f),
-          )
-          IconButton(onClick = onDismiss) {
-            Icon(
-              Icons.Default.Close,
-              contentDescription = "Close shader settings",
-              tint = MENU_TEXT_COLOR,
-            )
-          }
-        }
-        /*
-         * The preview is deliberately outside the scrolling column: it is the material being edited,
-         * and scrolling the controls must not move it off the screen or turn it into another scroll
-         * target. A black field behind it makes the aspect-ratio letterboxing invisible.
-         */
-        Box(
-          modifier = Modifier
-            .fillMaxWidth()
-            .weight(0.45f)
-            .background(Color.Black),
-          contentAlignment = Alignment.Center,
-        ) {
-          if (previewPixels != null && previewWidth > 0 && previewHeight > 0) {
-            ZoomableMetalPreview(
-              pixels = previewPixels,
-              width = previewWidth,
-              height = previewHeight,
-              cellPixels = previewCellPixels,
-              settings = metal,
-              maxZoom = maxZoom,
-              modifier = Modifier.fillMaxSize(),
-            )
-          } else {
-            Text(
-              "Solve a picture first to see the live metal material.",
-              color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
-              fontSize = 11.sp,
-            )
-          }
-        }
-
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .weight(0.55f)
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp),
-        ) {
+  Column(modifier = modifier) {
                 Spacer(Modifier.height(16.dp))
                 SettingLabel("Metal finish", metal.finish.label)
                 MetalFinish.entries.chunked(3).forEach { row ->
@@ -1044,11 +1151,7 @@ private fun MetalShaderDialog(
                 ) { onMetalChange(metal.copy(exposure = it)) }
 
                 Spacer(Modifier.height(12.dp))
-
-          Spacer(Modifier.height(20.dp))
-        }
-      }
-    }
+                Spacer(Modifier.height(20.dp))
   }
 }
 
@@ -1191,9 +1294,7 @@ private fun FormatToggle(
   format: VideoFormat,
   enabled: Boolean,
   gifEnabled: Boolean,
-  exporting: Boolean,
   onFormatChange: (VideoFormat) -> Unit,
-  onExport: () -> Unit,
 ) {
   Row(
     modifier = Modifier.fillMaxWidth(),
@@ -1240,19 +1341,6 @@ private fun FormatToggle(
           )
         }
       }
-    }
-    Button(
-      onClick = onExport,
-      enabled = enabled && (format != VideoFormat.Gif || gifEnabled),
-      modifier = Modifier
-        .weight(1f)
-        .height(56.dp),
-      colors = ButtonDefaults.buttonColors(
-        containerColor = MENU_TEXT_COLOR,
-        contentColor = Color.Black,
-      ),
-    ) {
-      Text(if (exporting) "…" else "Export", fontSize = 14.sp)
     }
   }
 }

@@ -146,12 +146,6 @@ internal fun LoadPatternDialog(
             .padding(horizontal = 16.dp, vertical = 8.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          Text(
-            text = "Choose a pattern",
-            color = Color.White,
-            fontSize = 20.sp,
-            modifier = Modifier.weight(1f),
-          )
           IconButton(onClick = onDismiss) {
             Icon(
               Icons.Default.Close,
@@ -159,6 +153,12 @@ internal fun LoadPatternDialog(
               tint = Color.White,
             )
           }
+          Text(
+            text = "Choose a pattern",
+            color = Color.White,
+            fontSize = 20.sp,
+            modifier = Modifier.weight(1f),
+          )
         }
 
         if (patterns.isEmpty()) {

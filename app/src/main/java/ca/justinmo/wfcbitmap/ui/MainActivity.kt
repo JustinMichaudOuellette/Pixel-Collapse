@@ -368,7 +368,6 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   var loadPatternDialogOpen by remember { mutableStateOf(false) }
   var cameraToolOpen by remember { mutableStateOf(false) }
   var videoExportOpen by remember { mutableStateOf(false) }
-  var videoPreviewOpen by remember { mutableStateOf(false) }
   // The loop's two knobs: how many frame widths it covers, and how many frames a second it plays at.
   // One pixel per frame means the frame count follows from the loop's width, so the frame rate is what
   // sets how long the clip lasts.
@@ -1988,23 +1987,19 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     videoFrame.columns * videoFrame.pixelsPerCell * outputSettings.scale.factor.toInt() to
       videoFrame.rows * videoFrame.pixelsPerCell * outputSettings.scale.factor.toInt()
     )
-  // The live metal preview is the solved picture itself, uploaded once. `remember` is keyed on the
-  // output and the look so a slider drag does not copy a megapixel array on every recomposition.
-  val metalPreviewPixels = remember(output, videoLook) {
-    if (videoLook != VideoLook.Metal) {
-      null
-    } else {
-      output?.let { solved ->
-        val w = solved.bitmap.width
-        val h = solved.bitmap.height
-        IntArray(w * h).also { solved.bitmap.getPixels(it, 0, w, 0, 0, w, h) }
-      }
+  // The preview is the solved picture itself, uploaded once. `remember` is keyed on the output, not
+  // the look or a slider, so changing either does not copy a megapixel array on every recomposition.
+  val videoPreviewPixels = remember(output) {
+    output?.let { solved ->
+      val w = solved.bitmap.width
+      val h = solved.bitmap.height
+      IntArray(w * h).also { solved.bitmap.getPixels(it, 0, w, 0, 0, w, h) }
     }
   }
-  val metalPreviewWidth = output?.bitmap?.width ?: 0
-  val metalPreviewHeight = output?.bitmap?.height ?: 0
-  val metalPreviewCell = if (metalPreviewWidth > 0 && (output?.columns ?: 0) > 0) {
-    (metalPreviewWidth / output!!.columns).coerceAtLeast(1)
+  val videoPreviewWidth = output?.bitmap?.width ?: 0
+  val videoPreviewHeight = output?.bitmap?.height ?: 0
+  val videoPreviewCell = if (videoPreviewWidth > 0 && (output?.columns ?: 0) > 0) {
+    (videoPreviewWidth / output!!.columns).coerceAtLeast(1)
   } else {
     1
   }
@@ -2020,10 +2015,10 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     scrollDirection = scrollDirection,
     look = videoLook,
     metal = metalSettings,
-    previewPixels = metalPreviewPixels,
-    previewWidth = metalPreviewWidth,
-    previewHeight = metalPreviewHeight,
-    previewCellPixels = metalPreviewCell,
+    previewPixels = videoPreviewPixels,
+    previewWidth = videoPreviewWidth,
+    previewHeight = videoPreviewHeight,
+    previewCellPixels = videoPreviewCell,
     frameColumns = videoFrame.columns,
     frameRows = videoFrame.rows,
     pixelsPerCell = videoFrame.pixelsPerCell,
@@ -2041,7 +2036,6 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onLookChange = { videoLook = it },
     onMetalChange = { metalSettings = it.sanitised() },
     onFormatChange = { videoFormat = it },
-    onPreview = { videoPreviewOpen = true },
     onDismiss = { videoExportOpen = false },
     onExport = { exportVideo(videoFormat) },
   )
@@ -2075,26 +2069,6 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       requestGeneration()
       message = EditorMessage("Camera pattern applied")
     },
-  )
-
-  val previewFps = if (videoFormat == VideoFormat.Gif) {
-    val delay = (100f / videoFps.coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS))
-      .roundToInt()
-      .coerceIn(1, 100)
-    // Google Photos -- the viewer this app hands GIFs to -- clamps short GIF delays (1 cs and often
-    // anything under 10 cs) to roughly 10 frames per second. Preview at that floor so the motion
-    // matches what the viewer will show, not the nominal delay written in the file.
-    (100f / maxOf(delay, 10)).roundToInt()
-  } else {
-    videoFps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS)
-  }
-  VideoPreviewDialog(
-    open = videoPreviewOpen,
-    image = output?.image,
-    fps = previewFps,
-    pixelsPerFrame = videoPixelsPerFrame,
-    scrollDirection = scrollDirection,
-    onDismiss = { videoPreviewOpen = false },
   )
 
   if (loadPatternDialogOpen) {
