@@ -51,7 +51,7 @@ import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import ca.justinmo.wfcbitmap.BuildConfig
+import ca.justinmo.wfcbitmap.FeatureFlags
 import ca.justinmo.wfcbitmap.PixelCollapseApplication
 import ca.justinmo.wfcbitmap.editor.LatencyMeter
 import ca.justinmo.wfcbitmap.editor.PixelGridState
@@ -545,12 +545,13 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   /*
    * Whether generation may fall back to a best-effort fill.
    *
-   * Off by default, and available only in debug builds: the tool is still being developed. The
-   * preference is kept so the choice survives a debug reinstall, but release builds force it off even
-   * if a debug build once left it set.
+   * Off while [FeatureFlags.BEST_EFFORT_TOOL_ENABLED] is false. The preference is left untouched in
+   * that state, so turning the feature back on restores the last choice instead of forgetting it.
    */
   var bestEffort by remember {
-    mutableStateOf(BuildConfig.DEBUG && preferences.bestEffort(fallback = false))
+    mutableStateOf(
+      FeatureFlags.BEST_EFFORT_TOOL_ENABLED && preferences.bestEffort(fallback = false),
+    )
   }
 
   /*
@@ -591,7 +592,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(mirrorHorizontal) { preferences.setMirrorHorizontal(mirrorHorizontal) }
   LaunchedEffect(mirrorVertical) { preferences.setMirrorVertical(mirrorVertical) }
   LaunchedEffect(quarterTurn) { preferences.setQuarterTurn(quarterTurn) }
-  LaunchedEffect(bestEffort) { preferences.setBestEffort(bestEffort) }
+  LaunchedEffect(bestEffort) {
+    if (FeatureFlags.BEST_EFFORT_TOOL_ENABLED) preferences.setBestEffort(bestEffort)
+  }
   LaunchedEffect(outputSettings) { preferences.setOutputSettings(outputSettings) }
   LaunchedEffect(autoMigrateColors) { preferences.setAutoMigrateColors(autoMigrateColors) }
   LaunchedEffect(videoScreens) { preferences.setVideoScreens(videoScreens) }

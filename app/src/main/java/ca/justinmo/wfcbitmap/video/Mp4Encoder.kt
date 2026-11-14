@@ -12,13 +12,12 @@ import java.io.IOException
 /**
  * Whether MP4 export uses the direct-to-encoder Surface path.
  *
- * The Surface path is much faster (it removes `glReadPixels` and the CPU YUV conversion), but
- * MediaCodec's Surface input maps RGB into YUV with a different colour pipeline than the readback
- * path, which changed the look of exported clips. Both implementations are kept: exports stay on the
- * readback path until the Surface colour output can be matched, and this flag is the single switch
- * for trying the fast one again.
+ * The Surface path is much faster (it removes `glReadPixels` and the CPU YUV conversion). Both
+ * implementations are kept: if a device cannot present a window surface, or a future encoder changes
+ * its colour mapping, exports can fall back to the readback path by turning this back off. The colour
+ * parity test pins the two outputs together.
  */
-internal const val USE_SURFACE_MP4_ENCODER = false
+internal const val USE_SURFACE_MP4_ENCODER = true
 
 /**
  * H.264 MP4 writer for the panning export.
@@ -147,6 +146,7 @@ internal object Mp4Encoder {
     val muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     val info = MediaCodec.BufferInfo()
     var track = -1
+    var writtenFrames = 0
 
     fun drain(end: Boolean): Boolean {
       while (true) {
@@ -160,6 +160,15 @@ internal object Mp4Encoder {
           out >= 0 -> {
             val buffer = codec.getOutputBuffer(out)
             if (buffer != null && info.size > 0 && track >= 0) {
+              /*
+               * Surface timestamps are only as good as the swap clock. If rendering a frame takes
+               * longer than one frame interval, EGL/MediaCodec falls back to wall-clock times and the
+               * MP4 becomes variable-rate: a requested 50 fps clip comes out around 45 fps. The
+               * encoder emits frames in presentation order here, so stamp the muxer with the requested
+               * timeline instead of trusting the Surface timestamp.
+               */
+              info.presentationTimeUs = writtenFrames * 1_000_000L / fps
+              writtenFrames++
               buffer.position(info.offset)
               buffer.limit(info.offset + info.size)
               muxer.writeSampleData(track, buffer, info)

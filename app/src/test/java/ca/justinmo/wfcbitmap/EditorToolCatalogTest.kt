@@ -1,44 +1,38 @@
 package ca.justinmo.wfcbitmap
 
 import ca.justinmo.wfcbitmap.ui.EditorToolId
+import ca.justinmo.wfcbitmap.ui.allEditorToolInfos
 import ca.justinmo.wfcbitmap.ui.editorToolInfos
 import ca.justinmo.wfcbitmap.ui.editorToolInfosFor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The debug-only tools are filtered as a group, and removing them leaves the toolbar order alone. */
+/** The disabled-feature flags are the single source of truth for what the toolbar offers. */
 class EditorToolCatalogTest {
 
-  private val debugOnly = listOf(EditorToolId.PhotoCamera, EditorToolId.BestEffort)
+  private val disabled = listOf(
+    EditorToolId.Triangle to FeatureFlags.TRIANGLE_TOOL_ENABLED,
+    EditorToolId.PhotoCamera to FeatureFlags.CAMERA_TOOL_ENABLED,
+    EditorToolId.BestEffort to FeatureFlags.BEST_EFFORT_TOOL_ENABLED,
+  )
 
   @Test
-  fun debugOnlyToolsOnlyExistWhenAskedFor() {
-    for (tool in debugOnly) {
-      assertTrue(
-        "the debug catalog must offer $tool",
-        editorToolInfosFor(includeDebugTools = true).any { it.id == tool },
-      )
+  fun disabledFeaturesAreNotInTheCatalog() {
+    for ((tool, enabled) in disabled) {
+      assertFalse("$tool must stay disabled by its feature flag", enabled)
       assertFalse(
-        "the release catalog must not offer $tool",
-        editorToolInfosFor(includeDebugTools = false).any { it.id == tool },
-      )
-      // Unit tests run against the debug variant, so the shipping catalog here is the debug one.
-      assertTrue(
-        "the debug build must actually use the catalog that includes $tool",
+        "the catalog must not offer $tool",
         editorToolInfos.any { it.id == tool },
       )
     }
   }
 
   @Test
-  fun hidingDebugToolsKeepsEveryOtherToolInOrder() {
-    val withDebugTools = editorToolInfosFor(includeDebugTools = true)
-    val withoutDebugTools = editorToolInfosFor(includeDebugTools = false)
+  fun filteringDisabledToolsKeepsEveryOtherToolInOrder() {
     assertEquals(
-      withDebugTools.filterNot { it.id in debugOnly },
-      withoutDebugTools,
+      allEditorToolInfos.filterNot { info -> disabled.any { it.first == info.id } },
+      editorToolInfosFor(),
     )
   }
 }

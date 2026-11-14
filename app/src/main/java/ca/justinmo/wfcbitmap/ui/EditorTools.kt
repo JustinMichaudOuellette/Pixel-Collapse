@@ -69,7 +69,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import ca.justinmo.wfcbitmap.BuildConfig
+import ca.justinmo.wfcbitmap.FeatureFlags
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.roundToInt
@@ -262,12 +262,12 @@ data class EditorToolInfo(
 )
 
 /**
- * Every tool, in toolbar order, including the debug-only camera and best-effort tools.
+ * Every tool, in toolbar order, including any that [FeatureFlags] currently disables.
  *
  * [editorToolInfos] is the list both the editor and the tour walk; the editor supplies the actions and
  * the current state, while the tour only needs the icon and the explanation.
  */
-private val allEditorToolInfos: List<EditorToolInfo> =
+internal val allEditorToolInfos: List<EditorToolInfo> =
   listOf(
     EditorToolInfo(
       id = EditorToolId.Eyedropper,
@@ -512,24 +512,23 @@ private val allEditorToolInfos: List<EditorToolInfo> =
   )
 
 /**
- * The tool catalog for a build that either has the debug tools or does not.
+ * The tools this build actually offers.
  *
- * The camera and best-effort tools are still being developed, so they are only offered by debug
- * builds. Keeping the filter here rather than in the toolbar means the editor and the tour cannot
- * disagree about which tools exist: both read [editorToolInfos], and the first-launch tour lays its
- * grid out from the same list.
+ * Filtering in one place means the editor and the first-launch tour cannot disagree about which tools
+ * exist: both read [editorToolInfos], which is the same catalog with the disabled features removed.
  */
-internal fun editorToolInfosFor(includeDebugTools: Boolean): List<EditorToolInfo> =
-  if (includeDebugTools) {
-    allEditorToolInfos
-  } else {
-    allEditorToolInfos.filterNot {
-      it.id == EditorToolId.PhotoCamera || it.id == EditorToolId.BestEffort
+internal fun editorToolInfosFor(): List<EditorToolInfo> =
+  allEditorToolInfos.filter { info ->
+    when (info.id) {
+      EditorToolId.Triangle -> FeatureFlags.TRIANGLE_TOOL_ENABLED
+      EditorToolId.PhotoCamera -> FeatureFlags.CAMERA_TOOL_ENABLED
+      EditorToolId.BestEffort -> FeatureFlags.BEST_EFFORT_TOOL_ENABLED
+      else -> true
     }
   }
 
-/** The tools this build offers; release builds leave the camera and best-effort tools out. */
-internal val editorToolInfos: List<EditorToolInfo> = editorToolInfosFor(BuildConfig.DEBUG)
+/** The tools this build offers. */
+internal val editorToolInfos: List<EditorToolInfo> = editorToolInfosFor()
 
 /**
  * One entry in the vertical toolbar between the preview and the drawing: a catalog entry plus the
