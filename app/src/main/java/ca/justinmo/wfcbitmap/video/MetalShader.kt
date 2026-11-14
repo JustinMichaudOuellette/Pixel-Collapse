@@ -77,6 +77,7 @@ uniform float uAnisotropy;
 uniform float uBrushAngle;
 uniform float uExposure;
 uniform float uCameraDistance;
+uniform float uKeyLightOn;
 
 const float PI = 3.14159265359;
 const float INV_PI = 0.31830988618;
@@ -111,6 +112,19 @@ vec3 rotateY(vec3 d, float a) {
   float c = cos(a);
   float s = sin(a);
   return vec3(c * d.x + s * d.z, d.y, -s * d.x + c * d.z);
+}
+
+/**
+ * One stable, per-pixel dither sample in 0..1.
+ *
+ * The environment reflection is a smooth gradient across the plate; at 8 bits per channel a gentle
+ * gradient becomes visible as vertical bands, and raising the environment intensity steepens it and
+ * makes them obvious. A sub-code-value dither breaks the quantisation steps without changing the
+ * material or flickering between frames: the sample depends on the pixel, not on time.
+ */
+float dither(vec2 p) {
+  // Interleaved gradient noise: a stable, low-pattern screen-space dither.
+  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
 }
 
 void main() {
@@ -220,7 +234,7 @@ void main() {
   vec3 toLight = uLightPosition - P;
   float attenuation = 1.0 / (1.0 + 0.18 * dot(toLight, toLight));
   vec3 radiance = uLightColor * uLightIntensity * attenuation;
-  vec3 direct = (kd * albedo * INV_PI + specular) * radiance * NdotL;
+  vec3 direct = (kd * albedo * INV_PI + specular) * radiance * NdotL * uKeyLightOn;
 
   // Environment reflection: split-sum, with the cubemap's mip chain standing in for the prefiltered
   // radiance and a small GGX importance-sampled LUT for the BRDF integral.
@@ -245,7 +259,8 @@ void main() {
   vec3 color = (direct + environment) * uExposure;
   color = (color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14);
   color = pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2));
-  fragColor = vec4(color, 1.0);
+  float noise = (dither(gl_FragCoord.xy) - 0.5) / 255.0;
+  fragColor = vec4(clamp(color + noise, 0.0, 1.0), 1.0);
 }
 """
 
@@ -253,19 +268,40 @@ void main() {
    * The procedural studio painted into the environment texture once at renderer start-up.
    *
    * It is an equirectangular map. The important part is not the exact colour of the backdrop but the
-   * structure: a bright overhead soft-box, two coloured side strips and a dark checkered floor. Those
-   * shapes are what a polished metal reflects instead of a white dot, and a moving normal makes them slide
-   * across the plate.
+   * structure: a bright overhead soft-box and a few coloured soft patches. Those shapes are what a
+   * polished metal reflects instead of a white dot, and a moving normal makes them slide across the
+   * plate. Every patch is finite in elevation; a strip would become a full-height band on a flat plate.
    */
   const val ENVIRONMENT = """#version 300 es
 precision highp float;
 out vec4 fragColor;
 uniform vec2 uEnvSize;
+uniform float uSkyOn;
+uniform float uFloorOn;
+uniform float uHorizonOn;
+uniform float uFloorBounceOn;
+uniform float uFrontPanelOn;
+uniform float uBluePanelOn;
+uniform float uAmberPanelOn;
+uniform float uKeySoftboxOn;
+uniform float uOverheadOn;
+uniform float uSmallSpot1On;
+uniform float uSmallSpot2On;
+uniform float uSmallSpot3On;
 const float PI = 3.14159265359;
 
-float strip(float az, float center, float halfWidth, float soft) {
-  float delta = atan(sin(az - center), cos(az - center));
-  return 1.0 - smoothstep(halfWidth - soft, halfWidth, abs(delta));
+/*
+ * A finite studio soft-box: a patch with both azimuth and elevation extent.
+ *
+ * A strip is constant in elevation, so a flat plate reflects it as a band from the top of the picture
+ * to the bottom; raising the environment intensity then reads as vertical banding rather than as a
+ * brighter material. A patch reflects as a soft shape instead, and still slides across a bevel.
+ */
+float spot(float az, float centerAz, float el, float centerEl, float radius, float soft) {
+  float dAz = atan(sin(az - centerAz), cos(az - centerAz));
+  float dEl = el - centerEl;
+  float d = sqrt(dAz * dAz + dEl * dEl);
+  return 1.0 - smoothstep(radius - soft, radius, d);
 }
 
 void main() {
@@ -282,45 +318,35 @@ void main() {
   vec3 sky = mix(vec3(0.055, 0.065, 0.085), vec3(0.20, 0.23, 0.28), smoothstep(0.0, 1.25, el));
   vec3 floorColor = mix(vec3(0.025, 0.028, 0.035), vec3(0.075, 0.080, 0.095),
                         smoothstep(-1.2, 0.0, el));
-  vec3 c = mix(floorColor, sky, smoothstep(-0.03, 0.035, el));
+  float backdrop = smoothstep(-0.03, 0.035, el);
+  vec3 c = vec3(0.0);
+  if (uSkyOn > 0.5) c += sky * backdrop;
+  if (uFloorOn > 0.5) c += floorColor * (1.0 - backdrop);
   // A dim floor bounce: bevels that lean downwards reflect this instead of going to pure black.
-  c += vec3(0.50, 0.55, 0.66) * (1.0 - smoothstep(0.10, 0.55, abs(el + 0.42))) * 0.09;
+  c += vec3(0.50, 0.55, 0.66) *
+       (1.0 - smoothstep(0.10, 0.55, abs(el + 0.42))) * 0.09 * uFloorBounceOn;
 
   float horizon = el / 0.055;
-  c += vec3(0.90, 0.95, 1.05) * exp(-horizon * horizon) * 0.22;
+  c += vec3(0.90, 0.95, 1.05) * exp(-horizon * horizon) * 0.22 * uHorizonOn;
 
-  // A dark studio with a bright band at the horizon. reflect(-V, +Z) is +Z, so this is the band a
-  // head-on plate reflects; the rest of the plate is dark, which is what makes the bevels and their
-  // bright edges legible. A wall of white would flatten all of that.
-  c += vec3(1.0, 0.98, 0.94) * strip(az, 1.57, 0.38, 0.08) *
-       (1.0 - smoothstep(0.24, 0.42, abs(el - 0.02))) * 2.0;
+  /*
+   * Every light is a finite patch. A strip is constant in elevation, so a flat plate reflects it as a
+   * band from the top of the picture to the bottom; turning the environment up then reads as banding.
+   * The patches below keep the studio structure and still slide across a bevel.
+   */
+  c += vec3(1.0, 0.98, 0.94) * spot(az, 1.57, el, 0.02, 0.62, 0.52) * 1.0 * uFrontPanelOn;
   // Coloured side panels: two bevels leaning opposite ways pick up different temperatures.
-  c += vec3(0.42, 0.68, 1.0) * strip(az, 2.35, 0.20, 0.05) *
-       (1.0 - smoothstep(0.30, 0.48, abs(el - 0.06))) * 1.8;
-  c += vec3(1.0, 0.46, 0.16) * strip(az, 0.78, 0.18, 0.05) *
-       (1.0 - smoothstep(0.32, 0.50, abs(el - 0.02))) * 1.6;
+  c += vec3(0.42, 0.68, 1.0) * spot(az, 2.35, el, 0.06, 0.42, 0.34) * 0.8 * uBluePanelOn;
+  c += vec3(1.0, 0.46, 0.16) * spot(az, 0.78, el, 0.02, 0.38, 0.30) * 0.7 * uAmberPanelOn;
   // The front key soft-box and a broad overhead panel.
-  c += vec3(1.0, 0.95, 0.86) * strip(az, -0.62, 0.40, 0.10) *
-       (1.0 - smoothstep(0.20, 0.36, abs(el - 0.60))) * 2.2;
-  c += vec3(0.95, 0.98, 1.05) * (1.0 - smoothstep(0.12, 0.32, abs(el - 1.12))) * 1.2;
+  c += vec3(1.0, 0.95, 0.86) * spot(az, -0.62, el, 0.60, 0.50, 0.40) * 1.2 * uKeySoftboxOn;
+  c += vec3(0.95, 0.98, 1.05) *
+       (1.0 - smoothstep(0.12, 0.32, abs(el - 1.12))) * 0.9 * uOverheadOn;
 
-  // Narrow vertical strip lights standing in the dark around the main band. These are the highlights
-  // that travel across a bevel and that a rough surface visibly softens.
-  c += vec3(1.0, 0.98, 0.94) * strip(az, 1.18, 0.028, 0.010) *
-       (1.0 - smoothstep(0.45, 0.68, abs(el - 0.05))) * 3.4;
-  c += vec3(0.80, 0.90, 1.0) * strip(az, 1.98, 0.030, 0.011) *
-       (1.0 - smoothstep(0.45, 0.68, abs(el - 0.05))) * 3.0;
-  c += vec3(1.0, 0.98, 0.94) * strip(az, 2.55, 0.020, 0.008) *
-       (1.0 - smoothstep(0.40, 0.62, abs(el - 0.10))) * 2.4;
-
-  // Dark floor with a sparse grid: downward bevels reflect this, upward ones reflect the soft-boxes.
-  float checker = step(0.5, fract(az / PI * 4.0)) * step(0.5, fract((el + 1.6) * 3.0));
-  float grid = (1.0 - smoothstep(0.0, 0.02, abs(fract(az / PI * 8.0) - 0.5))) +
-               (1.0 - smoothstep(0.0, 0.02, abs(fract((el + 1.6) * 6.0) - 0.5)));
-  if (el < -0.04) {
-    c = mix(c, c + (checker - 0.35) * 0.035, 1.0);
-    c += vec3(0.35, 0.40, 0.48) * grid * 0.04;
-  }
+  // Smaller studio spots, the highlights that travel across a bevel.
+  c += vec3(1.0, 0.98, 0.94) * spot(az, 1.18, el, 0.05, 0.10, 0.05) * 3.4 * uSmallSpot1On;
+  c += vec3(0.80, 0.90, 1.0) * spot(az, 1.98, el, 0.05, 0.09, 0.045) * 3.0 * uSmallSpot2On;
+  c += vec3(1.0, 0.98, 0.94) * spot(az, 2.55, el, 0.10, 0.075, 0.04) * 2.4 * uSmallSpot3On;
 
   fragColor = vec4(c, 1.0);
 }

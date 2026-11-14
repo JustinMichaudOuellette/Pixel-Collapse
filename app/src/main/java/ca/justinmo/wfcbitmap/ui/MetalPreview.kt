@@ -27,6 +27,7 @@ internal fun MetalPreview(
   height: Int,
   cellPixels: Int,
   settings: MetalSettings,
+  paused: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
   AndroidView(
@@ -35,6 +36,7 @@ internal fun MetalPreview(
     update = { view ->
       view.setImage(pixels, width, height, cellPixels)
       view.setSettings(settings)
+      view.setPaused(paused)
     },
   )
 }
@@ -47,6 +49,7 @@ private class MetalPreviewView(context: Context) : GLSurfaceView(context) {
   private var lastHeight = -1
   private var lastCell = -1
   private var lastSettings: MetalSettings? = null
+  private var lastPaused = false
 
   init {
     setEGLContextClientVersion(3)
@@ -79,6 +82,12 @@ private class MetalPreviewView(context: Context) : GLSurfaceView(context) {
     lastSettings = settings
     queueEvent { previewRenderer.setSettings(settings) }
   }
+
+  fun setPaused(paused: Boolean) {
+    if (paused == lastPaused) return
+    lastPaused = paused
+    queueEvent { previewRenderer.setPaused(paused) }
+  }
 }
 
 private class MetalPreviewRenderer : GLSurfaceView.Renderer {
@@ -91,7 +100,9 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
   private var settings = MetalSettings()
   private var surfaceWidth = 1
   private var surfaceHeight = 1
-  private var startedNanos = 0L
+  private var lastFrameNanos = 0L
+  private var elapsedNanos = 0L
+  private var paused = false
 
   fun setImage(pixels: IntArray, width: Int, height: Int, cellPixels: Int) {
     this.pixels = pixels
@@ -105,6 +116,12 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
     this.settings = settings.sanitised()
   }
 
+  fun setPaused(paused: Boolean) {
+    this.paused = paused
+    // Start the next unpaused frame from now rather than counting the time spent paused.
+    lastFrameNanos = System.nanoTime()
+  }
+
   override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
     val created = MetalGpu()
     if (created.init()) {
@@ -115,7 +132,8 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
       gpu = null
       Log.w("MetalPreview", "GLES preview unavailable: ${created.failure}")
     }
-    startedNanos = System.nanoTime()
+    elapsedNanos = 0L
+    lastFrameNanos = System.nanoTime()
   }
 
   override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -132,7 +150,12 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
     val g = gpu ?: return
     val image = pixels ?: return
     if (imageWidth <= 0 || imageHeight <= 0) return
-    val elapsed = (System.nanoTime() - startedNanos) / 1_000_000_000f
+    val now = System.nanoTime()
+    if (!paused && lastFrameNanos != 0L) {
+      elapsedNanos += (now - lastFrameNanos).coerceAtLeast(0L)
+    }
+    lastFrameNanos = now
+    val elapsed = elapsedNanos / 1_000_000_000f
     // One full orbit every four seconds at the default speed: fast enough to read as motion on a still
     // drawing, slow enough that the eye can follow a highlight across a single bevel.
     val turns = elapsed * 0.25f * settings.lightTurnsPerLoop

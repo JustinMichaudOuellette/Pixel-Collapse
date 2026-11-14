@@ -199,6 +199,19 @@ class EditorPreferences(context: Context) {
       anisotropy = preferences.getFloat(KEY_METAL_ANISOTROPY, d.anisotropy),
       brushAngleDegrees = preferences.getFloat(KEY_METAL_BRUSH_ANGLE, d.brushAngleDegrees),
       exposure = preferences.getFloat(KEY_METAL_EXPOSURE, d.exposure),
+      keyLightEnabled = preferences.getBoolean(KEY_METAL_KEY_LIGHT, d.keyLightEnabled),
+      skyEnabled = preferences.getBoolean(KEY_METAL_SKY, d.skyEnabled),
+      floorEnabled = preferences.getBoolean(KEY_METAL_FLOOR, d.floorEnabled),
+      horizonEnabled = preferences.getBoolean(KEY_METAL_HORIZON, d.horizonEnabled),
+      floorBounceEnabled = preferences.getBoolean(KEY_METAL_FLOOR_BOUNCE, d.floorBounceEnabled),
+      frontPanelEnabled = preferences.getBoolean(KEY_METAL_FRONT_PANEL, d.frontPanelEnabled),
+      bluePanelEnabled = preferences.getBoolean(KEY_METAL_BLUE_PANEL, d.bluePanelEnabled),
+      amberPanelEnabled = preferences.getBoolean(KEY_METAL_AMBER_PANEL, d.amberPanelEnabled),
+      keySoftboxEnabled = preferences.getBoolean(KEY_METAL_KEY_SOFTBOX, d.keySoftboxEnabled),
+      overheadPanelEnabled = preferences.getBoolean(KEY_METAL_OVERHEAD, d.overheadPanelEnabled),
+      smallSpot1Enabled = preferences.getBoolean(KEY_METAL_SMALL_SPOT_1, d.smallSpot1Enabled),
+      smallSpot2Enabled = preferences.getBoolean(KEY_METAL_SMALL_SPOT_2, d.smallSpot2Enabled),
+      smallSpot3Enabled = preferences.getBoolean(KEY_METAL_SMALL_SPOT_3, d.smallSpot3Enabled),
     ).sanitised()
   }
 
@@ -222,6 +235,19 @@ class EditorPreferences(context: Context) {
       .putFloat(KEY_METAL_ANISOTROPY, settings.anisotropy)
       .putFloat(KEY_METAL_BRUSH_ANGLE, settings.brushAngleDegrees)
       .putFloat(KEY_METAL_EXPOSURE, settings.exposure)
+      .putBoolean(KEY_METAL_KEY_LIGHT, settings.keyLightEnabled)
+      .putBoolean(KEY_METAL_SKY, settings.skyEnabled)
+      .putBoolean(KEY_METAL_FLOOR, settings.floorEnabled)
+      .putBoolean(KEY_METAL_HORIZON, settings.horizonEnabled)
+      .putBoolean(KEY_METAL_FLOOR_BOUNCE, settings.floorBounceEnabled)
+      .putBoolean(KEY_METAL_FRONT_PANEL, settings.frontPanelEnabled)
+      .putBoolean(KEY_METAL_BLUE_PANEL, settings.bluePanelEnabled)
+      .putBoolean(KEY_METAL_AMBER_PANEL, settings.amberPanelEnabled)
+      .putBoolean(KEY_METAL_KEY_SOFTBOX, settings.keySoftboxEnabled)
+      .putBoolean(KEY_METAL_OVERHEAD, settings.overheadPanelEnabled)
+      .putBoolean(KEY_METAL_SMALL_SPOT_1, settings.smallSpot1Enabled)
+      .putBoolean(KEY_METAL_SMALL_SPOT_2, settings.smallSpot2Enabled)
+      .putBoolean(KEY_METAL_SMALL_SPOT_3, settings.smallSpot3Enabled)
       .apply()
   }
 
@@ -331,6 +357,19 @@ class EditorPreferences(context: Context) {
     const val KEY_METAL_ANISOTROPY = "metal_anisotropy"
     const val KEY_METAL_BRUSH_ANGLE = "metal_brush_angle"
     const val KEY_METAL_EXPOSURE = "metal_exposure"
+    const val KEY_METAL_KEY_LIGHT = "metal_key_light"
+    const val KEY_METAL_SKY = "metal_sky"
+    const val KEY_METAL_FLOOR = "metal_floor"
+    const val KEY_METAL_HORIZON = "metal_horizon"
+    const val KEY_METAL_FLOOR_BOUNCE = "metal_floor_bounce"
+    const val KEY_METAL_FRONT_PANEL = "metal_front_panel"
+    const val KEY_METAL_BLUE_PANEL = "metal_blue_panel"
+    const val KEY_METAL_AMBER_PANEL = "metal_amber_panel"
+    const val KEY_METAL_KEY_SOFTBOX = "metal_key_softbox"
+    const val KEY_METAL_OVERHEAD = "metal_overhead"
+    const val KEY_METAL_SMALL_SPOT_1 = "metal_small_spot_1"
+    const val KEY_METAL_SMALL_SPOT_2 = "metal_small_spot_2"
+    const val KEY_METAL_SMALL_SPOT_3 = "metal_small_spot_3"
     const val KEY_SOLVE_ANIMATION = "solve_animation"
     const val KEY_EVOLVE_CELLS = "evolve_cells"
     const val KEY_TOOL_BUTTON_SIZE = "tool_button_size"

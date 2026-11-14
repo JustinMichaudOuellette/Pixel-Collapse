@@ -60,6 +60,33 @@ class MetalShaderVisualTest {
       Log.i(TAG, "A static chrome: mean=${mean(staticChrome)} spread=$staticSpread")
       assertTrue("A static chrome is flat (spread $staticSpread)", staticSpread > 9.0)
 
+      // Every light is switchable. Turning them all off must leave a visibly different, darker frame.
+      val noLights = base.copy(
+        keyLightEnabled = false,
+        skyEnabled = false,
+        floorEnabled = false,
+        horizonEnabled = false,
+        floorBounceEnabled = false,
+        frontPanelEnabled = false,
+        bluePanelEnabled = false,
+        amberPanelEnabled = false,
+        keySoftboxEnabled = false,
+        overheadPanelEnabled = false,
+        smallSpot1Enabled = false,
+        smallSpot2Enabled = false,
+        smallSpot3Enabled = false,
+      )
+      val dark = render(renderer, pattern, noLights, turns = 0f, out)
+      save(directory, "G-lights-off", dark)
+      val allLightsDelta = difference(staticChrome, dark)
+      Log.i(TAG, "G all lights off: mean-abs-difference=$allLightsDelta")
+      assertTrue(
+        "Switching every light off did not change the frame ($allLightsDelta)",
+        allLightsDelta > 5.0,
+      )
+
+
+
       // Test B — moving light: the same surface at two points in the orbit must not be identical.
       val animated = base.copy(animateLight = true, lightTurnsPerLoop = 1f)
       val atZero = render(renderer, pattern, animated, turns = 0.0f, out)

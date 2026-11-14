@@ -124,8 +124,7 @@ adb shell am instrument -w -e class ca.justinmo.wfcbitmap.SelectionToolTest \
 
 ## TODOs
 
-- **Metal Shader** needs some ui work and a better nicer output
-
+- **Screen Rotation** handle screen rotiation when exporting video, make sure app handles screen rotation correctly anywhere
 ## License
 
 This project is licensed under the **GNU General Public License v3.0 (GPL-3.0-only)** - see the [LICENSE](LICENSE) file for details.

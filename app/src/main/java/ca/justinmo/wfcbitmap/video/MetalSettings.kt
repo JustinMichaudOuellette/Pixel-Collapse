@@ -54,6 +54,32 @@ data class MetalSettings(
   val brushAngleDegrees: Float = 0f,
   /** Exposure applied before the ACES curve. */
   val exposure: Float = 1.08f,
+  /** The moving key light. Off leaves only the reflected studio. */
+  val keyLightEnabled: Boolean = true,
+  /** The dark-to-bright studio backdrop. */
+  val skyEnabled: Boolean = true,
+  /** The floor half of the studio backdrop. */
+  val floorEnabled: Boolean = true,
+  /** The bright haze where the floor meets the sky. */
+  val horizonEnabled: Boolean = true,
+  /** The dim bounce that stops downward bevels going to pure black. */
+  val floorBounceEnabled: Boolean = true,
+  /** The broad soft-box straight ahead. */
+  val frontPanelEnabled: Boolean = true,
+  /** The cool panel on one side. */
+  val bluePanelEnabled: Boolean = true,
+  /** The warm panel on the other side. */
+  val amberPanelEnabled: Boolean = true,
+  /** The high key soft-box used by the moving-light look. */
+  val keySoftboxEnabled: Boolean = true,
+  /** The broad overhead panel. */
+  val overheadPanelEnabled: Boolean = true,
+  /** Small highlight 1, the white spot on one side. */
+  val smallSpot1Enabled: Boolean = true,
+  /** Small highlight 2, the cool spot beside it. */
+  val smallSpot2Enabled: Boolean = true,
+  /** Small highlight 3, the warm spot further around. */
+  val smallSpot3Enabled: Boolean = true,
 ) {
   /** The same settings with the numeric controls brought into their documented ranges. */
   fun sanitised(): MetalSettings = copy(

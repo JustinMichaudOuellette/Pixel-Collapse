@@ -91,6 +91,7 @@ import ca.justinmo.wfcbitmap.video.MetalOffscreenRenderer
 import ca.justinmo.wfcbitmap.video.MetalShade
 import ca.justinmo.wfcbitmap.video.Mp4Encoder
 import ca.justinmo.wfcbitmap.video.Mp4Saver
+import ca.justinmo.wfcbitmap.video.USE_SURFACE_MP4_ENCODER
 import ca.justinmo.wfcbitmap.video.PANORAMA_TIMEOUT_MILLIS
 import ca.justinmo.wfcbitmap.video.ScrollDirection
 import ca.justinmo.wfcbitmap.video.SolveAnimation
@@ -116,6 +117,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -1012,16 +1014,43 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           val bytes = withContext(Dispatchers.Default) {
             val renderer = if (metal) openMetalRenderer() else null
             try {
-              val out = IntArray(width * height)
-              Mp4Encoder.encode(
-                context = context,
-                width = width,
-                height = height,
-                frameCount = total,
-                fps = videoFps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS),
-              ) { index ->
-                mainHandler.post { videoExportProgress = 0.01f + 0.97f * index / total }
-                frameFor(index, renderer, out)
+              val fps = videoFps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS)
+              if (USE_SURFACE_MP4_ENCODER &&
+                renderer != null &&
+                renderer.supportsWindowSurface()
+              ) {
+                Mp4Encoder.encodeToSurface(
+                  context = context,
+                  width = width,
+                  height = height,
+                  frameCount = total,
+                  fps = fps,
+                ) { surface, index, presentationTimeNanos ->
+                  mainHandler.post { videoExportProgress = 0.01f + 0.97f * index / total }
+                  val forward = forwardIndex(index)
+                  val frame = rawFrame(forward)
+                  renderer.upload(frame, width, height)
+                  if (!renderer.renderToSurface(
+                      stillMetalFrame(width, height, cellPixels, forward, total, metalParams),
+                      surface,
+                      presentationTimeNanos,
+                    )
+                  ) {
+                    throw IOException("Could not render solve frame $index into the video encoder")
+                  }
+                }
+              } else {
+                val out = IntArray(width * height)
+                Mp4Encoder.encode(
+                  context = context,
+                  width = width,
+                  height = height,
+                  frameCount = total,
+                  fps = fps,
+                ) { index ->
+                  mainHandler.post { videoExportProgress = 0.01f + 0.97f * index / total }
+                  frameFor(index, renderer, out)
+                }
               }
             } finally {
               renderer?.close()
@@ -1618,22 +1647,48 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
             val renderer = if (metal) openMetalRenderer() else null
             try {
               if (renderer != null) uploadPanorama(renderer)
-              val out = IntArray(video.outputWidth * video.outputHeight)
-              Mp4Encoder.encode(
-                context = context,
-                width = video.outputWidth,
-                height = video.outputHeight,
-                frameCount = video.frameCount,
-                // The GIF delay is whole centiseconds, so the rate that delay makes is the real one; both
-                // formats use it so the MP4 and the GIF play at the same speed.
-                fps = videoFps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS),
-              ) { index ->
-                reportFrame(index)
-                if (renderer != null) {
-                  renderer.render(panoramaMetalFrame(video, index, metalParams), out)
-                    ?: cpuFrame(index)
-                } else {
-                  cpuFrame(index)
+              val fps = videoFps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS)
+              if (USE_SURFACE_MP4_ENCODER &&
+                renderer != null &&
+                renderer.supportsWindowSurface()
+              ) {
+                // Opt-in fast path: the shader draws straight into MediaCodec's input Surface, so a frame
+                // never makes the round trip through glReadPixels and the CPU YUV converter.
+                Mp4Encoder.encodeToSurface(
+                  context = context,
+                  width = video.outputWidth,
+                  height = video.outputHeight,
+                  frameCount = video.frameCount,
+                  fps = fps,
+                ) { surface, index, presentationTimeNanos ->
+                  reportFrame(index)
+                  if (!renderer.renderToSurface(
+                      panoramaMetalFrame(video, index, metalParams),
+                      surface,
+                      presentationTimeNanos,
+                    )
+                  ) {
+                    throw IOException("Could not render frame $index into the video encoder")
+                  }
+                }
+              } else {
+                val out = IntArray(video.outputWidth * video.outputHeight)
+                Mp4Encoder.encode(
+                  context = context,
+                  width = video.outputWidth,
+                  height = video.outputHeight,
+                  frameCount = video.frameCount,
+                  // The GIF delay is whole centiseconds, so the rate that delay makes is the real one; both
+                  // formats use it so the MP4 and the GIF play at the same speed.
+                  fps = fps,
+                ) { index ->
+                  reportFrame(index)
+                  if (renderer != null) {
+                    renderer.render(panoramaMetalFrame(video, index, metalParams), out)
+                      ?: cpuFrame(index)
+                  } else {
+                    cpuFrame(index)
+                  }
                 }
               }
             } finally {

@@ -5,8 +5,20 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.view.Surface
 import java.io.File
 import java.io.IOException
+
+/**
+ * Whether MP4 export uses the direct-to-encoder Surface path.
+ *
+ * The Surface path is much faster (it removes `glReadPixels` and the CPU YUV conversion), but
+ * MediaCodec's Surface input maps RGB into YUV with a different colour pipeline than the readback
+ * path, which changed the look of exported clips. Both implementations are kept: exports stay on the
+ * readback path until the Surface colour output can be matched, and this flag is the single switch
+ * for trying the fast one again.
+ */
+internal const val USE_SURFACE_MP4_ENCODER = false
 
 /**
  * H.264 MP4 writer for the panning export.
@@ -93,6 +105,84 @@ internal object Mp4Encoder {
     } finally {
       runCatching { codec.stop() }
       codec.release()
+      runCatching { if (track >= 0) muxer.stop() }
+      muxer.release()
+    }
+
+    val bytes = file.readBytes()
+    file.delete()
+    return bytes
+  }
+
+  /**
+   * Encodes frames rendered directly into MediaCodec's input Surface.
+   *
+   * This is the shader fast path: [drawFrame] renders one frame into the given Surface and sets its
+   * presentation time; no `glReadPixels`, ARGB flip or CPU YUV conversion happens. The callback must
+   * call `EGL14.eglSwapBuffers` (which [MetalOffscreenRenderer.renderToSurface] does) before returning.
+   */
+  fun encodeToSurface(
+    context: Context,
+    width: Int,
+    height: Int,
+    frameCount: Int,
+    fps: Int,
+    drawFrame: (Surface, Int, Long) -> Unit,
+  ): ByteArray {
+    require(width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0)
+    require(frameCount > 0)
+    require(fps in 1..60)
+
+    val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+    val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+      setInteger(MediaFormat.KEY_BIT_RATE, (width * height * 4).coerceAtLeast(1_000_000))
+      setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+      setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+    }
+    codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+    val inputSurface = codec.createInputSurface()
+    codec.start()
+
+    val file = File.createTempFile("wfc-mp4-", ".mp4", context.cacheDir)
+    val muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    val info = MediaCodec.BufferInfo()
+    var track = -1
+
+    fun drain(end: Boolean): Boolean {
+      while (true) {
+        val out = codec.dequeueOutputBuffer(info, if (end) 10_000 else 0)
+        when {
+          out == MediaCodec.INFO_TRY_AGAIN_LATER -> if (!end) return false
+          out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+            track = muxer.addTrack(codec.outputFormat)
+            muxer.start()
+          }
+          out >= 0 -> {
+            val buffer = codec.getOutputBuffer(out)
+            if (buffer != null && info.size > 0 && track >= 0) {
+              buffer.position(info.offset)
+              buffer.limit(info.offset + info.size)
+              muxer.writeSampleData(track, buffer, info)
+            }
+            codec.releaseOutputBuffer(out, false)
+            if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) return true
+          }
+        }
+      }
+    }
+
+    try {
+      for (frameIndex in 0 until frameCount) {
+        val pts = frameIndex * 1_000_000L / fps
+        drawFrame(inputSurface, frameIndex, pts)
+        drain(end = false)
+      }
+      codec.signalEndOfInputStream()
+      drain(end = true)
+    } finally {
+      runCatching { codec.stop() }
+      codec.release()
+      inputSurface.release()
       runCatching { if (track >= 0) muxer.stop() }
       muxer.release()
     }

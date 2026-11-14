@@ -3,20 +3,24 @@ package ca.justinmo.wfcbitmap.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,21 +30,40 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -120,6 +143,22 @@ fun VideoExportScreen(
   onExport: () -> Unit,
 ) {
   if (!open) return
+  var shaderMenuOpen by remember { mutableStateOf(false) }
+  var metalEditorOpen by remember { mutableStateOf(false) }
+  val gifAllowed = look == VideoLook.Flat
+  val exportPixelScale = if (previewWidth > 0) {
+    maxOf(
+      outputWidth.toFloat() / previewWidth,
+      if (previewHeight > 0) outputHeight.toFloat() / previewHeight else 1f,
+    ).coerceAtLeast(1f)
+  } else {
+    1f
+  }
+  // GIF cannot carry a continuous-tone shader: its 256-colour table bands the material and the file
+  // gets large. Moving to a shader selects MP4, including for a session restored with GIF + Metal.
+  LaunchedEffect(look, format) {
+    if (!gifAllowed && format == VideoFormat.Gif) onFormatChange(VideoFormat.Mp4)
+  }
   val plan = videoPlan(
     frameColumns, frameRows, pixelsPerCell, cellSize, screens, fps,
     pixelsPerFrame = pixelsPerFrame,
@@ -212,261 +251,40 @@ fun VideoExportScreen(
           )
 
           Spacer(Modifier.height(18.dp))
-          SettingLabel("Look", look.label)
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
           ) {
-            VideoLook.entries.forEach { option ->
-              val chosen = option == look
-              Button(
-                onClick = { onLookChange(option) },
+            ShaderPicker(
+              look = look,
+              enabled = !exporting,
+              expanded = shaderMenuOpen,
+              onExpandedChange = { shaderMenuOpen = it },
+              onLookChange = { selected ->
+                onLookChange(selected)
+                if (selected != VideoLook.Metal) metalEditorOpen = false
+                if (selected != VideoLook.Flat && format == VideoFormat.Gif) {
+                  onFormatChange(VideoFormat.Mp4)
+                }
+              },
+              modifier = Modifier.weight(1f),
+            )
+            if (look == VideoLook.Metal) {
+              IconButton(
+                onClick = { metalEditorOpen = true },
                 enabled = !exporting,
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(
-                  containerColor = if (chosen) MENU_TEXT_COLOR else MENU_TEXT_COLOR.copy(alpha = 0.12f),
-                  contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
-                  disabledContainerColor = if (chosen) {
-                    MENU_TEXT_COLOR.copy(alpha = 0.5f)
-                  } else {
-                    MENU_TEXT_COLOR.copy(alpha = 0.08f)
-                  },
-                  disabledContentColor = MENU_TEXT_COLOR.copy(alpha = 0.6f),
-                ),
               ) {
-                Text(option.label, fontSize = 13.sp)
-              }
-            }
-          }
-          Spacer(Modifier.height(6.dp))
-          Text(
-            look.description,
-            color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
-            fontSize = 11.sp,
-            lineHeight = 15.sp,
-          )
-
-          if (look == VideoLook.Metal) {
-            Spacer(Modifier.height(16.dp))
-            if (previewPixels != null && previewWidth > 0 && previewHeight > 0) {
-              SettingLabel("Live material", "moving light · moving reflections")
-              Box(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .height(190.dp),
-                contentAlignment = Alignment.Center,
-              ) {
-                MetalPreview(
-                  pixels = previewPixels,
-                  width = previewWidth,
-                  height = previewHeight,
-                  cellPixels = previewCellPixels,
-                  settings = metal,
-                  modifier = Modifier
-                    .fillMaxHeight()
-                    .aspectRatio(previewWidth.toFloat() / previewHeight)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Color.Black),
+                Icon(
+                  Icons.Default.Settings,
+                  contentDescription = "Metal 3D shader settings",
+                  tint = MENU_TEXT_COLOR,
                 )
               }
-              Spacer(Modifier.height(4.dp))
-              Text(
-                "The preview is the real GPU shader: the key light orbits the relief and the studio " +
-                  "reflection turns with it. Every control below changes it immediately.",
-                color = MENU_TEXT_COLOR.copy(alpha = 0.5f),
-                fontSize = 10.sp,
-                lineHeight = 14.sp,
-              )
-              Spacer(Modifier.height(4.dp))
-              Text(
-                "Metal is continuous-tone: a GIF's 256 colours band the reflections and the file gets " +
-                  "large. MP4 keeps the full range and is much smaller.",
-                color = MENU_TEXT_COLOR.copy(alpha = 0.45f),
-                fontSize = 10.sp,
-                lineHeight = 14.sp,
-              )
-            } else {
-              Text(
-                "Solve a picture first to see the live metal material.",
-                color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
-                fontSize = 11.sp,
-              )
             }
-
-            Spacer(Modifier.height(16.dp))
-            SettingLabel("Metal finish", metal.finish.label)
-            MetalFinish.entries.chunked(3).forEach { row ->
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-              ) {
-                row.forEach { finish ->
-                  val chosen = finish == metal.finish
-                  Button(
-                    onClick = { onMetalChange(metal.withFinish(finish)) },
-                    enabled = !exporting,
-                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
-                    modifier = Modifier
-                      .weight(1f)
-                      .height(34.dp),
-                    colors = ButtonDefaults.buttonColors(
-                      containerColor = if (chosen) {
-                        MENU_TEXT_COLOR
-                      } else {
-                        MENU_TEXT_COLOR.copy(alpha = 0.12f)
-                      },
-                      contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
-                    ),
-                  ) {
-                    Text(finish.label, fontSize = 10.sp, maxLines = 1)
-                  }
-                }
-                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
-              }
-              Spacer(Modifier.height(6.dp))
-            }
-
-            MetalSlider(
-              label = "Emboss strength",
-              value = metal.emboss,
-              range = 0f..2.5f,
-              decimals = 2,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(emboss = it)) }
-            MetalSlider(
-              label = "Metallic",
-              value = metal.metallic,
-              range = 0f..1f,
-              decimals = 2,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(metallic = it)) }
-            MetalSlider(
-              label = "Roughness",
-              value = metal.roughness,
-              range = 0.03f..0.65f,
-              decimals = 3,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(roughness = it)) }
-            MetalSlider(
-              label = "Texture tint",
-              value = metal.textureTint,
-              range = 0f..1f,
-              decimals = 2,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(textureTint = it)) }
-            MetalSlider(
-              label = "Anisotropy",
-              value = metal.anisotropy,
-              range = 0f..1f,
-              decimals = 2,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(anisotropy = it)) }
-            MetalSlider(
-              label = "Brush direction",
-              value = metal.brushAngleDegrees,
-              range = 0f..180f,
-              decimals = 0,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(brushAngleDegrees = it)) }
-            MetalSlider(
-              label = "Parallax",
-              value = metal.parallax,
-              range = 0f..0.35f,
-              decimals = 2,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(parallax = it)) }
-
-            Spacer(Modifier.height(6.dp))
-            MetalColorSliders(
-              label = "Metal base colour",
-              color = metal.baseColor,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(baseColor = it)) }
-
-            Spacer(Modifier.height(14.dp))
-            Text("MOVING LIGHT", color = MENU_TEXT_COLOR.copy(alpha = 0.5f), fontSize = 10.sp)
-            Spacer(Modifier.height(6.dp))
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-              listOf(true, false).forEach { animate ->
-                val chosen = metal.animateLight == animate
-                Button(
-                  onClick = { onMetalChange(metal.copy(animateLight = animate)) },
-                  enabled = !exporting,
-                  modifier = Modifier.weight(1f),
-                  colors = ButtonDefaults.buttonColors(
-                    containerColor = if (chosen) MENU_TEXT_COLOR else MENU_TEXT_COLOR.copy(alpha = 0.12f),
-                    contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
-                  ),
-                ) {
-                  Text(if (animate) "Animated" else "Manual", fontSize = 12.sp)
-                }
-              }
-            }
-            MetalSlider(
-              label = "Light intensity",
-              value = metal.lightIntensity,
-              range = 0f..12f,
-              decimals = 2,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(lightIntensity = it)) }
-            MetalSlider(
-              label = "Animation speed",
-              value = metal.lightTurnsPerLoop,
-              range = 0f..3f,
-              decimals = 2,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(lightTurnsPerLoop = it)) }
-            MetalSlider(
-              label = "Light position",
-              value = metal.lightAzimuthDegrees,
-              range = 0f..360f,
-              decimals = 0,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(lightAzimuthDegrees = it)) }
-            MetalSlider(
-              label = "Light height",
-              value = metal.lightElevationDegrees,
-              range = -20f..90f,
-              decimals = 0,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(lightElevationDegrees = it)) }
-            MetalColorSliders(
-              label = "Light colour",
-              color = metal.lightColor,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(lightColor = it)) }
-
-            Spacer(Modifier.height(14.dp))
-            Text("REFLECTIONS", color = MENU_TEXT_COLOR.copy(alpha = 0.5f), fontSize = 10.sp)
-            Spacer(Modifier.height(6.dp))
-            MetalSlider(
-              label = "Environment intensity",
-              value = metal.environmentIntensity,
-              range = 0f..2f,
-              decimals = 2,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(environmentIntensity = it)) }
-            MetalSlider(
-              label = "Environment rotation",
-              value = metal.environmentRotationDegrees,
-              range = 0f..360f,
-              decimals = 0,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(environmentRotationDegrees = it)) }
-            MetalSlider(
-              label = "Exposure",
-              value = metal.exposure,
-              range = 0.4f..2.5f,
-              decimals = 2,
-              enabled = !exporting,
-            ) { onMetalChange(metal.copy(exposure = it)) }
-
-            Spacer(Modifier.height(12.dp))
           }
 
+          // The Metal 3D shader's preview and controls live in MetalShaderDialog.
           if (mode == VideoMode.Solve) {
             Spacer(Modifier.height(18.dp))
             SettingLabel("Animation", solveAnimation.label)
@@ -697,6 +515,7 @@ fun VideoExportScreen(
           FormatToggle(
             format = format,
             enabled = !exporting,
+            gifEnabled = gifAllowed,
             exporting = exporting,
             onFormatChange = onFormatChange,
             onExport = onExport,
@@ -705,6 +524,557 @@ fun VideoExportScreen(
         }
       }
     }
+  }
+
+  if (look == VideoLook.Metal && metalEditorOpen) {
+    MetalShaderDialog(
+      metal = metal,
+      previewPixels = previewPixels,
+      previewWidth = previewWidth,
+      previewHeight = previewHeight,
+      previewCellPixels = previewCellPixels,
+      maxZoom = exportPixelScale,
+      exporting = exporting,
+      onMetalChange = onMetalChange,
+      onDismiss = { metalEditorOpen = false },
+    )
+  }
+}
+
+/**
+ * The shader picker: the current shader as a field, with the available shaders in a menu.
+ *
+ * A menu rather than the old pair of buttons because the list is expected to grow, and a field can say
+ * which shader is selected without giving every one of them a permanent button on the screen.
+ */
+@Composable
+private fun ShaderPicker(
+  look: VideoLook,
+  enabled: Boolean,
+  expanded: Boolean,
+  onExpandedChange: (Boolean) -> Unit,
+  onLookChange: (VideoLook) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val itemColors = MenuDefaults.itemColors(
+    textColor = MENU_TEXT_COLOR,
+    leadingIconColor = MENU_TEXT_COLOR,
+    trailingIconColor = MENU_TEXT_COLOR,
+  )
+  Box(modifier = modifier) {
+    Surface(
+      modifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(8.dp))
+        .border(1.dp, MENU_DIVIDER_COLOR, RoundedCornerShape(8.dp))
+        .clickable(enabled = enabled) { onExpandedChange(true) }
+        .semantics { contentDescription = "Shader picker" },
+      color = MENU_TEXT_COLOR.copy(alpha = 0.08f),
+      shape = RoundedCornerShape(8.dp),
+    ) {
+      Row(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text(
+          text = "Shader",
+          color = MENU_TEXT_COLOR.copy(alpha = 0.6f),
+          fontSize = 12.sp,
+          modifier = Modifier.weight(1f),
+        )
+        Text(look.label, color = MENU_TEXT_COLOR, fontSize = 14.sp)
+        Icon(
+          Icons.Default.KeyboardArrowDown,
+          contentDescription = null,
+          tint = MENU_TEXT_COLOR.copy(alpha = 0.7f),
+          modifier = Modifier.padding(start = 6.dp),
+        )
+      }
+    }
+    DropdownMenu(
+      expanded = expanded,
+      onDismissRequest = { onExpandedChange(false) },
+      containerColor = PANEL_BACKGROUND,
+    ) {
+      VideoLook.entries.forEach { option ->
+        DropdownMenuItem(
+          text = { Text(option.label) },
+          onClick = {
+            onExpandedChange(false)
+            onLookChange(option)
+          },
+          colors = itemColors,
+          trailingIcon = {
+            if (option == look) {
+              Icon(Icons.Default.Check, contentDescription = "Selected", tint = MENU_TEXT_COLOR)
+            }
+          },
+        )
+      }
+    }
+  }
+}
+
+/**
+ * The live metal preview with pinch-to-zoom and drag-to-pan, capped at 1:1.
+ *
+ * The picture is laid out at one bitmap pixel per screen pixel at 1x. At rest it is scaled down to fit
+ * the preview box; pinching multiplies that layout scale up to 1x, so the ceiling is the source's own
+ * resolution rather than an arbitrary magnification. The parent clips the zoomed picture, so panning
+ * cannot draw over the titlebar or the controls.
+ */
+@Composable
+private fun ZoomableMetalPreview(
+  pixels: IntArray,
+  width: Int,
+  height: Int,
+  cellPixels: Int,
+  settings: MetalSettings,
+  maxZoom: Float,
+  modifier: Modifier = Modifier,
+) {
+  BoxWithConstraints(
+    modifier = modifier.clipToBounds().background(Color.Black),
+    contentAlignment = Alignment.Center,
+  ) {
+    val density = LocalDensity.current
+    val imageWidth = with(density) { width.toDp() }
+    val imageHeight = with(density) { height.toDp() }
+    val fitScale = minOf(
+      maxWidth.value / imageWidth.value,
+      maxHeight.value / imageHeight.value,
+    ).coerceIn(0.01f, 1f)
+    val zoomCeiling = maxZoom.coerceAtLeast(1f)
+    var scale by remember(width, height, fitScale, zoomCeiling) {
+      mutableFloatStateOf(fitScale)
+    }
+    var pan by remember(width, height, fitScale, zoomCeiling) { mutableStateOf(Offset.Zero) }
+    var paused by remember(width, height) { mutableStateOf(false) }
+
+    val boxWidth = with(density) { maxWidth.toPx() }
+    val boxHeight = with(density) { maxHeight.toPx() }
+    val imageWidthPx = with(density) { imageWidth.toPx() }
+    val imageHeightPx = with(density) { imageHeight.toPx() }
+
+    fun clampPan(candidate: Offset, atScale: Float): Offset {
+      val maxX = ((imageWidthPx * atScale - boxWidth) / 2f).coerceAtLeast(0f)
+      val maxY = ((imageHeightPx * atScale - boxHeight) / 2f).coerceAtLeast(0f)
+      return Offset(
+        candidate.x.coerceIn(-maxX, maxX),
+        candidate.y.coerceIn(-maxY, maxY),
+      )
+    }
+
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+      val next = (scale * zoomChange).coerceIn(fitScale, zoomCeiling)
+      scale = next
+      pan = clampPan(pan + panChange, next)
+    }
+
+    MetalPreview(
+      pixels = pixels,
+      width = width,
+      height = height,
+      cellPixels = cellPixels,
+      settings = settings,
+      paused = paused,
+      modifier = Modifier
+        .size(imageWidth * scale, imageHeight * scale)
+        .offset { IntOffset(pan.x.roundToInt(), pan.y.roundToInt()) }
+        .clip(RoundedCornerShape(10.dp))
+        .background(Color.Black),
+    )
+
+    // The gesture layer sits over the picture. A tap pauses the light where it is; the zoom button is
+    // added after it so it still wins its own tap.
+    Box(
+      modifier = Modifier
+        .matchParentSize()
+        .transformable(transformState)
+        .clickable(
+          interactionSource = remember { MutableInteractionSource() },
+          indication = null,
+        ) { paused = !paused }
+        .semantics { contentDescription = "Metal preview" },
+    )
+
+    if (paused) {
+      Text(
+        text = "Paused",
+        color = MENU_TEXT_COLOR,
+        fontSize = 11.sp,
+        modifier = Modifier
+          .align(Alignment.BottomEnd)
+          .padding(8.dp)
+          .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+          .padding(horizontal = 8.dp, vertical = 3.dp),
+      )
+    }
+
+    Text(
+      text = "${(scale * 100).roundToInt()}%",
+      color = MENU_TEXT_COLOR,
+      fontSize = 10.sp,
+      modifier = Modifier
+        .align(Alignment.BottomStart)
+        .padding(8.dp)
+        .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+        .padding(horizontal = 6.dp, vertical = 2.dp),
+    )
+    TextButton(
+      onClick = {
+        if (scale < zoomCeiling - 0.001f) {
+          scale = zoomCeiling
+          pan = Offset.Zero
+        } else {
+          scale = fitScale
+          pan = Offset.Zero
+        }
+      },
+      contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+      modifier = Modifier
+        .align(Alignment.TopEnd)
+        .padding(8.dp)
+        .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp)),
+    ) {
+      Text(
+        if (scale < zoomCeiling - 0.001f) {
+          "Export ${formatOneDecimal(zoomCeiling)}×"
+        } else {
+          "Fit"
+        },
+        color = MENU_TEXT_COLOR,
+        fontSize = 11.sp,
+      )
+    }
+  }
+}
+
+/**
+ * The Metal 3D shader's live preview and controls, in a window of their own.
+ *
+ * Opened by the gear beside the shader picker. The preview is the same GPU shader the exporter runs,
+ * so a slider and the material it changes are in the same place; closing it leaves the settings as
+ * they are, because every change is applied to the caller's state as it is made.
+ */
+@Composable
+private fun MetalShaderDialog(
+  metal: MetalSettings,
+  previewPixels: IntArray?,
+  previewWidth: Int,
+  previewHeight: Int,
+  previewCellPixels: Int,
+  maxZoom: Float,
+  exporting: Boolean,
+  onMetalChange: (MetalSettings) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(
+      usePlatformDefaultWidth = false,
+      decorFitsSystemWindows = false,
+    ),
+  ) {
+    Surface(
+      modifier = Modifier
+        .fillMaxSize()
+        .windowInsetsPadding(WindowInsets.safeDrawing)
+        .padding(16.dp),
+      color = Color.Black,
+      shape = RoundedCornerShape(12.dp),
+    ) {
+      Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.Black)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(
+            text = "Metal 3D shader",
+            color = MENU_TEXT_COLOR,
+            fontSize = 18.sp,
+            modifier = Modifier.weight(1f),
+          )
+          IconButton(onClick = onDismiss) {
+            Icon(
+              Icons.Default.Close,
+              contentDescription = "Close shader settings",
+              tint = MENU_TEXT_COLOR,
+            )
+          }
+        }
+        /*
+         * The preview is deliberately outside the scrolling column: it is the material being edited,
+         * and scrolling the controls must not move it off the screen or turn it into another scroll
+         * target. A black field behind it makes the aspect-ratio letterboxing invisible.
+         */
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .weight(0.45f)
+            .background(Color.Black),
+          contentAlignment = Alignment.Center,
+        ) {
+          if (previewPixels != null && previewWidth > 0 && previewHeight > 0) {
+            ZoomableMetalPreview(
+              pixels = previewPixels,
+              width = previewWidth,
+              height = previewHeight,
+              cellPixels = previewCellPixels,
+              settings = metal,
+              maxZoom = maxZoom,
+              modifier = Modifier.fillMaxSize(),
+            )
+          } else {
+            Text(
+              "Solve a picture first to see the live metal material.",
+              color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+              fontSize = 11.sp,
+            )
+          }
+        }
+
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .weight(0.55f)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp),
+        ) {
+                Spacer(Modifier.height(16.dp))
+                SettingLabel("Metal finish", metal.finish.label)
+                MetalFinish.entries.chunked(3).forEach { row ->
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                  ) {
+                    row.forEach { finish ->
+                      val chosen = finish == metal.finish
+                      Button(
+                        onClick = { onMetalChange(metal.withFinish(finish)) },
+                        enabled = !exporting,
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                        modifier = Modifier
+                          .weight(1f)
+                          .height(34.dp),
+                        colors = ButtonDefaults.buttonColors(
+                          containerColor = if (chosen) {
+                            MENU_TEXT_COLOR
+                          } else {
+                            MENU_TEXT_COLOR.copy(alpha = 0.12f)
+                          },
+                          contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
+                        ),
+                      ) {
+                        Text(finish.label, fontSize = 10.sp, maxLines = 1)
+                      }
+                    }
+                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                  }
+                  Spacer(Modifier.height(6.dp))
+                }
+
+                MetalSlider(
+                  label = "Emboss strength",
+                  value = metal.emboss,
+                  range = 0f..2.5f,
+                  decimals = 2,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(emboss = it)) }
+                MetalSlider(
+                  label = "Metallic",
+                  value = metal.metallic,
+                  range = 0f..1f,
+                  decimals = 2,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(metallic = it)) }
+                MetalSlider(
+                  label = "Roughness",
+                  value = metal.roughness,
+                  range = 0.03f..0.65f,
+                  decimals = 3,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(roughness = it)) }
+                MetalSlider(
+                  label = "Texture tint",
+                  value = metal.textureTint,
+                  range = 0f..1f,
+                  decimals = 2,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(textureTint = it)) }
+                MetalSlider(
+                  label = "Anisotropy",
+                  value = metal.anisotropy,
+                  range = 0f..1f,
+                  decimals = 2,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(anisotropy = it)) }
+                MetalSlider(
+                  label = "Brush direction",
+                  value = metal.brushAngleDegrees,
+                  range = 0f..180f,
+                  decimals = 0,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(brushAngleDegrees = it)) }
+                MetalSlider(
+                  label = "Parallax",
+                  value = metal.parallax,
+                  range = 0f..0.35f,
+                  decimals = 2,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(parallax = it)) }
+
+                Spacer(Modifier.height(6.dp))
+                MetalColorSliders(
+                  label = "Metal base colour",
+                  color = metal.baseColor,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(baseColor = it)) }
+
+                Spacer(Modifier.height(14.dp))
+                Text("MOVING LIGHT", color = MENU_TEXT_COLOR.copy(alpha = 0.5f), fontSize = 10.sp)
+                Spacer(Modifier.height(6.dp))
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                  listOf(true, false).forEach { animate ->
+                    val chosen = metal.animateLight == animate
+                    Button(
+                      onClick = { onMetalChange(metal.copy(animateLight = animate)) },
+                      enabled = !exporting,
+                      modifier = Modifier.weight(1f),
+                      colors = ButtonDefaults.buttonColors(
+                        containerColor = if (chosen) MENU_TEXT_COLOR else MENU_TEXT_COLOR.copy(alpha = 0.12f),
+                        contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
+                      ),
+                    ) {
+                      Text(if (animate) "Animated" else "Manual", fontSize = 12.sp)
+                    }
+                  }
+                }
+                LightSwitch(
+                  label = "Key light",
+                  on = metal.keyLightEnabled,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(keyLightEnabled = it)) }
+                MetalSlider(
+                  label = "Light intensity",
+                  value = metal.lightIntensity,
+                  range = 0f..12f,
+                  decimals = 2,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(lightIntensity = it)) }
+                MetalSlider(
+                  label = "Animation speed",
+                  value = metal.lightTurnsPerLoop,
+                  range = 0f..3f,
+                  decimals = 2,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(lightTurnsPerLoop = it)) }
+                MetalSlider(
+                  label = "Light position",
+                  value = metal.lightAzimuthDegrees,
+                  range = 0f..360f,
+                  decimals = 0,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(lightAzimuthDegrees = it)) }
+                MetalSlider(
+                  label = "Light height",
+                  value = metal.lightElevationDegrees,
+                  range = -20f..90f,
+                  decimals = 0,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(lightElevationDegrees = it)) }
+                MetalColorSliders(
+                  label = "Light colour",
+                  color = metal.lightColor,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(lightColor = it)) }
+
+                Spacer(Modifier.height(14.dp))
+                Text("REFLECTIONS", color = MENU_TEXT_COLOR.copy(alpha = 0.5f), fontSize = 10.sp)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                  "ENVIRONMENT LIGHTS",
+                  color = MENU_TEXT_COLOR.copy(alpha = 0.4f),
+                  fontSize = 9.sp,
+                )
+                Spacer(Modifier.height(4.dp))
+                environmentLightSwitches.chunked(2).forEach { row ->
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                  ) {
+                    row.forEach { light ->
+                      LightSwitch(
+                        label = light.label,
+                        on = light.isOn(metal),
+                        enabled = !exporting,
+                        modifier = Modifier.weight(1f),
+                      ) { onMetalChange(light.toggle(metal)) }
+                    }
+                    repeat(2 - row.size) { Spacer(Modifier.weight(1f)) }
+                  }
+                  Spacer(Modifier.height(6.dp))
+                }
+                MetalSlider(
+                  label = "Environment intensity",
+                  value = metal.environmentIntensity,
+                  range = 0f..2f,
+                  decimals = 2,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(environmentIntensity = it)) }
+                MetalSlider(
+                  label = "Environment rotation",
+                  value = metal.environmentRotationDegrees,
+                  range = 0f..360f,
+                  decimals = 0,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(environmentRotationDegrees = it)) }
+                MetalSlider(
+                  label = "Exposure",
+                  value = metal.exposure,
+                  range = 0.4f..2.5f,
+                  decimals = 2,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(exposure = it)) }
+
+                Spacer(Modifier.height(12.dp))
+
+          Spacer(Modifier.height(20.dp))
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun LightSwitch(
+  label: String,
+  on: Boolean,
+  enabled: Boolean,
+  modifier: Modifier = Modifier.fillMaxWidth(),
+  onChange: (Boolean) -> Unit,
+) {
+  Button(
+    onClick = { onChange(!on) },
+    enabled = enabled,
+    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+    modifier = modifier
+      .height(34.dp)
+      .semantics {
+        contentDescription = "${if (on) "Turn off" else "Turn on"} $label"
+      },
+    colors = ButtonDefaults.buttonColors(
+      containerColor = if (on) MENU_TEXT_COLOR else MENU_TEXT_COLOR.copy(alpha = 0.12f),
+      contentColor = if (on) Color.Black else MENU_TEXT_COLOR.copy(alpha = 0.65f),
+    ),
+  ) {
+    Text(label, fontSize = 10.sp, maxLines = 1)
   }
 }
 
@@ -820,6 +1190,7 @@ private fun SettingLabel(label: String, value: String) {
 private fun FormatToggle(
   format: VideoFormat,
   enabled: Boolean,
+  gifEnabled: Boolean,
   exporting: Boolean,
   onFormatChange: (VideoFormat) -> Unit,
   onExport: () -> Unit,
@@ -830,33 +1201,40 @@ private fun FormatToggle(
   ) {
     VideoFormat.entries.forEach { option ->
       val chosen = option == format
+      val optionEnabled = enabled && (option != VideoFormat.Gif || gifEnabled)
+      val ink = if (optionEnabled) MENU_TEXT_COLOR else MENU_TEXT_COLOR.copy(alpha = 0.35f)
       Surface(
         modifier = Modifier
           .weight(1f)
           .clip(RoundedCornerShape(10.dp))
-          .clickable(enabled = enabled) { onFormatChange(option) }
+          .clickable(enabled = optionEnabled) { onFormatChange(option) }
           .border(
             width = 1.dp,
-            color = if (chosen) MENU_TEXT_COLOR else MENU_DIVIDER_COLOR,
+            color = if (chosen && optionEnabled) MENU_TEXT_COLOR else MENU_DIVIDER_COLOR,
             shape = RoundedCornerShape(10.dp),
           ),
         shape = RoundedCornerShape(10.dp),
-        color = if (chosen) MENU_TEXT_COLOR.copy(alpha = 0.14f) else Color.Transparent,
+        color = if (chosen && optionEnabled) {
+          MENU_TEXT_COLOR.copy(alpha = 0.14f)
+        } else {
+          Color.Transparent
+        },
       ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
           Text(
             text = option.label,
-            color = MENU_TEXT_COLOR,
+            color = ink,
             fontSize = 14.sp,
             fontWeight = if (chosen) FontWeight.Bold else FontWeight.Normal,
           )
           Spacer(Modifier.height(3.dp))
           Text(
-            text = when (option) {
-              VideoFormat.Gif -> "Loops anywhere"
-              VideoFormat.Mp4 -> "Smaller, plays in a video app"
+            text = when {
+              option == VideoFormat.Gif && !gifEnabled -> "Not with a shader"
+              option == VideoFormat.Gif -> "Loops anywhere"
+              else -> "Smaller, plays in a video app"
             },
-            color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+            color = ink.copy(alpha = 0.55f),
             fontSize = 11.sp,
             lineHeight = 14.sp,
           )
@@ -865,7 +1243,7 @@ private fun FormatToggle(
     }
     Button(
       onClick = onExport,
-      enabled = enabled,
+      enabled = enabled && (format != VideoFormat.Gif || gifEnabled),
       modifier = Modifier
         .weight(1f)
         .height(56.dp),
@@ -878,6 +1256,44 @@ private fun FormatToggle(
     }
   }
 }
+
+/** One environment light that can be switched off independently. */
+private data class LightSwitchSpec(
+  val label: String,
+  val isOn: (MetalSettings) -> Boolean,
+  val toggle: (MetalSettings) -> MetalSettings,
+)
+
+private val environmentLightSwitches = listOf(
+  LightSwitchSpec("Sky", { it.skyEnabled }, { it.copy(skyEnabled = !it.skyEnabled) }),
+  LightSwitchSpec("Floor", { it.floorEnabled }, { it.copy(floorEnabled = !it.floorEnabled) }),
+  LightSwitchSpec("Horizon", { it.horizonEnabled }, { it.copy(horizonEnabled = !it.horizonEnabled) }),
+  LightSwitchSpec(
+    "Floor bounce",
+    { it.floorBounceEnabled },
+    { it.copy(floorBounceEnabled = !it.floorBounceEnabled) },
+  ),
+  LightSwitchSpec(
+    "Front panel",
+    { it.frontPanelEnabled },
+    { it.copy(frontPanelEnabled = !it.frontPanelEnabled) },
+  ),
+  LightSwitchSpec("Blue panel", { it.bluePanelEnabled }, { it.copy(bluePanelEnabled = !it.bluePanelEnabled) }),
+  LightSwitchSpec("Amber panel", { it.amberPanelEnabled }, { it.copy(amberPanelEnabled = !it.amberPanelEnabled) }),
+  LightSwitchSpec(
+    "Key softbox",
+    { it.keySoftboxEnabled },
+    { it.copy(keySoftboxEnabled = !it.keySoftboxEnabled) },
+  ),
+  LightSwitchSpec(
+    "Overhead",
+    { it.overheadPanelEnabled },
+    { it.copy(overheadPanelEnabled = !it.overheadPanelEnabled) },
+  ),
+  LightSwitchSpec("Spot 1", { it.smallSpot1Enabled }, { it.copy(smallSpot1Enabled = !it.smallSpot1Enabled) }),
+  LightSwitchSpec("Spot 2", { it.smallSpot2Enabled }, { it.copy(smallSpot2Enabled = !it.smallSpot2Enabled) }),
+  LightSwitchSpec("Spot 3", { it.smallSpot3Enabled }, { it.copy(smallSpot3Enabled = !it.smallSpot3Enabled) }),
+)
 
 /** One decimal at most, and no trailing ".0": 25, 33.3, 16.7. */
 private fun formatOneDecimal(value: Float): String {
