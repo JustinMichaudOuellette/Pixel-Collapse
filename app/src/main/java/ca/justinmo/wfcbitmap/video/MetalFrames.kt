@@ -1,5 +1,7 @@
 package ca.justinmo.wfcbitmap.video
 
+import kotlin.math.sqrt
+
 /**
  * Maps a loop frame onto the panorama slice and animation phase the metal shader should draw.
  *
@@ -29,6 +31,10 @@ internal fun panoramaMetalFrame(
   val start = if (reverse && shifted != 0) span - shifted else shifted
   val scaleX = if (vertical) 1f else frameWidth.toFloat() / panoramaWidth
   val scaleY = if (vertical) frameHeight.toFloat() / panoramaHeight else 1f
+  // A pixel-art upscale writes more output pixels per source pixel. Left alone, the same source-space
+  // bevel covers more output pixels and reads as a hard ridge. Soften it by the square root of the
+  // enlargement, which keeps the material recognisable without flattening a 2x save.
+  val embossScale = 1f / sqrt((plan.outputWidth.toFloat() / frameWidth).coerceAtLeast(1f))
   val turns = if (plan.frameCount <= 1) {
     0f
   } else {
@@ -39,6 +45,7 @@ internal fun panoramaMetalFrame(
     height = plan.outputHeight,
     viewportAspect = plan.outputWidth.toFloat() / plan.outputHeight,
     imageAspect = frameWidth.toFloat() / frameHeight,
+    embossScale = embossScale,
     uvOffsetX = if (vertical) 0f else start.toFloat() / panoramaWidth,
     uvOffsetY = if (vertical) start.toFloat() / panoramaHeight else 0f,
     uvScaleX = scaleX,

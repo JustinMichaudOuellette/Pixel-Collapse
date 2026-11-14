@@ -20,10 +20,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -47,7 +45,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -60,7 +57,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -68,6 +64,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -75,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import ca.justinmo.wfcbitmap.FeatureFlags
 import ca.justinmo.wfcbitmap.video.MAX_EVOLVE_CELLS
 import ca.justinmo.wfcbitmap.video.MAX_GIF_DELAY_CENTISECONDS
 import ca.justinmo.wfcbitmap.video.MAX_LOOP_SCREENS
@@ -99,6 +97,7 @@ import kotlinx.coroutines.isActive
 import java.util.Locale
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * The video export as a screen of its own: the loop's two measurements, the container to write, and one
@@ -199,6 +198,8 @@ fun VideoExportScreen(
     if (reverse && raw != 0) previewSpan - raw else raw
   }
   val previewFraction = if (previewSpan <= 0) 0f else previewShift.toFloat() / previewSpan
+  // Match the export's softened emboss when the saved video is an upscale of the preview bitmap.
+  val previewEmbossScale = 1f / sqrt(exportPixelScale.coerceAtLeast(1f))
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -279,6 +280,7 @@ fun VideoExportScreen(
                 height = previewHeight,
                 cellPixels = previewCellPixels,
                 settings = metal,
+                embossScale = previewEmbossScale,
                 maxZoom = exportPixelScale,
                 panX = if (mode == VideoMode.Panorama && !verticalPreview) previewFraction else 0f,
                 panY = if (mode == VideoMode.Panorama && verticalPreview) previewFraction else 0f,
@@ -795,12 +797,11 @@ private fun ShaderPicker(
 }
 
 /**
- * The live metal preview with pinch-to-zoom and drag-to-pan, capped at 1:1.
+ * The live metal preview with pinch-to-zoom and drag-to-pan.
  *
- * The picture is laid out at one bitmap pixel per screen pixel at 1x. At rest it is scaled down to fit
- * the preview box; pinching multiplies that layout scale up to 1x, so the ceiling is the source's own
- * resolution rather than an arbitrary magnification. The parent clips the zoomed picture, so panning
- * cannot draw over the titlebar or the controls.
+ * Zoom enlarges the fitted picture uniformly inside the fixed preview box. The zoom ceiling is the point
+ * where the picture reaches the box's width, so the sides are never cropped; anything past that crops
+ * the picture vertically. The GL surface itself never changes size.
  */
 @Composable
 private fun ZoomableMetalPreview(
@@ -809,6 +810,7 @@ private fun ZoomableMetalPreview(
   height: Int,
   cellPixels: Int,
   settings: MetalSettings,
+  embossScale: Float = 1f,
   maxZoom: Float,
   panX: Float = 0f,
   panY: Float = 0f,
@@ -821,59 +823,61 @@ private fun ZoomableMetalPreview(
     contentAlignment = Alignment.Center,
   ) {
     val density = LocalDensity.current
-    val imageWidth = with(density) { width.toDp() }
-    val imageHeight = with(density) { height.toDp() }
-    val fitScale = minOf(
-      maxWidth.value / imageWidth.value,
-      maxHeight.value / imageHeight.value,
-    ).coerceIn(0.01f, 1f)
-    val zoomCeiling = maxZoom.coerceAtLeast(1f)
-    var scale by remember(width, height, fitScale, zoomCeiling) {
-      mutableFloatStateOf(fitScale)
+    val boxWidth = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
+    val boxHeight = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
+    val imageAspect = width.toFloat() / height.coerceAtLeast(1)
+    val viewAspect = boxWidth / boxHeight
+    val baseWidthFraction = if (viewAspect > imageAspect) {
+      imageAspect / viewAspect
+    } else {
+      1f
     }
-    var pan by remember(width, height, fitScale, zoomCeiling) { mutableStateOf(Offset.Zero) }
+    val baseHeightFraction = if (viewAspect > imageAspect) {
+      1f
+    } else {
+      viewAspect / imageAspect
+    }
+    // Do not let a zoom make the picture wider than the box: that is what would clip its sides.
+    val widthLimitedZoom = (1f / baseWidthFraction.coerceAtLeast(0.001f)).coerceAtLeast(1f)
+    val zoomCeiling = minOf(maxOf(maxZoom, PREVIEW_MAX_ZOOM), widthLimitedZoom)
+
+    var zoom by remember(width, height, zoomCeiling) { mutableFloatStateOf(1f) }
+    var offsetY by remember(width, height, zoomCeiling) { mutableFloatStateOf(0f) }
     var paused by remember(width, height) { mutableStateOf(false) }
 
-    val boxWidth = with(density) { maxWidth.toPx() }
-    val boxHeight = with(density) { maxHeight.toPx() }
-    val imageWidthPx = with(density) { imageWidth.toPx() }
-    val imageHeightPx = with(density) { imageHeight.toPx() }
-
-    fun clampPan(candidate: Offset, atScale: Float): Offset {
-      val maxX = ((imageWidthPx * atScale - boxWidth) / 2f).coerceAtLeast(0f)
-      val maxY = ((imageHeightPx * atScale - boxHeight) / 2f).coerceAtLeast(0f)
-      return Offset(
-        candidate.x.coerceIn(-maxX, maxX),
-        candidate.y.coerceIn(-maxY, maxY),
-      )
-    }
-
     val transformState = rememberTransformableState { zoomChange, panChange, _ ->
-      val next = (scale * zoomChange).coerceIn(fitScale, zoomCeiling)
-      scale = next
-      pan = clampPan(pan + panChange, next)
+      val nextZoom = (zoom * zoomChange).coerceIn(1f, zoomCeiling)
+      val rectHeight = baseHeightFraction * nextZoom
+      val maxOffsetY = if (rectHeight > 1f) (1f - 1f / rectHeight) / 2f else 0f
+      zoom = nextZoom
+      // Horizontal drag is deliberately ignored: horizontal movement would step outside the visible
+      // source and read as the same clipping the zoom ceiling avoids.
+      offsetY = (offsetY - panChange.y / boxHeight / rectHeight)
+        .coerceIn(-maxOffsetY, maxOffsetY)
     }
 
+    val autoPan = zoom <= 1.001f
     MetalPreview(
       pixels = pixels,
       width = width,
       height = height,
       cellPixels = cellPixels,
       settings = settings,
+      embossScale = embossScale,
       paused = paused,
-      panX = panX,
-      panY = panY,
-      wrapX = wrapX,
-      wrapY = wrapY,
+      panX = if (autoPan) panX else 0f,
+      panY = if (autoPan) panY else 0f,
+      previewScale = zoom,
+      previewOffsetY = offsetY,
+      wrapX = wrapX && autoPan,
+      wrapY = wrapY && autoPan,
       modifier = Modifier
-        .size(imageWidth * scale, imageHeight * scale)
-        .offset { IntOffset(pan.x.roundToInt(), pan.y.roundToInt()) }
+        .fillMaxSize()
         .clip(RoundedCornerShape(10.dp))
         .background(Color.Black),
     )
 
-    // The gesture layer sits over the picture. A tap pauses the light where it is; the zoom button is
-    // added after it so it still wins its own tap.
+    // The gesture layer sits over the picture. A tap pauses the light where it is.
     Box(
       modifier = Modifier
         .matchParentSize()
@@ -882,60 +886,15 @@ private fun ZoomableMetalPreview(
           interactionSource = remember { MutableInteractionSource() },
           indication = null,
         ) { paused = !paused }
-        .semantics { contentDescription = "Metal preview" },
-    )
-
-    if (paused) {
-      Text(
-        text = "Paused",
-        color = MENU_TEXT_COLOR,
-        fontSize = 11.sp,
-        modifier = Modifier
-          .align(Alignment.BottomEnd)
-          .padding(8.dp)
-          .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
-          .padding(horizontal = 8.dp, vertical = 3.dp),
-      )
-    }
-
-    Text(
-      text = "${(scale * 100).roundToInt()}%",
-      color = MENU_TEXT_COLOR,
-      fontSize = 10.sp,
-      modifier = Modifier
-        .align(Alignment.BottomStart)
-        .padding(8.dp)
-        .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
-        .padding(horizontal = 6.dp, vertical = 2.dp),
-    )
-    TextButton(
-      onClick = {
-        if (scale < zoomCeiling - 0.001f) {
-          scale = zoomCeiling
-          pan = Offset.Zero
-        } else {
-          scale = fitScale
-          pan = Offset.Zero
-        }
-      },
-      contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-      modifier = Modifier
-        .align(Alignment.TopEnd)
-        .padding(8.dp)
-        .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp)),
-    ) {
-      Text(
-        if (scale < zoomCeiling - 0.001f) {
-          "Export ${formatOneDecimal(zoomCeiling)}×"
-        } else {
-          "Fit"
+        .semantics {
+          contentDescription = "Metal preview"
+          stateDescription = if (paused) "Paused" else "Playing"
         },
-        color = MENU_TEXT_COLOR,
-        fontSize = 11.sp,
-      )
-    }
+    )
   }
 }
+
+private const val PREVIEW_MAX_ZOOM = 8f
 
 /**
  * The Metal 3D material controls, inline under the shader picker.
@@ -1378,10 +1337,15 @@ private val environmentLightSwitches = listOf(
     { it.overheadPanelEnabled },
     { it.copy(overheadPanelEnabled = !it.overheadPanelEnabled) },
   ),
-  LightSwitchSpec("Spot 1", { it.smallSpot1Enabled }, { it.copy(smallSpot1Enabled = !it.smallSpot1Enabled) }),
-  LightSwitchSpec("Spot 2", { it.smallSpot2Enabled }, { it.copy(smallSpot2Enabled = !it.smallSpot2Enabled) }),
-  LightSwitchSpec("Spot 3", { it.smallSpot3Enabled }, { it.copy(smallSpot3Enabled = !it.smallSpot3Enabled) }),
-)
+) + if (FeatureFlags.SPOT_LIGHTS_ENABLED) {
+  listOf(
+    LightSwitchSpec("Spot 1", { it.smallSpot1Enabled }, { it.copy(smallSpot1Enabled = !it.smallSpot1Enabled) }),
+    LightSwitchSpec("Spot 2", { it.smallSpot2Enabled }, { it.copy(smallSpot2Enabled = !it.smallSpot2Enabled) }),
+    LightSwitchSpec("Spot 3", { it.smallSpot3Enabled }, { it.copy(smallSpot3Enabled = !it.smallSpot3Enabled) }),
+  )
+} else {
+  emptyList()
+}
 
 /** One decimal at most, and no trailing ".0": 25, 33.3, 16.7. */
 private fun formatOneDecimal(value: Float): String {

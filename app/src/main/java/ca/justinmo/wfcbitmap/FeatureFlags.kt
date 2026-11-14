@@ -17,4 +17,7 @@ internal object FeatureFlags {
 
   /** The best-effort fill mode. */
   const val BEST_EFFORT_TOOL_ENABLED = false
+
+  /** The three small studio spot lights in the metal environment. */
+  const val SPOT_LIGHTS_ENABLED = false
 }

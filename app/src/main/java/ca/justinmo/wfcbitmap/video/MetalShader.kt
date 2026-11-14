@@ -77,6 +77,8 @@ uniform float uAnisotropy;
 uniform float uBrushAngle;
 uniform float uExposure;
 uniform float uCameraDistance;
+uniform float uPreviewScale;
+uniform vec2 uPreviewOffset;
 uniform float uKeyLightOn;
 
 const float PI = 3.14159265359;
@@ -129,15 +131,17 @@ float dither(vec2 p) {
 
 void main() {
   // Fit the image inside the viewport without stretching it. For an export both aspects are equal and
-  // this is a no-op; for the live preview it letterboxes or pillarboxes the drawing.
-  vec2 uv;
+  // this is a no-op; for the live preview it letterboxes or pillarboxes the drawing. The preview scale
+  // enlarges the fitted rectangle while preserving its aspect, so a zoom fills the width before it can
+  // crop the sides; only the top and bottom can be clipped.
+  vec2 rect;
   if (uViewportAspect > uImageAspect) {
-    float s = uImageAspect / uViewportAspect;
-    uv = vec2((vScreen.x - 0.5) / s + 0.5, vScreen.y);
+    rect = vec2(uImageAspect / uViewportAspect, 1.0);
   } else {
-    float s = uViewportAspect / uImageAspect;
-    uv = vec2(vScreen.x, (vScreen.y - 0.5) / s + 0.5);
+    rect = vec2(1.0, uViewportAspect / uImageAspect);
   }
+  rect *= uPreviewScale;
+  vec2 uv = (vScreen - 0.5) / rect + 0.5 + uPreviewOffset;
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
     fragColor = vec4(0.0, 0.0, 0.0, 1.0);
     return;

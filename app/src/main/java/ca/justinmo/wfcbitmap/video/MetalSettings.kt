@@ -1,5 +1,7 @@
 package ca.justinmo.wfcbitmap.video
 
+import ca.justinmo.wfcbitmap.FeatureFlags
+
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -75,11 +77,11 @@ data class MetalSettings(
   /** The broad overhead panel. */
   val overheadPanelEnabled: Boolean = true,
   /** Small highlight 1, the white spot on one side. */
-  val smallSpot1Enabled: Boolean = true,
+  val smallSpot1Enabled: Boolean = FeatureFlags.SPOT_LIGHTS_ENABLED,
   /** Small highlight 2, the cool spot beside it. */
-  val smallSpot2Enabled: Boolean = true,
+  val smallSpot2Enabled: Boolean = FeatureFlags.SPOT_LIGHTS_ENABLED,
   /** Small highlight 3, the warm spot further around. */
-  val smallSpot3Enabled: Boolean = true,
+  val smallSpot3Enabled: Boolean = FeatureFlags.SPOT_LIGHTS_ENABLED,
 ) {
   /** The same settings with the numeric controls brought into their documented ranges. */
   fun sanitised(): MetalSettings = copy(
@@ -97,6 +99,9 @@ data class MetalSettings(
     anisotropy = anisotropy.coerceIn(0f, 1f),
     brushAngleDegrees = brushAngleDegrees.mod(360f),
     exposure = exposure.coerceIn(0.2f, 4f),
+    smallSpot1Enabled = smallSpot1Enabled && FeatureFlags.SPOT_LIGHTS_ENABLED,
+    smallSpot2Enabled = smallSpot2Enabled && FeatureFlags.SPOT_LIGHTS_ENABLED,
+    smallSpot3Enabled = smallSpot3Enabled && FeatureFlags.SPOT_LIGHTS_ENABLED,
   )
 
   /** The same settings, with a preset's metal look applied. Other controls are left alone. */

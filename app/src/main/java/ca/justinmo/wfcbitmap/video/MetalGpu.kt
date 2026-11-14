@@ -27,6 +27,11 @@ internal data class MetalFrame(
   val uvOffsetY: Float = 0f,
   val uvScaleX: Float = 1f,
   val uvScaleY: Float = 1f,
+  /** How much the target is enlarged beyond the source; used to keep the emboss from stiffening. */
+  val embossScale: Float = 1f,
+  val previewScale: Float = 1f,
+  val previewOffsetX: Float = 0f,
+  val previewOffsetY: Float = 0f,
   val wrapX: Boolean = false,
   val wrapY: Boolean = false,
   /** Height-gradient sample distance in source texels: one drawn cell for the pixel-art sources. */
@@ -197,7 +202,7 @@ internal class MetalGpu {
     val base = s.baseColorLinear()
     val light = s.lightColorLinear()
     val lightPos = s.lightPosition(if (s.animateLight) frame.turns else 0f)
-    GLES30.glUniform1f(location("uEmboss"), s.emboss)
+    GLES30.glUniform1f(location("uEmboss"), s.emboss * frame.embossScale)
     GLES30.glUniform1f(location("uMetallic"), s.metallic)
     GLES30.glUniform1f(location("uRoughness"), s.roughness)
     GLES30.glUniform1f(location("uTextureTint"), s.textureTint)
@@ -215,6 +220,12 @@ internal class MetalGpu {
     GLES30.glUniform1f(location("uBrushAngle"), s.brushAngleDegrees)
     GLES30.glUniform1f(location("uExposure"), s.exposure)
     GLES30.glUniform1f(location("uCameraDistance"), CAMERA_DISTANCE)
+    GLES30.glUniform1f(location("uPreviewScale"), frame.previewScale)
+    GLES30.glUniform2f(
+      location("uPreviewOffset"),
+      frame.previewOffsetX,
+      frame.previewOffsetY,
+    )
     GLES30.glUniform1f(location("uKeyLightOn"), if (s.keyLightEnabled) 1f else 0f)
 
     GLES30.glBindVertexArray(vao)

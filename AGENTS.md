@@ -21,6 +21,12 @@ Files import sibling packages with wildcard imports (`generation.*`, `output.*`,
 `storage.*`, `palette.*`, `editor.*`). Keep new code in the package that matches its responsibility
 rather than adding another root-level file.
 
+## Device installs
+
+Install app updates with `adb install -r <apk>` so the existing app data is kept. Do not uninstall or
+clear app data unless the user explicitly asks for a clean install. Connected instrumentation runs can
+uninstall the app; install the current build afterwards with `-r`.
+
 ## Test pattern
 
 Use this **9×9** drawing as the canonical test pattern for generation, kernel grouping, and

@@ -27,9 +27,13 @@ internal fun MetalPreview(
   height: Int,
   cellPixels: Int,
   settings: MetalSettings,
+  embossScale: Float = 1f,
   paused: Boolean = false,
   panX: Float = 0f,
   panY: Float = 0f,
+  previewScale: Float = 1f,
+  previewOffsetX: Float = 0f,
+  previewOffsetY: Float = 0f,
   wrapX: Boolean = false,
   wrapY: Boolean = false,
   modifier: Modifier = Modifier,
@@ -40,8 +44,10 @@ internal fun MetalPreview(
     update = { view ->
       view.setImage(pixels, width, height, cellPixels)
       view.setSettings(settings)
+      view.setEmbossScale(embossScale)
       view.setPaused(paused)
       view.setPan(panX, panY, wrapX, wrapY)
+      view.setPreview(previewScale, previewOffsetX, previewOffsetY)
     },
   )
 }
@@ -54,9 +60,13 @@ private class MetalPreviewView(context: Context) : GLSurfaceView(context) {
   private var lastHeight = -1
   private var lastCell = -1
   private var lastSettings: MetalSettings? = null
+  private var lastEmbossScale = 1f
   private var lastPaused = false
   private var lastPanX = 0f
   private var lastPanY = 0f
+  private var lastPreviewScale = 1f
+  private var lastPreviewOffsetX = 0f
+  private var lastPreviewOffsetY = 0f
   private var lastWrapX = false
   private var lastWrapY = false
 
@@ -92,6 +102,12 @@ private class MetalPreviewView(context: Context) : GLSurfaceView(context) {
     queueEvent { previewRenderer.setSettings(settings) }
   }
 
+  fun setEmbossScale(scale: Float) {
+    if (scale == lastEmbossScale) return
+    lastEmbossScale = scale
+    queueEvent { previewRenderer.setEmbossScale(scale) }
+  }
+
   fun setPaused(paused: Boolean) {
     if (paused == lastPaused) return
     lastPaused = paused
@@ -106,6 +122,18 @@ private class MetalPreviewView(context: Context) : GLSurfaceView(context) {
     lastWrapY = wrapY
     queueEvent { previewRenderer.setPan(panX, panY, wrapX, wrapY) }
   }
+
+  fun setPreview(scale: Float, offsetX: Float, offsetY: Float) {
+    if (scale == lastPreviewScale && offsetX == lastPreviewOffsetX &&
+      offsetY == lastPreviewOffsetY
+    ) {
+      return
+    }
+    lastPreviewScale = scale
+    lastPreviewOffsetX = offsetX
+    lastPreviewOffsetY = offsetY
+    queueEvent { previewRenderer.setPreview(scale, offsetX, offsetY) }
+  }
 }
 
 private class MetalPreviewRenderer : GLSurfaceView.Renderer {
@@ -115,6 +143,7 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
   private var imageWidth = 0
   private var imageHeight = 0
   private var stepTexels = 1f
+  private var embossScale = 1f
   private var settings = MetalSettings()
   private var surfaceWidth = 1
   private var surfaceHeight = 1
@@ -123,6 +152,9 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
   private var paused = false
   private var panX = 0f
   private var panY = 0f
+  private var previewScale = 1f
+  private var previewOffsetX = 0f
+  private var previewOffsetY = 0f
   private var wrapX = false
   private var wrapY = false
 
@@ -138,6 +170,10 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
     this.settings = settings.sanitised()
   }
 
+  fun setEmbossScale(scale: Float) {
+    embossScale = scale
+  }
+
   fun setPaused(paused: Boolean) {
     this.paused = paused
     // Start the next unpaused frame from now rather than counting the time spent paused.
@@ -149,6 +185,12 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
     this.panY = panY
     this.wrapX = wrapX
     this.wrapY = wrapY
+  }
+
+  fun setPreview(scale: Float, offsetX: Float, offsetY: Float) {
+    previewScale = scale
+    previewOffsetX = offsetX
+    previewOffsetY = offsetY
   }
 
   override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -194,8 +236,12 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
         height = surfaceHeight,
         viewportAspect = surfaceWidth.toFloat() / surfaceHeight,
         imageAspect = imageWidth.toFloat() / imageHeight,
+        embossScale = embossScale,
         uvOffsetX = panX,
         uvOffsetY = panY,
+        previewScale = previewScale,
+        previewOffsetX = previewOffsetX,
+        previewOffsetY = previewOffsetY,
         wrapX = wrapX,
         wrapY = wrapY,
         stepTexels = stepTexels,

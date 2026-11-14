@@ -3,6 +3,9 @@ package ca.justinmo.wfcbitmap
 import android.content.Context
 import android.os.PowerManager
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -140,9 +143,7 @@ class VideoShaderPickerTest {
   }
 
   @Test
-  fun thePreviewZoomsToTheExportPixelSizeAndBackToFit() {
-    // The preview bitmap is 1000 px square and the export is 2000 px: one exported pixel is twice
-    // the size of one preview pixel, so the ceiling must be 2x rather than 1x.
+  fun thePreviewHasNoZoomLabels() {
     showScreen(
       VideoLook.Metal,
       withPreview = true,
@@ -150,13 +151,10 @@ class VideoShaderPickerTest {
       outputHeight = 2000,
       format = VideoFormat.Mp4,
     )
-    rule.onNodeWithText("Export 2×").assertExists()
-    rule.onNodeWithText("Export 2×").performClick()
-    rule.waitForIdle()
-    rule.onNodeWithText("Fit").assertExists()
-    rule.onNodeWithText("Fit").performClick()
-    rule.waitForIdle()
-    rule.onNodeWithText("Export 2×").assertExists()
+    rule.onNodeWithContentDescription("Metal preview").assertExists()
+    rule.onNodeWithText("Export 2×").assertDoesNotExist()
+    rule.onNodeWithText("Fit").assertDoesNotExist()
+    rule.onNodeWithText("Paused").assertDoesNotExist()
   }
 
   @Test
@@ -176,13 +174,16 @@ class VideoShaderPickerTest {
   @Test
   fun tappingThePreviewPausesAndResumesIt() {
     showScreen(VideoLook.Metal, withPreview = true, format = VideoFormat.Mp4)
-    rule.onNodeWithText("Paused").assertDoesNotExist()
+    rule.onNodeWithContentDescription("Metal preview")
+      .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Playing"))
     rule.onNodeWithContentDescription("Metal preview").performClick()
     rule.waitForIdle()
-    rule.onNodeWithText("Paused").assertExists()
+    rule.onNodeWithContentDescription("Metal preview")
+      .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Paused"))
     rule.onNodeWithContentDescription("Metal preview").performClick()
     rule.waitForIdle()
-    rule.onNodeWithText("Paused").assertDoesNotExist()
+    rule.onNodeWithContentDescription("Metal preview")
+      .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Playing"))
   }
 
   @Test

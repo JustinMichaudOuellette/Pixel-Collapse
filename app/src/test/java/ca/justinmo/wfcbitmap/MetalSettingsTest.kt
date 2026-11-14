@@ -53,6 +53,19 @@ class MetalSettingsTest {
   }
 
   @Test
+  fun theSpotLightsFollowTheirFeatureFlag() {
+    val settings = MetalSettings(
+      smallSpot1Enabled = true,
+      smallSpot2Enabled = true,
+      smallSpot3Enabled = true,
+    ).sanitised()
+
+    assertEquals(FeatureFlags.SPOT_LIGHTS_ENABLED, settings.smallSpot1Enabled)
+    assertEquals(FeatureFlags.SPOT_LIGHTS_ENABLED, settings.smallSpot2Enabled)
+    assertEquals(FeatureFlags.SPOT_LIGHTS_ENABLED, settings.smallSpot3Enabled)
+  }
+
+  @Test
   fun theKeyLightOrbitsAndTheEnvironmentTurns() {
     val settings = MetalSettings(
       animateLight = true,
@@ -91,6 +104,7 @@ class MetalSettingsTest {
 
     assertTrue(first.wrapX)
     assertFalse(first.wrapY)
+    assertEquals(1f / kotlin.math.sqrt(2f), first.embossScale, 0.0001f)
     assertEquals(0f, first.uvOffsetX, 0.0001f)
     assertEquals(plan.frameWidth.toFloat() / plan.panoramaWidth, first.uvScaleX, 0.0001f)
     assertEquals(1f, first.uvScaleY, 0.0001f)
