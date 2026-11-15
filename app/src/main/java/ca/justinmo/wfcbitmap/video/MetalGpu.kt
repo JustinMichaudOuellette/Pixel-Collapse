@@ -42,13 +42,13 @@ internal data class MetalFrame(
 
 /**
  * The GLES 3.0 half of the metal renderer: programs, the procedural environment, the BRDF LUT, the
- * source texture and a full-screen triangle.
+ * source texture, the plate's two triangles and the camera that projects them.
  *
  * This class owns GL objects and therefore must be created, used and destroyed on the thread whose EGL
  * context is current. [MetalOffscreenRenderer] provides that context for an export; a `GLSurfaceView`
  * provides it for the live preview. There is deliberately no per-frame `glTexImage2D` of the environment
- * or the LUT: both are baked once in [init], and only the source texture and the uniforms change per
- * frame.
+ * or the LUT: both are baked once in [init], and only the source texture, the uniforms and (when the
+ * slider or the viewport moved) the projection matrix change per frame.
  */
 /** The ten environment-light switches, packed so a rebake only happens when one of them changes. */
 private fun MetalSettings.lightMask(): Int {
@@ -74,6 +74,12 @@ internal class MetalGpu {
   private var environmentProgram = 0
   private var brdfProgram = 0
   private var vao = 0
+  private var plateVao = 0
+  private var plateBuffer = 0
+  private var plateVertices = 0
+
+  /** Rebuilt only when the perspective control or the viewport shape changes. */
+  private val camera = MetalCamera()
 
   private var albedoTex = 0
   private var albedoWidth = 0
@@ -102,12 +108,13 @@ internal class MetalGpu {
   fun init(): Boolean {
     if (program != 0) return true
     return try {
-      environmentProgram = link(MetalShader.VERTEX, MetalShader.ENVIRONMENT, "environment")
-      brdfProgram = link(MetalShader.VERTEX, MetalShader.BRDF, "BRDF LUT")
+      environmentProgram = link(MetalShader.FULLSCREEN_VERTEX, MetalShader.ENVIRONMENT, "environment")
+      brdfProgram = link(MetalShader.FULLSCREEN_VERTEX, MetalShader.BRDF, "BRDF LUT")
       program = link(MetalShader.VERTEX, MetalShader.FRAGMENT, "metal")
       val ids = IntArray(1)
       GLES30.glGenVertexArrays(1, ids, 0)
       vao = ids[0]
+      createPlate()
       GLES30.glBindVertexArray(vao)
       bakeEnvironment()
       bakeBrdf()
@@ -168,6 +175,66 @@ internal class MetalGpu {
     GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
   }
 
+  /**
+   * Uploads the plate: a tessellated grid, expanded to triangles, with a corner and a picture parameter per
+   * vertex.
+   *
+   * The grid is what lets the wall curve. The shape itself is not baked here: the vertex shader offsets each
+   * vertex in depth by the squared distance from the centre, using the depth the camera hands it, so the same
+   * buffer serves a flat plate and a deep one. The corners are in plate units (-1..1, +y up) and the
+   * parameters run 0..1 with `v` down the picture, which is the orientation of an Android bitmap.
+   */
+  private fun createPlate() {
+    val segments = PLATE_SEGMENTS
+    // Six vertices per cell, each a corner pair and a parameter pair.
+    val f = FloatArray(segments * segments * 6 * 4)
+    var i = 0
+    fun put(cornerX: Float, cornerY: Float, u: Float, v: Float) {
+      f[i++] = cornerX
+      f[i++] = cornerY
+      f[i++] = u
+      f[i++] = v
+    }
+    for (row in 0 until segments) {
+      val v0 = row.toFloat() / segments
+      val v1 = (row + 1).toFloat() / segments
+      val y0 = 1f - 2f * v0
+      val y1 = 1f - 2f * v1
+      for (col in 0 until segments) {
+        val u0 = col.toFloat() / segments
+        val u1 = (col + 1).toFloat() / segments
+        val x0 = 2f * u0 - 1f
+        val x1 = 2f * u1 - 1f
+        put(x0, y0, u0, v0)
+        put(x0, y1, u0, v1)
+        put(x1, y1, u1, v1)
+        put(x0, y0, u0, v0)
+        put(x1, y1, u1, v1)
+        put(x1, y0, u1, v0)
+      }
+    }
+    plateVertices = f.size / 4
+
+    val data = ByteBuffer.allocateDirect(f.size * 4).order(ByteOrder.nativeOrder())
+      .asFloatBuffer()
+      .apply { put(f); position(0) }
+    val ids = IntArray(1)
+    GLES30.glGenBuffers(1, ids, 0)
+    plateBuffer = ids[0]
+    GLES30.glGenVertexArrays(1, ids, 0)
+    plateVao = ids[0]
+    GLES30.glBindVertexArray(plateVao)
+    GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, plateBuffer)
+    GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, f.size * 4, data, GLES30.GL_STATIC_DRAW)
+    GLES30.glEnableVertexAttribArray(PLATE_CORNER)
+    GLES30.glVertexAttribPointer(PLATE_CORNER, 2, GLES30.GL_FLOAT, false, STRIDE_BYTES, 0)
+    GLES30.glEnableVertexAttribArray(PLATE_UV)
+    GLES30.glVertexAttribPointer(PLATE_UV, 2, GLES30.GL_FLOAT, false, STRIDE_BYTES, 2 * 4)
+    GLES30.glBindVertexArray(0)
+    GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+  }
+
+
   /** Draws [frame] into the currently bound framebuffer, which must already have the right viewport. */
   fun draw(frame: MetalFrame) {
     if (program == 0) return
@@ -193,8 +260,37 @@ internal class MetalGpu {
     GLES30.glUniform2f(location("uTexSize"), albedoWidth.toFloat(), albedoHeight.toFloat())
     GLES30.glUniform2f(location("uUvOffset"), frame.uvOffsetX, frame.uvOffsetY)
     GLES30.glUniform2f(location("uUvScale"), frame.uvScaleX, frame.uvScaleY)
-    GLES30.glUniform1f(location("uViewportAspect"), frame.viewportAspect)
     GLES30.glUniform1f(location("uImageAspect"), frame.imageAspect)
+    // Only the projection changes with the slider; the eye stays at MetalCamera.DISTANCE. `update` is a
+    // no-op unless the slider or the viewport shape moved, so a still preview does not rebuild it per frame.
+    camera.update(s.cameraPerspective / MAX_CAMERA_PERSPECTIVE, frame.viewportAspect)
+    GLES30.glUniformMatrix4fv(
+      location("uViewProjection"),
+      1,
+      false,
+      camera.viewProjection,
+      0,
+    )
+    // Fit the picture's aspect ratio inside the viewport, apply the preview's pinch zoom, and grow the plate
+    // by the factor the current lens needs to keep covering the frame. Every one of these is a uniform scale
+    // of the plate in its own units, so none of them can stretch the picture or change its texture
+    // coordinates.
+    val fit = if (frame.viewportAspect > frame.imageAspect) {
+      1f
+    } else {
+      frame.viewportAspect / frame.imageAspect
+    }
+    GLES30.glUniform1f(
+      location("uPlateScale"),
+      (fit * frame.previewScale * camera.quadScale).coerceAtLeast(0f),
+    )
+    // How far the wall curves away from the camera at its rim. Zero in orthographic mode.
+    GLES30.glUniform1f(location("uDishDepth"), camera.dishDepth)
+    GLES30.glUniform2f(
+      location("uPreviewOffset"),
+      frame.previewOffsetX,
+      frame.previewOffsetY,
+    )
     GLES30.glUniform1f(location("uWrapX"), if (frame.wrapX) 1f else 0f)
     GLES30.glUniform1f(location("uWrapY"), if (frame.wrapY) 1f else 0f)
     GLES30.glUniform1f(location("uStepTexels"), frame.stepTexels)
@@ -219,17 +315,13 @@ internal class MetalGpu {
     GLES30.glUniform1f(location("uAnisotropy"), s.anisotropy)
     GLES30.glUniform1f(location("uBrushAngle"), s.brushAngleDegrees)
     GLES30.glUniform1f(location("uExposure"), s.exposure)
-    GLES30.glUniform1f(location("uCameraDistance"), CAMERA_DISTANCE)
-    GLES30.glUniform1f(location("uPreviewScale"), frame.previewScale)
-    GLES30.glUniform2f(
-      location("uPreviewOffset"),
-      frame.previewOffsetX,
-      frame.previewOffsetY,
-    )
+    // The light rig is a set of world positions and the shading eye is fixed, so the perspective control
+    // moves the projection and nothing else: no highlight travels and no gradient appears or disappears.
+    GLES30.glUniform1f(location("uCameraDistance"), MetalCamera.DISTANCE)
     GLES30.glUniform1f(location("uKeyLightOn"), if (s.keyLightEnabled) 1f else 0f)
 
-    GLES30.glBindVertexArray(vao)
-    GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+    GLES30.glBindVertexArray(plateVao)
+    GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, plateVertices)
     GLES30.glBindVertexArray(0)
     GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
   }
@@ -482,6 +574,8 @@ internal class MetalGpu {
     if (brdfTex != 0) GLES30.glDeleteTextures(1, intArrayOf(brdfTex), 0)
     if (targetTex != 0) GLES30.glDeleteTextures(1, intArrayOf(targetTex), 0)
     if (targetFbo != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(targetFbo), 0)
+    if (plateBuffer != 0) GLES30.glDeleteBuffers(1, intArrayOf(plateBuffer), 0)
+    if (plateVao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(plateVao), 0)
     if (vao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(vao), 0)
     albedoTex = 0
     environmentTex = 0
@@ -499,7 +593,13 @@ internal class MetalGpu {
     const val ENVIRONMENT_WIDTH = 1024
     const val ENVIRONMENT_HEIGHT = 512
     const val BRDF_SIZE = 128
-    const val CAMERA_DISTANCE = 2.6f
+    /** Attribute slots in the plate's vertex shader. */
+    const val PLATE_CORNER = 0
+    const val PLATE_UV = 1
+    /** Two position floats and two parameter floats. */
+    const val STRIDE_BYTES = 4 * 4
+    /** Cells per side in the plate mesh: enough for the dish to read as a smooth wall. */
+    const val PLATE_SEGMENTS = 32
   }
 }
 

@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -73,6 +74,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import ca.justinmo.wfcbitmap.FeatureFlags
+import ca.justinmo.wfcbitmap.video.MAX_CAMERA_PERSPECTIVE
 import ca.justinmo.wfcbitmap.video.MAX_EVOLVE_CELLS
 import ca.justinmo.wfcbitmap.video.MAX_GIF_DELAY_CENTISECONDS
 import ca.justinmo.wfcbitmap.video.MAX_LOOP_SCREENS
@@ -827,6 +829,13 @@ private fun ZoomableMetalPreview(
     val boxHeight = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
     val imageAspect = width.toFloat() / height.coerceAtLeast(1)
     val viewAspect = boxWidth / boxHeight
+    // The exporter's frame has the image's aspect. Match it here so the preview does not show the
+    // fitted image's boundary as a trapezoid inside a wider box.
+    val displayWidth = if (viewAspect > imageAspect) boxHeight * imageAspect else boxWidth
+    val displayHeight = displayWidth / imageAspect
+    val previewSize = with(density) {
+      androidx.compose.ui.unit.DpSize(displayWidth.toDp(), displayHeight.toDp())
+    }
     val baseWidthFraction = if (viewAspect > imageAspect) {
       imageAspect / viewAspect
     } else {
@@ -872,7 +881,7 @@ private fun ZoomableMetalPreview(
       wrapX = wrapX && autoPan,
       wrapY = wrapY && autoPan,
       modifier = Modifier
-        .fillMaxSize()
+        .size(previewSize)
         .clip(RoundedCornerShape(10.dp))
         .background(Color.Black),
     )
@@ -992,6 +1001,13 @@ private fun MetalShaderControls(
                   decimals = 2,
                   enabled = !exporting,
                 ) { onMetalChange(metal.copy(parallax = it)) }
+                MetalSlider(
+                  label = "Camera perspective",
+                  value = metal.cameraPerspective,
+                  range = 0f..MAX_CAMERA_PERSPECTIVE,
+                  decimals = 2,
+                  enabled = !exporting,
+                ) { onMetalChange(metal.copy(cameraPerspective = it)) }
 
                 Spacer(Modifier.height(6.dp))
                 MetalColorSliders(

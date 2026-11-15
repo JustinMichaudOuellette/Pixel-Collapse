@@ -1,5 +1,6 @@
 package ca.justinmo.wfcbitmap
 
+import ca.justinmo.wfcbitmap.video.MAX_CAMERA_PERSPECTIVE
 import ca.justinmo.wfcbitmap.video.MetalFinish
 import ca.justinmo.wfcbitmap.video.MetalSettings
 import ca.justinmo.wfcbitmap.video.ScrollDirection
@@ -39,6 +40,7 @@ class MetalSettingsTest {
       parallax = 4f,
       anisotropy = 3f,
       exposure = 0f,
+      cameraPerspective = 9f,
     ).sanitised()
 
     assertEquals(2.5f, wild.emboss, 0.0001f)
@@ -50,6 +52,7 @@ class MetalSettingsTest {
     assertEquals(0.35f, wild.parallax, 0.0001f)
     assertEquals(1f, wild.anisotropy, 0.0001f)
     assertEquals(0.2f, wild.exposure, 0.0001f)
+    assertEquals(MAX_CAMERA_PERSPECTIVE, wild.cameraPerspective, 0.0001f)
   }
 
   @Test

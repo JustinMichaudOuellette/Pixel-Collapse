@@ -3,6 +3,10 @@ package ca.justinmo.wfcbitmap.video
 /**
  * GLSL ES 3.00 sources for the metal look.
  *
+ * The geometry is a two-triangle plate in the wall plane, projected by [MetalCamera]: orthographic when
+ * the perspective control is at zero, a perspective frustum above it. Everything else happens in the
+ * fragment shader.
+ *
  * The fragment shader is the whole material. It turns the drawing's luminance into a height field,
  * differentiates it into a tangent-space normal (the tangent frame is the screen plane, so the normal is
  * already in surface space), and feeds that normal to:
@@ -24,11 +28,9 @@ internal object MetalShader {
   /**
    * A full-screen triangle generated from `gl_VertexID`; no vertex buffer is needed.
    *
-   * `vScreen` is the framebuffer position in 0..1 with y pointing down, which is also the orientation of
-   * an Android bitmap and of the read-back pixels. The renderer flips the rows once when it converts
-   * `glReadPixels`' bottom-up RGBA into an ARGB bitmap.
+   * This one is used by the environment and BRDF bakes, which paint the whole target and take no geometry.
    */
-  const val VERTEX = """#version 300 es
+  const val FULLSCREEN_VERTEX = """#version 300 es
 precision highp float;
 out vec2 vScreen;
 void main() {
@@ -40,12 +42,54 @@ void main() {
 }
 """
 
+  /**
+   * The plate: a curved wall, tessellated and projected through the camera.
+   *
+   * `aCorner` is the plate's parameter in -1..1 with +y up; `aUv` is the picture parameter, with `v` running
+   * down the drawing the way a bitmap does. The plate is not flat: its depth grows with the squared distance
+   * from the centre, so the rim sits [uDishDepth] behind the middle and the picture genuinely foreshortens
+   * towards its edges under the perspective projection. The curve is a function of the distance from the
+   * centre only, so the surface stays symmetric about both centre lines and the centre itself never moves.
+   *
+   * `uViewProjection` is the camera: orthographic when the slider is at zero, a perspective frustum above it.
+   * Because the geometry is projected by that matrix, the rasteriser interpolates `vPlane` perspective-
+   * correctly and the fragment shader is handed the point on the wall the camera actually sees.
+   *
+   * `uPlateScale` folds in the coverage scale, the fit of the picture's aspect ratio inside the viewport and
+   * the preview's pinch zoom. All three scale x and y; the depth is given directly in world units, so the
+   * dish keeps its shape whatever they do.
+   */
+  const val VERTEX = """#version 300 es
+precision highp float;
+layout(location = 0) in vec2 aCorner;
+layout(location = 1) in vec2 aUv;
+uniform mat4 uViewProjection;
+uniform float uImageAspect;
+uniform float uPlateScale;
+uniform float uDishDepth;
+uniform vec2 uPreviewOffset;
+out vec2 vUv;
+out vec3 vPlane;
+void main() {
+  // 0 at the centre of the plate, 1 at its corners: the wall recedes towards its edges.
+  float r2 = 0.5 * dot(aCorner, aCorner);
+  vec3 plane = vec3(aCorner.x * uImageAspect * uPlateScale,
+                    aCorner.y * uPlateScale,
+                    -uDishDepth * r2);
+  vPlane = plane;
+  // A drag in the preview, and the panorama window, shift which texel a plate point reads.
+  vUv = aUv + uPreviewOffset;
+  gl_Position = uViewProjection * vec4(plane, 1.0);
+}
+"""
+
   /** The embossed metal surface. */
   const val FRAGMENT = """#version 300 es
 precision highp float;
 precision highp int;
 
-in vec2 vScreen;
+in vec2 vUv;
+in vec3 vPlane;
 out vec4 fragColor;
 
 uniform sampler2D uAlbedo;
@@ -55,7 +99,6 @@ uniform sampler2D uBrdf;
 uniform vec2 uTexSize;
 uniform vec2 uUvOffset;
 uniform vec2 uUvScale;
-uniform float uViewportAspect;
 uniform float uImageAspect;
 uniform float uWrapX;
 uniform float uWrapY;
@@ -77,8 +120,6 @@ uniform float uAnisotropy;
 uniform float uBrushAngle;
 uniform float uExposure;
 uniform float uCameraDistance;
-uniform float uPreviewScale;
-uniform vec2 uPreviewOffset;
 uniform float uKeyLightOn;
 
 const float PI = 3.14159265359;
@@ -130,27 +171,29 @@ float dither(vec2 p) {
 }
 
 void main() {
-  // Fit the image inside the viewport without stretching it. For an export both aspects are equal and
-  // this is a no-op; for the live preview it letterboxes or pillarboxes the drawing. The preview scale
-  // enlarges the fitted rectangle while preserving its aspect, so a zoom fills the width before it can
-  // crop the sides; only the top and bottom can be clipped.
-  vec2 rect;
-  if (uViewportAspect > uImageAspect) {
-    rect = vec2(uImageAspect / uViewportAspect, 1.0);
-  } else {
-    rect = vec2(1.0, uViewportAspect / uImageAspect);
-  }
-  rect *= uPreviewScale;
-  vec2 uv = (vScreen - 0.5) / rect + 0.5 + uPreviewOffset;
+  /*
+   * The vertex shader has already put this fragment on the plate and handed over its 0..1 parameter.
+   * Panning — the panorama window, or a drag in the preview — shifts that parameter, so a fragment that
+   * falls outside the picture is background. The plate itself only covers the fitted picture, so there is
+   * no letterbox arithmetic here any more: the quad's corners are the picture's corners.
+   */
+  vec2 uv = vUv;
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
     fragColor = vec4(0.0, 0.0, 0.0, 1.0);
     return;
   }
+  // The texture coordinates are the plate's own and never change with the perspective: the camera's
+  // projection is what moves, and it moves the triangles, not the mapping.
   uv = uUvOffset + uv * uUvScale;
 
   float aspect = max(uImageAspect, 0.05);
-  vec2 plane0 = vec2((uv.x * 2.0 - 1.0) * aspect, 1.0 - uv.y * 2.0);
-  vec3 V0 = normalize(vec3(0.0, 0.0, uCameraDistance) - vec3(plane0, 0.0));
+  /*
+   * The surface point on the wall, interpolated perspective-correctly across the tessellated plate. This is
+   * where the light lands and where the eye looks from, so the shading follows the curved wall as well as the
+   * picture does.
+   */
+  vec3 P = vPlane;
+  vec3 V = normalize(vec3(0.0, 0.0, uCameraDistance) - P);
 
   // Parallax: sample the height a few times and slide the lookup against the view ray. Defaults off,
   // because a strong offset swims on a pixel-art cell grid; it is there for photographic textures.
@@ -158,7 +201,7 @@ void main() {
   if (uParallax > 0.0001) {
     for (int i = 0; i < 3; i++) {
       float h = readHeight(puv);
-      puv = uv + (V0.xy / max(V0.z, 0.25)) * (h - 0.5) * uParallax * 0.18;
+      puv = uv + (V.xy / max(V.z, 0.25)) * (h - 0.5) * uParallax * 0.18;
     }
     uv = puv;
   }
@@ -194,9 +237,6 @@ void main() {
     N = normalize(N + vec3(-brushDir.y, brushDir.x, 0.0) * streak);
   }
 
-  vec2 plane = vec2((uv.x * 2.0 - 1.0) * aspect, 1.0 - uv.y * 2.0);
-  vec3 P = vec3(plane, 0.0);
-  vec3 V = normalize(vec3(0.0, 0.0, uCameraDistance) - P);
   vec3 L = normalize(uLightPosition - P);
   vec3 H = normalize(L + V);
 

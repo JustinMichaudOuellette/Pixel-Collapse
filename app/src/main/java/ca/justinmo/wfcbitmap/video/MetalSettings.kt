@@ -1,10 +1,12 @@
 package ca.justinmo.wfcbitmap.video
 
 import ca.justinmo.wfcbitmap.FeatureFlags
-
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
+
+/** The slider's upper end; values above the old 1.0 exaggerate the camera projection. */
+internal const val MAX_CAMERA_PERSPECTIVE = 3f
 
 /**
  * The look of the embossed metal, independent of any particular frame.
@@ -56,6 +58,13 @@ data class MetalSettings(
   val brushAngleDegrees: Float = 0f,
   /** Exposure applied before the ACES curve. */
   val exposure: Float = 1.08f,
+  /**
+   * The camera's projection, from orthographic to a wide lens. 0 is an orthographic camera and the plate
+   * fills the frame; higher values widen the perspective, so the plate recedes symmetrically towards the
+   * centre. Only the projection changes: the camera, the plate, its texture coordinates and the light rig
+   * all stay exactly where they are.
+   */
+  val cameraPerspective: Float = 0f,
   /** The moving key light. Off leaves only the reflected studio. */
   val keyLightEnabled: Boolean = true,
   /** The dark-to-bright studio backdrop. */
@@ -99,6 +108,7 @@ data class MetalSettings(
     anisotropy = anisotropy.coerceIn(0f, 1f),
     brushAngleDegrees = brushAngleDegrees.mod(360f),
     exposure = exposure.coerceIn(0.2f, 4f),
+    cameraPerspective = cameraPerspective.coerceIn(0f, MAX_CAMERA_PERSPECTIVE),
     smallSpot1Enabled = smallSpot1Enabled && FeatureFlags.SPOT_LIGHTS_ENABLED,
     smallSpot2Enabled = smallSpot2Enabled && FeatureFlags.SPOT_LIGHTS_ENABLED,
     smallSpot3Enabled = smallSpot3Enabled && FeatureFlags.SPOT_LIGHTS_ENABLED,

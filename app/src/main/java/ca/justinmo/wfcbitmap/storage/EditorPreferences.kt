@@ -199,6 +199,7 @@ class EditorPreferences(context: Context) {
       anisotropy = preferences.getFloat(KEY_METAL_ANISOTROPY, d.anisotropy),
       brushAngleDegrees = preferences.getFloat(KEY_METAL_BRUSH_ANGLE, d.brushAngleDegrees),
       exposure = preferences.getFloat(KEY_METAL_EXPOSURE, d.exposure),
+      cameraPerspective = preferences.getFloat(KEY_METAL_CAMERA_PERSPECTIVE, d.cameraPerspective),
       keyLightEnabled = preferences.getBoolean(KEY_METAL_KEY_LIGHT, d.keyLightEnabled),
       skyEnabled = preferences.getBoolean(KEY_METAL_SKY, d.skyEnabled),
       floorEnabled = preferences.getBoolean(KEY_METAL_FLOOR, d.floorEnabled),
@@ -235,6 +236,7 @@ class EditorPreferences(context: Context) {
       .putFloat(KEY_METAL_ANISOTROPY, settings.anisotropy)
       .putFloat(KEY_METAL_BRUSH_ANGLE, settings.brushAngleDegrees)
       .putFloat(KEY_METAL_EXPOSURE, settings.exposure)
+      .putFloat(KEY_METAL_CAMERA_PERSPECTIVE, settings.cameraPerspective)
       .putBoolean(KEY_METAL_KEY_LIGHT, settings.keyLightEnabled)
       .putBoolean(KEY_METAL_SKY, settings.skyEnabled)
       .putBoolean(KEY_METAL_FLOOR, settings.floorEnabled)
@@ -357,6 +359,7 @@ class EditorPreferences(context: Context) {
     const val KEY_METAL_ANISOTROPY = "metal_anisotropy"
     const val KEY_METAL_BRUSH_ANGLE = "metal_brush_angle"
     const val KEY_METAL_EXPOSURE = "metal_exposure"
+    const val KEY_METAL_CAMERA_PERSPECTIVE = "metal_camera_perspective"
     const val KEY_METAL_KEY_LIGHT = "metal_key_light"
     const val KEY_METAL_SKY = "metal_sky"
     const val KEY_METAL_FLOOR = "metal_floor"
