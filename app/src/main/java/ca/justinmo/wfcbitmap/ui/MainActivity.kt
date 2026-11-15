@@ -271,9 +271,17 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   var tutorialPending by remember {
     mutableStateOf(!preferences.tutorialSeen(fallback = false))
   }
+  // Set by the tour's first page when it is double-tapped: the editor then opens on the pattern the tour
+  // itself was painting instead of on a restored (or blank) drawing.
+  var startFromTourSample by remember { mutableStateOf(false) }
   if (tutorialPending) {
     FirstLaunchTutorial(
       onDismiss = {
+        preferences.setTutorialSeen(true)
+        tutorialPending = false
+      },
+      onLoadSample = {
+        startFromTourSample = true
         preferences.setTutorialSeen(true)
         tutorialPending = false
       },
@@ -321,8 +329,13 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    * canvas reports the first measurement back through this flag. A restored session never fits: it keeps
    * the size it was saved with. The flag is saveable so a rotation, or reopening after the fit, cannot
    * resize a drawing that has been edited since.
+   *
+   * The tour's sample counts as a drawing, not a blank sheet: when the first page's double tap loads it,
+   * fitting the blank sheet here would replace it with an empty grid on the next layout.
    */
-  var fitInitialGrid by rememberSaveable { mutableStateOf(restored == null) }
+  var fitInitialGrid by rememberSaveable {
+    mutableStateOf(restored == null && !startFromTourSample)
+  }
 
   // A debug build opens at the 2× preview size, so a generation or seam problem is looked at with a
   // normal-sized preview; it is not a drawing default.
@@ -350,7 +363,16 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
 
   val gridState = remember(initialPalette) {
     PixelGridState(palette = initialPalette.colors).apply {
-      if (restored != null && !restored.savedAsPattern) {
+      if (startFromTourSample) {
+        // The tour's first page was double-tapped: start on exactly the pattern it painted, under the
+        // session's grouping, so the editor opens on the tour's own illustration.
+        restoreDrawing(
+          TUTORIAL_SAMPLE_COLUMNS,
+          TUTORIAL_SAMPLE_ROWS,
+          tutorialSamplePixels(),
+          cellSize = startupKernel.cellSize,
+        )
+      } else if (restored != null && !restored.savedAsPattern) {
         restoreDrawing(
           restored.columns,
           restored.rows,
@@ -1888,6 +1910,24 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     }
   }
 
+  /**
+   * Opens the editor on the tour's own pattern.
+   *
+   * The first page's hidden double tap calls this once the tour (and the About screen it may have been
+   * opened from) has closed. The pattern goes in as one undoable edit, so the drawing that was there is one
+   * Undo away rather than lost.
+   */
+  fun loadTourSample() {
+    gridState.replaceDrawing(
+      columns = TUTORIAL_SAMPLE_COLUMNS,
+      rows = TUTORIAL_SAMPLE_ROWS,
+      pixels = tutorialSamplePixels(),
+      cellSize = outputSettings.kernel.cellSize,
+    )
+    patternClean = false
+    requestGeneration()
+  }
+
   PixelEditorScreen(
     modifier = modifier,
     gridState = gridState,
@@ -1951,6 +1991,8 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onSave = { savePattern() },
     onShare = { sharePicture() },
     onLoadPattern = { openPatternPicker() },
+    // The tour's first page, double-tapped: the tour's own pattern becomes the drawing.
+    onLoadTutorialSample = { loadTourSample() },
     onCameraPhoto = { cameraToolOpen = true },
     onExportVideo = { videoExportOpen = true },
     onExit = { exitApp() },

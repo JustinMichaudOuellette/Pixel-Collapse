@@ -121,6 +121,11 @@ fun PixelEditorScreen(
   onShare: () -> Unit = {},
   /** Called when the pattern picker tool is tapped. */
   onLoadPattern: () -> Unit = {},
+  /**
+   * Called when the first page of the tour is double-tapped: the caller loads the tour's own pattern there.
+   * The tour, and the About screen it may have been opened from, have already closed themselves.
+   */
+  onLoadTutorialSample: () -> Unit = {},
   /** Called when the camera-photo tool is tapped. */
   onCameraPhoto: () -> Unit = {},
   /** Called when the Video export tool is tapped. */
@@ -779,6 +784,13 @@ fun PixelEditorScreen(
     TutorialScreen(
       open = tutorialOpen,
       onDismiss = { tutorialOpen = false },
+      // The first page's hidden double tap loads the tour's pattern: close both the tour and the About
+      // screen under it, so the editor is what the pattern is loaded into and shown in.
+      onLoadSample = {
+        tutorialOpen = false
+        infoOpen = false
+        onLoadTutorialSample()
+      },
       // The sample keeps its own drawing and its own square, low-resolution result grid; only the seed comes
       // from the editor, so the variations start where the picture on screen left off.
       seed = previewSeed,

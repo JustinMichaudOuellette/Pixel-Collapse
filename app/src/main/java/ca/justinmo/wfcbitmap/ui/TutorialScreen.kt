@@ -11,6 +11,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -70,6 +71,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -116,6 +118,7 @@ internal fun TutorialScreen(
     open: Boolean,
     onDismiss: () -> Unit,
     seed: Int = SAMPLE_FIRST_SEED,
+    onLoadSample: () -> Unit = {},
 ) {
   if (!open) return
   Dialog(
@@ -129,6 +132,7 @@ internal fun TutorialScreen(
     TutorialContent(
         onDismiss = onDismiss,
         seed = seed,
+        onLoadSample = onLoadSample,
         // The dialog is its own window, outside the activity's Scaffold, so it applies the
         // safe-drawing
         // insets itself rather than inheriting the editor's content padding.
@@ -150,10 +154,16 @@ internal fun FirstLaunchTutorial(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     seed: Int = SAMPLE_FIRST_SEED,
+    onLoadSample: () -> Unit = {},
 ) {
   // A dialog closes on back by itself; an inline screen has to say so, or back would close the app.
   BackHandler(onBack = onDismiss)
-  TutorialContent(onDismiss = onDismiss, seed = seed, modifier = modifier)
+  TutorialContent(
+      onDismiss = onDismiss,
+      seed = seed,
+      onLoadSample = onLoadSample,
+      modifier = modifier,
+  )
 }
 
 /**
@@ -195,6 +205,7 @@ private fun ShowNavigationBarWhileVisible() {
 private fun TutorialContent(
     onDismiss: () -> Unit,
     seed: Int,
+    onLoadSample: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
   ShowNavigationBarWhileVisible()
@@ -230,7 +241,12 @@ private fun TutorialContent(
           state = pager,
           modifier = Modifier.fillMaxWidth().weight(1f),
       ) { index ->
-        TutorialPageView(TUTORIAL_PAGES[index], seed, active = index == pager.settledPage)
+        TutorialPageView(
+            TUTORIAL_PAGES[index],
+            seed,
+            active = index == pager.settledPage,
+            onLoadSample = onLoadSample,
+        )
       }
 
       // One row for the whole footer: Back on the left, the page dots centred between the two
@@ -292,10 +308,15 @@ private fun TutorialContent(
 }
 
 @Composable
-private fun TutorialPageView(page: TutorialPage, seed: Int, active: Boolean) {
+private fun TutorialPageView(
+    page: TutorialPage,
+    seed: Int,
+    active: Boolean,
+    onLoadSample: () -> Unit,
+) {
   BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
     if (maxWidth > maxHeight) {
-      LandscapeTutorialPage(page, seed, active)
+      LandscapeTutorialPage(page, seed, active, onLoadSample)
     } else {
       // The picture keeps a little under half the page at most, so even a short landscape screen
       // still leaves
@@ -313,7 +334,8 @@ private fun TutorialPageView(page: TutorialPage, seed: Int, active: Boolean) {
           // The first page animates drawing the sample one touch at a time; the next page shows that
           // drawing
           // finished, beside the picture collapsed from it.
-          TutorialArtKind.Draw -> DrawingTutorialArt(Modifier.size(minOf(300.dp, pictureSize)))
+          TutorialArtKind.Draw ->
+              DrawingTutorialArt(Modifier.size(minOf(300.dp, pictureSize)), onLoadSample)
           TutorialArtKind.Extract -> ExtractionTutorialArt(Modifier.size(minOf(300.dp, pictureSize)))
           TutorialArtKind.PatternResult -> PatternResultArt(seed)
           TutorialArtKind.Tools -> {
@@ -370,7 +392,12 @@ private fun TutorialPageView(page: TutorialPage, seed: Int, active: Boolean) {
  * its own.
  */
 @Composable
-private fun LandscapeTutorialPage(page: TutorialPage, seed: Int, active: Boolean) {
+private fun LandscapeTutorialPage(
+    page: TutorialPage,
+    seed: Int,
+    active: Boolean,
+    onLoadSample: () -> Unit,
+) {
   if (page.art == TutorialArtKind.Tools) {
     LandscapeToolsTutorialPage(page, active)
     return
@@ -384,7 +411,7 @@ private fun LandscapeTutorialPage(page: TutorialPage, seed: Int, active: Boolean
         contentAlignment = Alignment.Center,
     ) {
       when (page.art) {
-        TutorialArtKind.Draw -> DrawingTutorialArt(Modifier.fillMaxSize())
+        TutorialArtKind.Draw -> DrawingTutorialArt(Modifier.fillMaxSize(), onLoadSample)
         TutorialArtKind.Extract -> ExtractionTutorialArt(Modifier.fillMaxSize())
         TutorialArtKind.PatternResult -> PatternResultArt(seed)
         TutorialArtKind.Tools -> Unit
@@ -544,9 +571,13 @@ private const val TAG = "TutorialScreen"
  * instead: each cell gets its own touch, the circle grows to a slightly smaller size on it, and
  * both lift before the next tap. The circle rests on the last cell while the hand lifts, then the
  * next gesture begins.
+ *
+ * A double tap on the grid is a hidden shortcut: [onLoadSample] closes the tour and starts the
+ * editor on exactly the pattern being painted here, for anyone who would rather begin from the
+ * sample than from a blank drawing.
  */
 @Composable
-private fun DrawingTutorialArt(modifier: Modifier) {
+private fun DrawingTutorialArt(modifier: Modifier, onLoadSample: () -> Unit) {
   var painted by remember { mutableIntStateOf(0) }
   var touched by remember { mutableIntStateOf(-1) }
   var pressProgress by remember { mutableFloatStateOf(1f) }
@@ -618,7 +649,10 @@ private fun DrawingTutorialArt(modifier: Modifier) {
       pixels = pixels,
       columns = SAMPLE_DRAWING_COLUMNS,
       rows = SAMPLE_DRAWING_ROWS,
-      modifier = modifier,
+      modifier =
+          modifier.pointerInput(onLoadSample) {
+            detectTapGestures(onDoubleTap = { onLoadSample() })
+          },
       touchedCell = touched,
       pressProgress = pressProgress,
       maxPressRadius = touchRadius,
@@ -1428,6 +1462,16 @@ private val SAMPLE_DRAWING =
               'K'
       if (filled) 0xFF000000.toInt() else SAMPLE_PAPER
     }
+
+/**
+ * The first page's drawing, copied for the editor: a double tap on that page loads exactly the pattern it
+ * animates, and the editor then owns its own copy.
+ */
+internal fun tutorialSamplePixels(): IntArray = SAMPLE_DRAWING.copyOf()
+
+/** The tour sample's size, so the editor can lay [tutorialSamplePixels] out. */
+internal const val TUTORIAL_SAMPLE_COLUMNS = SAMPLE_DRAWING_COLUMNS
+internal const val TUTORIAL_SAMPLE_ROWS = SAMPLE_DRAWING_ROWS
 
 /**
  * The touch indicator's fill, border and shadow. The fill is one flat translucent grey whose only
