@@ -93,6 +93,7 @@ import ca.justinmo.wfcbitmap.video.SolveAnimation
 import ca.justinmo.wfcbitmap.video.VideoFormat
 import ca.justinmo.wfcbitmap.video.VideoLook
 import ca.justinmo.wfcbitmap.video.VideoMode
+import ca.justinmo.wfcbitmap.video.VideoPanorama
 import ca.justinmo.wfcbitmap.video.estimatedVideoBytes
 import ca.justinmo.wfcbitmap.video.formatByteSize
 import ca.justinmo.wfcbitmap.video.videoPlan
@@ -135,6 +136,9 @@ fun VideoExportScreen(
   previewWidth: Int = 0,
   previewHeight: Int = 0,
   previewCellPixels: Int = 1,
+  previewPanorama: VideoPanorama? = null,
+  previewPanoramaBuilding: Boolean = false,
+  previewPanoramaError: String? = null,
   frameColumns: Int,
   frameRows: Int,
   pixelsPerCell: Int,
@@ -208,14 +212,26 @@ fun VideoExportScreen(
   }
   val verticalPreview = scrollDirection.isVertical
   val previewSpan = if (verticalPreview) previewHeight else previewWidth
-  val previewShift = if (previewSpan <= 0) {
-    0
-  } else {
-    val raw = ((previewFrame.toLong() * pixelsPerFrame) % previewSpan).toInt()
-    val reverse = scrollDirection == ScrollDirection.RightToLeft || scrollDirection == ScrollDirection.Up
-    if (reverse && raw != 0) previewSpan - raw else raw
+  val reversePreview = scrollDirection == ScrollDirection.RightToLeft ||
+    scrollDirection == ScrollDirection.Up
+  // The preview ticks at its own capped rate (a GIF at 30 fps is shown at 10 so it does not spin), so one
+  // tick must advance the same distance the export does in one of its frames. Without this the preview
+  // loop lasts three times as long as the file it is previewing.
+  val previewAdvancePerTick = pixelsPerFrame *
+    (playbackFps / previewFps.coerceAtLeast(1).toFloat())
+  fun shiftIn(span: Int): Int {
+    if (span <= 0) return 0
+    val raw = ((previewFrame.toDouble() * previewAdvancePerTick) % span).toInt()
+    return if (reversePreview && raw != 0) span - raw else raw
   }
-  val previewFraction = if (previewSpan <= 0) 0f else previewShift.toFloat() / previewSpan
+  // The real panorama is wider than a frame, so its window walks the whole loop and wraps at the
+  // panorama's actual ends. Until it is ready the fallback stays still: a repeated frame has no valid
+  // continuation, and showing it moving would put the invented seam back on screen for the duration of
+  // the build.
+  val panoramaSpan = previewPanorama?.let {
+    if (verticalPreview) it.previewHeight else it.previewWidth
+  } ?: previewSpan
+  val panoramaShift = if (previewPanorama == null) 0 else shiftIn(panoramaSpan)
   // Match the export's softened emboss when the saved video is an upscale of the preview bitmap.
   val previewEmbossScale = 1f / sqrt(exportPixelScale.coerceAtLeast(1f))
 
@@ -277,6 +293,10 @@ fun VideoExportScreen(
          * The preview is fixed above the controls: it is the thing every setting below changes, so it
          * must not scroll away with them. It stays visible for both looks and whichever format is set;
          * GIF cannot carry the shader, so a shader preview is only shown for MP4.
+         *
+         * In Panorama mode the caller builds the same looped panorama the exporter cuts from. This box
+         * only draws a frame window into it, so the screen-to-screen joins shown here are real WFC joins
+         * rather than the arbitrary edges of one independently solved frame.
          */
         Box(
           modifier = Modifier
@@ -294,30 +314,63 @@ fun VideoExportScreen(
               )
             }
             look == VideoLook.Metal && format == VideoFormat.Mp4 -> {
+              val panorama = previewPanorama
+              val metalPixels = panorama?.previewPixels ?: previewPixels
+              val metalWidth = panorama?.previewWidth ?: previewWidth
+              val metalHeight = panorama?.previewHeight ?: previewHeight
+              val metalViewWidth = panorama?.previewFrameWidth ?: previewWidth
+              val metalViewHeight = panorama?.previewFrameHeight ?: previewHeight
+              val metalPanX = if (panorama != null && mode == VideoMode.Panorama && !verticalPreview) {
+                panoramaShift.toFloat() / panorama.previewWidth
+              } else {
+                0f
+              }
+              val metalPanY = if (panorama != null && mode == VideoMode.Panorama && verticalPreview) {
+                panoramaShift.toFloat() / panorama.previewHeight
+              } else {
+                0f
+              }
               ZoomableMetalPreview(
-                pixels = previewPixels,
-                width = previewWidth,
-                height = previewHeight,
+                pixels = metalPixels,
+                width = metalWidth,
+                height = metalHeight,
                 cellPixels = previewCellPixels,
                 settings = metal,
+                viewWidth = metalViewWidth,
+                viewHeight = metalViewHeight,
                 embossScale = previewEmbossScale,
                 maxZoom = exportPixelScale,
-                panX = if (mode == VideoMode.Panorama && !verticalPreview) previewFraction else 0f,
-                panY = if (mode == VideoMode.Panorama && verticalPreview) previewFraction else 0f,
-                wrapX = mode == VideoMode.Panorama && !verticalPreview,
-                wrapY = mode == VideoMode.Panorama && verticalPreview,
+                panX = metalPanX,
+                panY = metalPanY,
+                wrapX = panorama != null && mode == VideoMode.Panorama && !verticalPreview,
+                wrapY = panorama != null && mode == VideoMode.Panorama && verticalPreview,
                 modifier = Modifier.fillMaxSize(),
               )
             }
             mode == VideoMode.Panorama -> {
-              PanoramaFlatPreview(
-                pixels = previewPixels,
-                width = previewWidth,
-                height = previewHeight,
-                shiftPixels = previewShift,
-                vertical = verticalPreview,
-                modifier = Modifier.fillMaxSize(),
-              )
+              val panorama = previewPanorama
+              if (panorama != null) {
+                PanoramaWindowPreview(
+                  pixels = panorama.previewPixels,
+                  panoramaWidth = panorama.previewWidth,
+                  panoramaHeight = panorama.previewHeight,
+                  frameWidth = panorama.previewFrameWidth,
+                  frameHeight = panorama.previewFrameHeight,
+                  shiftPixels = panoramaShift,
+                  vertical = verticalPreview,
+                  modifier = Modifier.fillMaxSize(),
+                )
+              } else {
+                PanoramaFlatPreview(
+                  pixels = previewPixels,
+                  width = previewWidth,
+                  height = previewHeight,
+                  // Static until the real panorama arrives: see the note on panoramaShift above.
+                  shiftPixels = 0,
+                  vertical = verticalPreview,
+                  modifier = Modifier.fillMaxSize(),
+                )
+              }
             }
             else -> {
               FlatPreview(
@@ -325,6 +378,31 @@ fun VideoExportScreen(
                 width = previewWidth,
                 height = previewHeight,
                 modifier = Modifier.fillMaxSize(),
+              )
+            }
+          }
+          if (mode == VideoMode.Panorama) {
+            if (previewPanoramaBuilding) {
+              Text(
+                "Building seamless panorama…",
+                color = MENU_TEXT_COLOR,
+                fontSize = 10.sp,
+                modifier = Modifier
+                  .align(Alignment.BottomCenter)
+                  .padding(8.dp)
+                  .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                  .padding(horizontal = 8.dp, vertical = 4.dp),
+              )
+            } else if (previewPanoramaError != null) {
+              Text(
+                previewPanoramaError,
+                color = MENU_TEXT_COLOR,
+                fontSize = 10.sp,
+                modifier = Modifier
+                  .align(Alignment.BottomCenter)
+                  .padding(8.dp)
+                  .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                  .padding(horizontal = 8.dp, vertical = 4.dp),
               )
             }
           }
@@ -731,9 +809,11 @@ private fun FlatPreview(
 }
 
 /**
- * The flat panorama preview: the solved frame repeated and slid past the window at the export's own
- * pace. This is deliberately the same picture repeated, not a second panorama solve; the export still
- * builds its own wide panorama.
+ * The fallback flat panorama preview: one solved frame repeated while the real panorama is being built.
+ *
+ * A repeated frame has no valid screen-to-screen continuation -- its right edge was never solved against
+ * its own left edge -- so this is only what is shown before [PanoramaWindowPreview] has a panorama, or if
+ * that build failed. The normal path uses the exporter's own looped panorama.
  */
 @Composable
 private fun PanoramaFlatPreview(
@@ -779,6 +859,97 @@ private fun PanoramaFlatPreview(
       }
     }
   }
+}
+
+/**
+ * The real panorama, one frame window at a time.
+ *
+ * Unlike [PanoramaFlatPreview], this does not repeat a single solved frame: the source is the same
+ * looped panorama the exporter cuts from, with its ends pinned to each other, so the join at the window's
+ * trailing edge is a join the solver actually made. [shiftPixels] walks over the panorama's own length,
+ * not the frame's, which is why the preview's loop now has the export's duration and seam count.
+ */
+@Composable
+private fun PanoramaWindowPreview(
+  pixels: IntArray,
+  panoramaWidth: Int,
+  panoramaHeight: Int,
+  frameWidth: Int,
+  frameHeight: Int,
+  shiftPixels: Int,
+  vertical: Boolean,
+  modifier: Modifier = Modifier,
+) {
+  val image = remember(pixels, panoramaWidth, panoramaHeight) {
+    Bitmap.createBitmap(pixels, panoramaWidth, panoramaHeight, Bitmap.Config.ARGB_8888)
+      .asImageBitmap()
+  }
+  Canvas(modifier.semantics { contentDescription = "Video preview" }) {
+    if (frameWidth <= 0 || frameHeight <= 0) return@Canvas
+    val frameAspect = frameWidth.toFloat() / frameHeight
+    val viewWidth = min(size.width, size.height * frameAspect)
+    val viewHeight = viewWidth / frameAspect
+    if (viewWidth <= 0f || viewHeight <= 0f) return@Canvas
+    val left = (size.width - viewWidth) / 2f
+    val top = (size.height - viewHeight) / 2f
+    val scale = viewWidth / frameWidth
+    val destinationWidth = viewWidth.roundToInt()
+    val destinationHeight = viewHeight.roundToInt()
+    clipRect(left, top, left + viewWidth, top + viewHeight) {
+      if (vertical) {
+        val start = positiveMod(shiftPixels, panoramaHeight)
+        val first = min(frameHeight, panoramaHeight - start)
+        if (first > 0) {
+          drawImage(
+            image = image,
+            srcOffset = IntOffset(0, start),
+            srcSize = IntSize(frameWidth, first),
+            dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
+            dstSize = IntSize(destinationWidth, (first * scale).roundToInt()),
+          )
+        }
+        if (first < frameHeight) {
+          val rest = frameHeight - first
+          drawImage(
+            image = image,
+            srcOffset = IntOffset(0, 0),
+            srcSize = IntSize(frameWidth, rest),
+            dstOffset = IntOffset(left.roundToInt(), (top + first * scale).roundToInt()),
+            dstSize = IntSize(destinationWidth, (rest * scale).roundToInt()),
+          )
+        }
+      } else {
+        val start = positiveMod(shiftPixels, panoramaWidth)
+        val first = min(frameWidth, panoramaWidth - start)
+        if (first > 0) {
+          drawImage(
+            image = image,
+            srcOffset = IntOffset(start, 0),
+            srcSize = IntSize(first, frameHeight),
+            dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
+            dstSize = IntSize((first * scale).roundToInt(), destinationHeight),
+          )
+        }
+        if (first < frameWidth) {
+          val rest = frameWidth - first
+          drawImage(
+            image = image,
+            srcOffset = IntOffset(0, 0),
+            srcSize = IntSize(rest, frameHeight),
+            dstOffset = IntOffset((left + first * scale).roundToInt(), top.roundToInt()),
+            dstSize = IntSize((rest * scale).roundToInt(), destinationHeight),
+          )
+        }
+      }
+    }
+  }
+}
+
+/** `%` for a possibly negative value, returning a value in `0 until limit`. */
+private fun positiveMod(value: Int, limit: Int): Int {
+  if (limit <= 0) return 0
+  val remainder = value % limit
+  return if (remainder < 0) remainder + limit else remainder
 }
 
 /**
@@ -869,6 +1040,8 @@ private fun ZoomableMetalPreview(
   height: Int,
   cellPixels: Int,
   settings: MetalSettings,
+  viewWidth: Int = width,
+  viewHeight: Int = height,
   embossScale: Float = 1f,
   maxZoom: Float,
   panX: Float = 0f,
@@ -884,7 +1057,7 @@ private fun ZoomableMetalPreview(
     val density = LocalDensity.current
     val boxWidth = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
     val boxHeight = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
-    val imageAspect = width.toFloat() / height.coerceAtLeast(1)
+    val imageAspect = viewWidth.toFloat() / viewHeight.coerceAtLeast(1)
     val viewAspect = boxWidth / boxHeight
     val baseWidthFraction = if (viewAspect > imageAspect) {
       imageAspect / viewAspect
@@ -900,9 +1073,9 @@ private fun ZoomableMetalPreview(
     val widthLimitedZoom = (1f / baseWidthFraction.coerceAtLeast(0.001f)).coerceAtLeast(1f)
     val zoomCeiling = minOf(maxOf(maxZoom, PREVIEW_MAX_ZOOM), widthLimitedZoom)
 
-    var zoom by remember(width, height, zoomCeiling) { mutableFloatStateOf(1f) }
-    var offsetY by remember(width, height, zoomCeiling) { mutableFloatStateOf(0f) }
-    var paused by remember(width, height) { mutableStateOf(false) }
+    var zoom by remember(viewWidth, viewHeight, zoomCeiling) { mutableFloatStateOf(1f) }
+    var offsetY by remember(viewWidth, viewHeight, zoomCeiling) { mutableFloatStateOf(0f) }
+    var paused by remember(viewWidth, viewHeight) { mutableStateOf(false) }
 
     val transformState = rememberTransformableState { zoomChange, panChange, _ ->
       val nextZoom = (zoom * zoomChange).coerceIn(1f, zoomCeiling)
@@ -922,6 +1095,8 @@ private fun ZoomableMetalPreview(
       height = height,
       cellPixels = cellPixels,
       settings = settings,
+      viewWidth = viewWidth,
+      viewHeight = viewHeight,
       embossScale = embossScale,
       paused = paused,
       panX = if (autoPan) panX else 0f,

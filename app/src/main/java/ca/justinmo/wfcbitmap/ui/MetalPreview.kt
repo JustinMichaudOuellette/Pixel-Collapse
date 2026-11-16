@@ -27,6 +27,8 @@ internal fun MetalPreview(
   height: Int,
   cellPixels: Int,
   settings: MetalSettings,
+  viewWidth: Int = width,
+  viewHeight: Int = height,
   embossScale: Float = 1f,
   paused: Boolean = false,
   panX: Float = 0f,
@@ -42,7 +44,7 @@ internal fun MetalPreview(
     modifier = modifier,
     factory = { context -> MetalPreviewView(context) },
     update = { view ->
-      view.setImage(pixels, width, height, cellPixels)
+      view.setImage(pixels, width, height, cellPixels, viewWidth, viewHeight)
       view.setSettings(settings)
       view.setEmbossScale(embossScale)
       view.setPaused(paused)
@@ -58,6 +60,8 @@ private class MetalPreviewView(context: Context) : GLSurfaceView(context) {
   private var lastSource: IntArray? = null
   private var lastWidth = -1
   private var lastHeight = -1
+  private var lastViewWidth = -1
+  private var lastViewHeight = -1
   private var lastCell = -1
   private var lastSettings: MetalSettings? = null
   private var lastEmbossScale = 1f
@@ -83,17 +87,28 @@ private class MetalPreviewView(context: Context) : GLSurfaceView(context) {
     setBackgroundColor(android.graphics.Color.BLACK)
   }
 
-  fun setImage(pixels: IntArray?, width: Int, height: Int, cellPixels: Int) {
-    if (pixels == null || width <= 0 || height <= 0) return
-    if (pixels === lastSource && width == lastWidth && height == lastHeight && cellPixels == lastCell) {
+  fun setImage(
+    pixels: IntArray?,
+    width: Int,
+    height: Int,
+    cellPixels: Int,
+    viewWidth: Int,
+    viewHeight: Int,
+  ) {
+    if (pixels == null || width <= 0 || height <= 0 || viewWidth <= 0 || viewHeight <= 0) return
+    if (pixels === lastSource && width == lastWidth && height == lastHeight &&
+      viewWidth == lastViewWidth && viewHeight == lastViewHeight && cellPixels == lastCell
+    ) {
       return
     }
     lastSource = pixels
     lastWidth = width
     lastHeight = height
+    lastViewWidth = viewWidth
+    lastViewHeight = viewHeight
     lastCell = cellPixels
     val copy = pixels.copyOf()
-    queueEvent { previewRenderer.setImage(copy, width, height, cellPixels) }
+    queueEvent { previewRenderer.setImage(copy, width, height, cellPixels, viewWidth, viewHeight) }
   }
 
   fun setSettings(settings: MetalSettings) {
@@ -142,6 +157,8 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
   private var pixels: IntArray? = null
   private var imageWidth = 0
   private var imageHeight = 0
+  private var viewWidth = 0
+  private var viewHeight = 0
   private var stepTexels = 1f
   private var embossScale = 1f
   private var settings = MetalSettings()
@@ -158,10 +175,19 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
   private var wrapX = false
   private var wrapY = false
 
-  fun setImage(pixels: IntArray, width: Int, height: Int, cellPixels: Int) {
+  fun setImage(
+    pixels: IntArray,
+    width: Int,
+    height: Int,
+    cellPixels: Int,
+    viewWidth: Int,
+    viewHeight: Int,
+  ) {
     this.pixels = pixels
     imageWidth = width
     imageHeight = height
+    this.viewWidth = viewWidth
+    this.viewHeight = viewHeight
     stepTexels = cellPixels.coerceAtLeast(1).toFloat()
     gpu?.uploadAlbedo(pixels, width, height)
   }
@@ -235,10 +261,12 @@ private class MetalPreviewRenderer : GLSurfaceView.Renderer {
         width = surfaceWidth,
         height = surfaceHeight,
         viewportAspect = surfaceWidth.toFloat() / surfaceHeight,
-        imageAspect = imageWidth.toFloat() / imageHeight,
+        imageAspect = viewWidth.toFloat() / viewHeight.coerceAtLeast(1),
         embossScale = embossScale,
         uvOffsetX = panX,
         uvOffsetY = panY,
+        uvScaleX = viewWidth.toFloat() / imageWidth.coerceAtLeast(1),
+        uvScaleY = viewHeight.toFloat() / imageHeight.coerceAtLeast(1),
         previewScale = previewScale,
         previewOffsetX = previewOffsetX,
         previewOffsetY = previewOffsetY,

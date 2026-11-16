@@ -98,7 +98,10 @@ import ca.justinmo.wfcbitmap.video.MetalShade
 import ca.justinmo.wfcbitmap.video.Mp4Encoder
 import ca.justinmo.wfcbitmap.video.Mp4Saver
 import ca.justinmo.wfcbitmap.video.PANORAMA_TIMEOUT_MILLIS
+import ca.justinmo.wfcbitmap.video.PanoramaParams
 import ca.justinmo.wfcbitmap.video.RIFF_FRAME_TIMEOUT_MILLIS
+import ca.justinmo.wfcbitmap.video.VideoPanorama
+import ca.justinmo.wfcbitmap.video.buildPanorama
 import ca.justinmo.wfcbitmap.video.ScrollDirection
 import ca.justinmo.wfcbitmap.video.SolveAnimation
 import ca.justinmo.wfcbitmap.video.SolveAnimationFrames
@@ -438,6 +441,18 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   var videoExportLabel by remember { mutableStateOf("") }
   var videoExportJob by remember { mutableStateOf<Job?>(null) }
   val videoExportCancelled = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+  /*
+   * The panorama the preview pans across, built from the same solve the exporter uses.
+   *
+   * The preview used to repeat one solved frame and call that the loop. That frame's right edge was not
+   * constrained to continue into its own left edge or into a neighbouring screen, so every screen-to-screen
+   * join in the preview was an arbitrary WFC seam the export would never write. Building the real
+   * panorama for the preview costs a solve, but it is the only way the preview can show valid joins.
+   */
+  var videoPreviewPanorama by remember { mutableStateOf<VideoPanorama?>(null) }
+  var videoPreviewPanoramaBuilding by remember { mutableStateOf(false) }
+  var videoPreviewPanoramaError by remember { mutableStateOf<String?>(null) }
+  var videoPreviewPanoramaRequest by remember { mutableIntStateOf(0) }
   var toolButtonSize by remember {
     mutableIntStateOf(preferences.toolButtonSize(fallback = BUTTON_SIZE_DP_INT))
   }
@@ -2265,6 +2280,111 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   } else {
     1
   }
+  /*
+   * Build the preview's panorama from the same solve the exporter uses.
+   *
+   * This is intentionally not the current solved frame repeated: that frame's edges are independent, so
+   * repeating it invents a seam the exporter would never write. The builder runs after a short debounce
+   * because the Loop and Pixels-per-frame sliders change many times during a drag, and a cancelled build
+   * must not leave the "building" label up for the next settings.
+   */
+  LaunchedEffect(
+    videoExportOpen,
+    videoMode,
+    videoScreens,
+    videoPixelsPerFrame,
+    scrollDirection,
+    seed,
+    videoFrame.columns,
+    videoFrame.rows,
+    videoFrame.pixelsPerCell,
+    videoFrame.cellSize,
+    wrapEdges,
+    mirrorHorizontal,
+    mirrorVertical,
+    quarterTurn,
+    bestEffort,
+    gridState.revision,
+    output,
+  ) {
+    if (!videoExportOpen || videoMode != VideoMode.Panorama || output == null) {
+      videoPreviewPanoramaRequest++
+      videoPreviewPanorama = null
+      videoPreviewPanoramaBuilding = false
+      videoPreviewPanoramaError = null
+      return@LaunchedEffect
+    }
+    val request = videoPreviewPanoramaRequest + 1
+    videoPreviewPanoramaRequest = request
+    videoPreviewPanorama = null
+    videoPreviewPanoramaError = null
+    videoPreviewPanoramaBuilding = true
+    delay(250)
+    try {
+      val columns = gridState.columns
+      val rows = gridState.rows
+      val pixels = IntArray(columns * rows) { gridState.pixels[it].toArgb() }
+      val vertical = scrollDirection.isVertical
+      val sourcePixels = if (vertical) transposePixels(pixels, columns, rows) else pixels
+      val sourceColumns = if (vertical) rows else columns
+      val sourceRows = if (vertical) columns else rows
+      val previewVideo = videoPlan(
+        frameColumns = videoFrame.columns,
+        frameRows = videoFrame.rows,
+        pixelsPerCell = videoFrame.pixelsPerCell,
+        cellSize = videoFrame.cellSize,
+        screens = videoScreens,
+        fps = videoFps,
+        pixelsPerFrame = videoPixelsPerFrame,
+        scrollDirection = scrollDirection,
+        // The preview is shown at the solved preview's own pixel size; the saved-scale factor only
+        // enlarges the frames after they are cut, and the panorama itself is the same surface.
+        outputWidth = videoFrame.columns * videoFrame.pixelsPerCell,
+        outputHeight = videoFrame.rows * videoFrame.pixelsPerCell,
+      )
+      val built = withContext(Dispatchers.Default) {
+        buildPanorama(
+          PanoramaParams(
+            sourcePixels = sourcePixels,
+            sourceWidth = sourceColumns,
+            sourceHeight = sourceRows,
+            seed = seed,
+            plan = previewVideo,
+            wrapEdges = wrapEdges,
+            mirrorHorizontal = mirrorHorizontal,
+            mirrorVertical = mirrorVertical,
+            quarterTurn = quarterTurn,
+            bestEffort = bestEffort,
+          ),
+          generationMutex,
+        )
+      }
+      if (request == videoPreviewPanoramaRequest) {
+        videoPreviewPanorama = built
+        videoPreviewPanoramaError = null
+        Log.i(
+          TAG,
+          "Preview panorama: ${built.width}x${built.height}, frames " +
+            "${built.frameWidth}x${built.frameHeight}, loopClosed=${built.loopClosed}",
+        )
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: WfcGenerator.GenerationException) {
+      if (request == videoPreviewPanoramaRequest) {
+        videoPreviewPanorama = null
+        videoPreviewPanoramaError = e.message ?: "Could not build a seamless preview"
+      }
+    } catch (e: Exception) {
+      Log.w(TAG, "Could not build the panorama preview", e)
+      if (request == videoPreviewPanoramaRequest) {
+        videoPreviewPanorama = null
+        videoPreviewPanoramaError = "Could not build a seamless preview"
+      }
+    } finally {
+      if (request == videoPreviewPanoramaRequest) videoPreviewPanoramaBuilding = false
+    }
+  }
   VideoExportScreen(
     open = videoExportOpen,
     format = videoFormat,
@@ -2282,6 +2402,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     previewWidth = videoPreviewWidth,
     previewHeight = videoPreviewHeight,
     previewCellPixels = videoPreviewCell,
+    previewPanorama = videoPreviewPanorama,
+    previewPanoramaBuilding = videoPreviewPanoramaBuilding,
+    previewPanoramaError = videoPreviewPanoramaError,
     frameColumns = videoFrame.columns,
     frameRows = videoFrame.rows,
     pixelsPerCell = videoFrame.pixelsPerCell,
