@@ -40,17 +40,7 @@ internal data class MetalFrame(
   val settings: MetalSettings = MetalSettings(),
 )
 
-/**
- * The GLES 3.0 half of the metal renderer: programs, the procedural environment, the BRDF LUT, the
- * source texture and a full-screen triangle.
- *
- * This class owns GL objects and therefore must be created, used and destroyed on the thread whose EGL
- * context is current. [MetalOffscreenRenderer] provides that context for an export; a `GLSurfaceView`
- * provides it for the live preview. There is deliberately no per-frame `glTexImage2D` of the environment
- * or the LUT: both are baked once in [init], and only the source texture and the uniforms change per
- * frame.
- */
-/** The ten environment-light switches, packed so a rebake only happens when one of them changes. */
+/** The environment-light switches, packed so a rebake only happens when one of them changes. */
 private fun MetalSettings.lightMask(): Int {
   var mask = 0
   if (skyEnabled) mask = mask or (1 shl 0)
@@ -68,16 +58,33 @@ private fun MetalSettings.lightMask(): Int {
   return mask
 }
 
-internal class MetalGpu {
+/**
+ * The GLES 3.0 renderer shared by the exporter and the live preview.
+ *
+ * It owns one source texture, a full-screen triangle and two materials: a direct textured pass for Flat
+ * and the Cook-Torrance/studio material for Metal. The metal programs and the environment are compiled
+ * lazily, so a Flat preview never pays for the BRDF LUT or the studio. Flat and Metal share the same
+ * source upload, crop/window uniforms, zoom offsets and wrap flags, which is what makes their framing
+ * and gestures identical.
+ *
+ * GL objects must be created, used and destroyed on the thread whose EGL context is current.
+ * [MetalOffscreenRenderer] provides that context for an export; `PreviewGlView` provides it for the live
+ * preview. Environment and LUT resources are baked only when the metal material is first used.
+ */
+internal class PreviewGpu {
 
   private var program = 0
+  private var flatProgram = 0
   private var environmentProgram = 0
   private var brdfProgram = 0
   private var vao = 0
+  private var initialized = false
+  private var metalReady = false
 
   private var albedoTex = 0
   private var albedoWidth = 0
   private var albedoHeight = 0
+  private var albedoSrgb = true
   private var environmentTex = 0
   private var brdfTex = 0
   private var bakedLightMask = -1
@@ -90,6 +97,7 @@ internal class MetalGpu {
   private var uploadBuffer: ByteBuffer? = null
   private var readBuffer: ByteBuffer? = null
   private val uniformCache = HashMap<String, Int>()
+  private val flatUniformCache = HashMap<String, Int>()
 
   /** Why [init] failed, or null when it succeeded. */
   var failure: String? = null
@@ -99,32 +107,63 @@ internal class MetalGpu {
    * Builds every GL object. Returns false (with [failure] set) rather than throwing, so the preview can
    * quietly fall back and an export can report one readable line.
    */
-  fun init(): Boolean {
-    if (program != 0) return true
+  fun init(includeMetal: Boolean = true): Boolean {
+    if (initialized) return true
     return try {
-      environmentProgram = link(MetalShader.VERTEX, MetalShader.ENVIRONMENT, "environment")
-      brdfProgram = link(MetalShader.VERTEX, MetalShader.BRDF, "BRDF LUT")
-      program = link(MetalShader.VERTEX, MetalShader.FRAGMENT, "metal")
+      flatProgram = link(MetalShader.VERTEX, MetalShader.FLAT_FRAGMENT, "flat")
       val ids = IntArray(1)
       GLES30.glGenVertexArrays(1, ids, 0)
       vao = ids[0]
       GLES30.glBindVertexArray(vao)
-      bakeEnvironment()
-      bakeBrdf()
       GLES30.glDisable(GLES30.GL_DEPTH_TEST)
       GLES30.glDisable(GLES30.GL_BLEND)
       GLES30.glDisable(GLES30.GL_CULL_FACE)
+      initialized = true
+      if (includeMetal) compileMetal()
       true
     } catch (e: Throwable) {
       failure = e.message ?: e::class.java.simpleName
-      android.util.Log.w("MetalGpu", "Metal GLES init failed: $failure", e)
+      android.util.Log.w("PreviewGpu", "GLES init failed: $failure", e)
       release()
       false
     }
   }
 
-  /** Uploads the source image. The size may change; the texture is reallocated only when it does. */
-  fun uploadAlbedo(pixels: IntArray, width: Int, height: Int) {
+  /**
+   * Compiles the metal material and bakes its studio only when a metal preview is actually requested.
+   * A flat preview never pays for the environment map or the BRDF LUT.
+   */
+  fun ensureMetal(): Boolean {
+    if (!initialized) return false
+    if (metalReady) return true
+    return try {
+      compileMetal()
+      true
+    } catch (e: Throwable) {
+      failure = e.message ?: e::class.java.simpleName
+      android.util.Log.w("PreviewGpu", "Metal material init failed: $failure", e)
+      false
+    }
+  }
+
+  private fun compileMetal() {
+    if (metalReady) return
+    environmentProgram = link(MetalShader.VERTEX, MetalShader.ENVIRONMENT, "environment")
+    brdfProgram = link(MetalShader.VERTEX, MetalShader.BRDF, "BRDF LUT")
+    program = link(MetalShader.VERTEX, MetalShader.FRAGMENT, "metal")
+    bakeEnvironment()
+    bakeBrdf()
+    metalReady = true
+  }
+
+  /**
+   * Uploads the source image. The size may change; the texture is reallocated only when it does.
+   *
+   * Metal needs an sRGB texture so the hardware decodes the drawing into linear light. Flat wants the
+   * bytes exactly as the bitmap holds them, so it uses a linear RGBA texture and the flat shader writes
+   * those bytes straight out: no decode/encode round trip, no colour drift.
+   */
+  fun uploadAlbedo(pixels: IntArray, width: Int, height: Int, srgb: Boolean = true) {
     if (width <= 0 || height <= 0) return
     if (width * height > pixels.size) return
     if (albedoTex == 0) {
@@ -134,17 +173,25 @@ internal class MetalGpu {
     }
     GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, albedoTex)
     GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
-    if (width != albedoWidth || height != albedoHeight) {
+    if (width != albedoWidth || height != albedoHeight || srgb != albedoSrgb) {
+      val internalFormat = if (srgb) GLES30.GL_SRGB8_ALPHA8 else GLES30.GL_RGBA8
       GLES30.glTexImage2D(
-        GLES30.GL_TEXTURE_2D, 0, GLES30.GL_SRGB8_ALPHA8, width, height, 0,
+        GLES30.GL_TEXTURE_2D, 0, internalFormat, width, height, 0,
         GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null,
       )
       GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
-      GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+      // Flat is pixel art: linear when the whole picture is minified to fit, nearest when the viewer
+      // magnifies a cell. Metal's surface is continuous-tone, so it stays linear in both directions.
+      GLES30.glTexParameteri(
+        GLES30.GL_TEXTURE_2D,
+        GLES30.GL_TEXTURE_MAG_FILTER,
+        if (srgb) GLES30.GL_LINEAR else GLES30.GL_NEAREST,
+      )
       GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
       GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
       albedoWidth = width
       albedoHeight = height
+      albedoSrgb = srgb
     }
 
     val bytes = width * height * 4
@@ -168,8 +215,43 @@ internal class MetalGpu {
     GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
   }
 
+  /**
+   * Draws the flat material into the current framebuffer. This is the same fitted/wrapped/zoomed
+   * window as the metal path, but without lighting, environment or tone mapping.
+   */
+  fun drawFlat(frame: MetalFrame) {
+    if (flatProgram == 0) return
+    GLES30.glDisable(GLES30.GL_DEPTH_TEST)
+    GLES30.glDisable(GLES30.GL_BLEND)
+    GLES30.glDisable(GLES30.GL_CULL_FACE)
+    GLES30.glClearColor(0f, 0f, 0f, 1f)
+    GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+
+    GLES30.glUseProgram(flatProgram)
+    GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+    GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, albedoTex)
+    GLES30.glUniform1i(flatLocation("uAlbedo"), 0)
+    GLES30.glUniform2f(flatLocation("uUvOffset"), frame.uvOffsetX, frame.uvOffsetY)
+    GLES30.glUniform2f(flatLocation("uUvScale"), frame.uvScaleX, frame.uvScaleY)
+    GLES30.glUniform1f(flatLocation("uViewportAspect"), frame.viewportAspect)
+    GLES30.glUniform1f(flatLocation("uImageAspect"), frame.imageAspect)
+    GLES30.glUniform1f(flatLocation("uWrapX"), if (frame.wrapX) 1f else 0f)
+    GLES30.glUniform1f(flatLocation("uWrapY"), if (frame.wrapY) 1f else 0f)
+    GLES30.glUniform1f(flatLocation("uPreviewScale"), frame.previewScale)
+    GLES30.glUniform2f(
+      flatLocation("uPreviewOffset"),
+      frame.previewOffsetX,
+      frame.previewOffsetY,
+    )
+    GLES30.glBindVertexArray(vao)
+    GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+    GLES30.glBindVertexArray(0)
+    GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+  }
+
   /** Draws [frame] into the currently bound framebuffer, which must already have the right viewport. */
   fun draw(frame: MetalFrame) {
+    if (!ensureMetal()) return
     if (program == 0) return
     val s = frame.settings
     if (s.lightMask() != bakedLightMask) bakeEnvironment(s)
@@ -243,6 +325,19 @@ internal class MetalGpu {
     GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, targetFbo)
     GLES30.glViewport(0, 0, frame.width, frame.height)
     draw(frame)
+    return readTarget(frame, out)
+  }
+
+  /** The flat material through the same offscreen target, used by the preview shader test. */
+  fun renderFlat(frame: MetalFrame, out: IntArray): IntArray {
+    ensureTarget(frame.width, frame.height)
+    GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, targetFbo)
+    GLES30.glViewport(0, 0, frame.width, frame.height)
+    drawFlat(frame)
+    return readTarget(frame, out)
+  }
+
+  private fun readTarget(frame: MetalFrame, out: IntArray): IntArray {
     GLES30.glPixelStorei(GLES30.GL_PACK_ALIGNMENT, 1)
     val bytes = frame.width * frame.height * 4
     var buffer = readBuffer
@@ -393,6 +488,11 @@ internal class MetalGpu {
 
   /** Builds the split-sum BRDF integral once. */
   private fun bakeBrdf() {
+    // A lazy metal compile can happen inside a draw, so the caller's target and viewport must survive it.
+    val previousFbo = IntArray(1)
+    val previousViewport = IntArray(4)
+    GLES30.glGetIntegerv(GLES30.GL_FRAMEBUFFER_BINDING, previousFbo, 0)
+    GLES30.glGetIntegerv(GLES30.GL_VIEWPORT, previousViewport, 0)
     val ids = IntArray(1)
     GLES30.glGenTextures(1, ids, 0)
     brdfTex = ids[0]
@@ -412,7 +512,11 @@ internal class MetalGpu {
       GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, brdfTex, 0,
     )
     if (GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER) != GLES30.GL_FRAMEBUFFER_COMPLETE) {
-      GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+      GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, previousFbo[0])
+      GLES30.glViewport(
+        previousViewport[0], previousViewport[1],
+        previousViewport[2], previousViewport[3],
+      )
       GLES30.glDeleteFramebuffers(1, intArrayOf(fbo), 0)
       throw IllegalStateException("The BRDF framebuffer is incomplete")
     }
@@ -425,7 +529,11 @@ internal class MetalGpu {
     GLES30.glBindVertexArray(vao)
     GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
     GLES30.glBindVertexArray(0)
-    GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+    GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, previousFbo[0])
+    GLES30.glViewport(
+      previousViewport[0], previousViewport[1],
+      previousViewport[2], previousViewport[3],
+    )
     GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
     GLES30.glDeleteFramebuffers(1, intArrayOf(fbo), 0)
   }
@@ -468,15 +576,23 @@ internal class MetalGpu {
   private fun location(name: String): Int =
     uniformCache.getOrPut(name) { GLES30.glGetUniformLocation(program, name) }
 
+  private fun flatLocation(name: String): Int =
+    flatUniformCache.getOrPut(name) { GLES30.glGetUniformLocation(flatProgram, name) }
+
   /** Releases every GL object. Must be called on the context's thread. */
   fun release() {
     if (program != 0) GLES30.glDeleteProgram(program)
+    if (flatProgram != 0) GLES30.glDeleteProgram(flatProgram)
     if (environmentProgram != 0) GLES30.glDeleteProgram(environmentProgram)
     if (brdfProgram != 0) GLES30.glDeleteProgram(brdfProgram)
     program = 0
+    flatProgram = 0
     environmentProgram = 0
     brdfProgram = 0
+    initialized = false
+    metalReady = false
     uniformCache.clear()
+    flatUniformCache.clear()
     if (albedoTex != 0) GLES30.glDeleteTextures(1, intArrayOf(albedoTex), 0)
     if (environmentTex != 0) GLES30.glDeleteTextures(1, intArrayOf(environmentTex), 0)
     if (brdfTex != 0) GLES30.glDeleteTextures(1, intArrayOf(brdfTex), 0)
@@ -519,7 +635,7 @@ internal class MetalOffscreenRenderer : AutoCloseable {
   private var config: EGLConfig? = null
   private var windowSurface: EGLSurface = EGL14.EGL_NO_SURFACE
   private var windowTarget: Surface? = null
-  private var gpu: MetalGpu? = null
+  private var gpu: PreviewGpu? = null
 
   var failure: String? = null
     private set
@@ -565,13 +681,13 @@ internal class MetalOffscreenRenderer : AutoCloseable {
       if (!EGL14.eglMakeCurrent(display, surface, surface, context)) {
         throw IllegalStateException("eglMakeCurrent failed")
       }
-      val g = MetalGpu()
+      val g = PreviewGpu()
       if (!g.init()) throw IllegalStateException(g.failure ?: "GLES initialisation failed")
       gpu = g
       true
     } catch (e: Throwable) {
       failure = e.message ?: e::class.java.simpleName
-      android.util.Log.w("MetalGpu", "EGL/GLES open failed: $failure", e)
+      android.util.Log.w("PreviewGpu", "EGL/GLES open failed: $failure", e)
       close()
       false
     }
@@ -632,11 +748,13 @@ internal class MetalOffscreenRenderer : AutoCloseable {
     windowTarget = null
   }
 
-  fun upload(pixels: IntArray, width: Int, height: Int) {
-    gpu?.uploadAlbedo(pixels, width, height)
+  fun upload(pixels: IntArray, width: Int, height: Int, srgb: Boolean = true) {
+    gpu?.uploadAlbedo(pixels, width, height, srgb)
   }
 
   fun render(frame: MetalFrame, out: IntArray): IntArray? = gpu?.render(frame, out)
+
+  fun renderFlat(frame: MetalFrame, out: IntArray): IntArray? = gpu?.renderFlat(frame, out)
 
   override fun close() {
     gpu?.release()
@@ -665,3 +783,4 @@ internal class MetalOffscreenRenderer : AutoCloseable {
     const val EGL_OPENGL_ES3_BIT = 0x40
   }
 }
+

@@ -7,7 +7,7 @@ import kotlin.math.sqrt
 /**
  * The CPU fallback for the metal look, used only when the device cannot create a GLES 3.0 context.
  *
- * The real material is [MetalGpu]/[MetalShader]: Cook-Torrance GGX, a moving key, a prefiltered studio
+ * The real material is [PreviewGpu]/[MetalShader]: Cook-Torrance GGX, a moving key, a prefiltered studio
  * environment and a BRDF LUT. This routine keeps the old, approximate shading so an export on a device
  * without GLES 3.0 still produces a metal-ish file instead of failing; it does not read [MetalSettings],
  * and its key and fill are fixed. It is deliberately not the path the app uses on modern hardware.

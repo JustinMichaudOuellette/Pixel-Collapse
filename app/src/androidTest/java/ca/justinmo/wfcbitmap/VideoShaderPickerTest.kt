@@ -3,6 +3,7 @@ package ca.justinmo.wfcbitmap
 import android.content.Context
 import android.os.PowerManager
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
@@ -13,6 +14,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import ca.justinmo.wfcbitmap.ui.VideoExportScreen
@@ -22,6 +24,7 @@ import ca.justinmo.wfcbitmap.video.VideoLook
 import ca.justinmo.wfcbitmap.video.VideoMode
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -70,6 +73,9 @@ class VideoShaderPickerTest {
     val formatState = mutableStateOf(format)
     val modeState = mutableStateOf(mode)
     val metalState = mutableStateOf(metal)
+    // A stable array: a new one on every recomposition would look like a new video frame and reset the
+    // preview camera.
+    val previewPixels = if (withPreview) IntArray(1000 * 1000) { 0xFF181425.toInt() } else null
     rule.setContent {
       VideoExportScreen(
         open = true,
@@ -85,7 +91,7 @@ class VideoShaderPickerTest {
         outputHeight = outputHeight,
         look = lookState.value,
         metal = metalState.value,
-        previewPixels = if (withPreview) IntArray(1000 * 1000) { 0xFF181425.toInt() } else null,
+        previewPixels = previewPixels,
         previewWidth = if (withPreview) 1000 else 0,
         previewHeight = if (withPreview) 1000 else 0,
         previewCellPixels = 2,
@@ -146,6 +152,26 @@ class VideoShaderPickerTest {
   fun aGifCanBeAsSlowAsOneFramePerSecond() {
     showScreen(VideoLook.Flat, format = VideoFormat.Gif, fps = 1)
     rule.onNodeWithText("1 fps · 100 cs").performScrollTo().assertExists()
+  }
+
+  @Test
+  fun theFlatPreviewCanBePinchedToZoom() {
+    showScreen(VideoLook.Flat, withPreview = true, format = VideoFormat.Gif)
+    val preview = rule.onNodeWithContentDescription("Video preview")
+    preview.performTouchInput {
+      val middle = center
+      down(0, middle + Offset(-30f, 0f))
+      down(1, middle + Offset(30f, 0f))
+      moveTo(0, middle + Offset(-150f, 0f), delayMillis = 300)
+      moveTo(1, middle + Offset(150f, 0f), delayMillis = 300)
+      up(0)
+      up(1)
+    }
+    rule.waitForIdle()
+    val state = preview.fetchSemanticsNode()
+      .config[SemanticsProperties.StateDescription]
+    assertTrue("expected a zoomed flat preview, state was '$state'", state.contains("Zoom") &&
+      !state.contains("Zoom 1.0x"))
   }
 
   @Test

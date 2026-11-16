@@ -40,6 +40,51 @@ void main() {
 }
 """
 
+  /**
+   * The flat preview material: the same fitted/zoomed/wrapped window as the metal shader, but the
+   * source is sampled directly. The source texture is uploaded as linear RGBA (not sRGB), so this pass
+   * neither decodes nor re-encodes colour and stays pixel-identical to the bitmap the exporter writes.
+   */
+  const val FLAT_FRAGMENT = """#version 300 es
+precision highp float;
+
+in vec2 vScreen;
+out vec4 fragColor;
+
+uniform sampler2D uAlbedo;
+uniform vec2 uUvOffset;
+uniform vec2 uUvScale;
+uniform float uViewportAspect;
+uniform float uImageAspect;
+uniform float uWrapX;
+uniform float uWrapY;
+uniform float uPreviewScale;
+uniform vec2 uPreviewOffset;
+
+vec2 wrapped(vec2 p) {
+  if (uWrapX > 0.5) p.x = fract(p.x); else p.x = clamp(p.x, 0.0, 1.0);
+  if (uWrapY > 0.5) p.y = fract(p.y); else p.y = clamp(p.y, 0.0, 1.0);
+  return p;
+}
+
+void main() {
+  vec2 rect;
+  if (uViewportAspect > uImageAspect) {
+    rect = vec2(uImageAspect / uViewportAspect, 1.0);
+  } else {
+    rect = vec2(1.0, uViewportAspect / uImageAspect);
+  }
+  rect *= uPreviewScale;
+  vec2 uv = (vScreen - 0.5) / rect + 0.5 + uPreviewOffset;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    return;
+  }
+  uv = uUvOffset + uv * uUvScale;
+  fragColor = vec4(texture(uAlbedo, wrapped(uv)).rgb, 1.0);
+}
+"""
+
   /** The embossed metal surface. */
   const val FRAGMENT = """#version 300 es
 precision highp float;
