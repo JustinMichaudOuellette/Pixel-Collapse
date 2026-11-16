@@ -189,6 +189,29 @@ class GifEncoderTest {
   }
 
   @Test
+  fun theSlowestGifFrameRateIsOneFramePerSecond() {
+    val plan = videoPlan(
+      frameColumns = 10, frameRows = 2, pixelsPerCell = 1, cellSize = 1,
+      screens = 2, fps = MIN_GIF_FPS,
+    )
+
+    // A GIF delay is whole centiseconds, so one second is 100 cs.
+    assertEquals(MAX_GIF_DELAY_CENTISECONDS, plan.frameDelayCentiseconds)
+    assertEquals(1f, plan.effectiveFps, 0.01f)
+  }
+
+  @Test
+  fun aGifAskedForFewerThanOneFramePerSecondStillHoldsForOneSecond() {
+    val plan = videoPlan(
+      frameColumns = 10, frameRows = 2, pixelsPerCell = 1, cellSize = 1,
+      screens = 2, fps = 0,
+    )
+
+    assertEquals(MAX_GIF_DELAY_CENTISECONDS, plan.frameDelayCentiseconds)
+    assertEquals(1f, plan.effectiveFps, 0.01f)
+  }
+
+  @Test
   fun aLoopLongerThanTheSliderIsCapped() {
     val plan = videoPlan(
       frameColumns = 38, frameRows = 67, pixelsPerCell = 4, cellSize = 2,

@@ -74,11 +74,21 @@ enum class VideoLook(val label: String, val description: String) {
   Metal("Metal 3D", "The pattern raised, lit and given a metallic sheen."),
 }
 
-/** What the video shows: a pan, the solve revealing the picture, or a picture nudged patch by patch. */
+/**
+ * What the video shows: a pan, the solve revealing the picture, a picture nudged patch by patch, or a run
+ * of fresh patterns.
+ */
 enum class VideoMode(val label: String) {
   Panorama("Panorama"),
   Solve("Solve"),
   Evolve("Evolve"),
+
+  /**
+   * One freshly solved pattern per frame, each from a seed no earlier frame used. The clip is a riff on
+   * the drawing rather than one arrangement of it: every frame is the same drawing, re-collapsed into a
+   * different tiling.
+   */
+  Riff("Riff"),
 }
 
 /** Which way the panorama window travels around the loop. */
@@ -160,14 +170,77 @@ internal fun evolveUndoPlan(changeCount: Int): List<Int> {
   return plan
 }
 
-/** The frame rate the export offers: 10–100 fps; MP4 is separately capped at [MAX_MP4_FPS]. */
+/** How many distinct patterns a Riff clip offers to show: one per frame. */
+internal const val MIN_RIFF_PATTERNS = 4
+internal const val MAX_RIFF_PATTERNS = 90
+internal const val DEFAULT_RIFF_PATTERNS = 24
+
+/**
+ * How long one Riff frame's solve may take before the export gives up on it, in milliseconds.
+ *
+ * A Riff frame is an ordinary preview-sized solve and the clip cannot be encoded without it, so this is
+ * the same generous budget the stitched panorama gives one of its screens rather than the editor's
+ * adaptive budget, which is tuned for a picture that is being looked at.
+ */
+internal const val RIFF_FRAME_TIMEOUT_MILLIS = 15_000L
+
+/**
+ * The seeds a Riff clip solves, one per frame.
+ *
+ * The first seed is [baseSeed], so the clip opens on the picture already on screen. Every later entry is
+ * a seed no earlier entry has used: [riffSeed] mixes the drawing's seed with the frame index through a
+ * 64-bit finalizer, which puts consecutive frames far apart in seed space rather than stepping the seed
+ * by one, and the list is de-duplicated so that even an unlucky collision cannot repeat a seed.
+ *
+ * This promises what it says -- no frame shares a seed with an earlier one. It does not promise that a
+ * different seed always draws a different picture: a drawing that can only tile one way will show that
+ * tiling on every frame, and no seed can change that.
+ */
+internal fun riffSeeds(baseSeed: Int, count: Int): List<Int> {
+  if (count <= 0) return emptyList()
+  val seeds = ArrayList<Int>(count)
+  val used = HashSet<Int>(count * 2)
+  seeds.add(baseSeed)
+  used.add(baseSeed)
+  var index = 0
+  while (seeds.size < count) {
+    val seed = riffSeed(baseSeed, index++)
+    if (used.add(seed)) seeds.add(seed)
+  }
+  return seeds
+}
+
+/**
+ * Frame [index] of a Riff clip's seed sequence: [baseSeed] mixed through SplitMix64's finalizer.
+ *
+ * The mixer is what makes consecutive frames land far apart in seed space. A plain `seed + index` would
+ * hand the solver nearly the same random stream each time, which tends to produce arrangements that read
+ * as one small change rather than a new pattern; the mixer decorrelates them.
+ */
+internal fun riffSeed(baseSeed: Int, index: Int): Int {
+  var z = baseSeed.toLong() + (index.toLong() + 1L) * -0x61C8864680B583EBL // 0x9E3779B97F4A7C15
+  z = (z xor (z ushr 30)) * -0x40A7B892E31B1A47L // 0xBF58476D1CE4E5B9
+  z = (z xor (z ushr 27)) * -0x6B2FB644ECCEEE15L // 0x94D049BB133111EB
+  return (z xor (z ushr 31)).toInt()
+}
+
+/**
+ * The fastest and slowest frame rates the export offers, in frames per second.
+ *
+ * [MIN_VIDEO_FPS] is the MP4 floor; a GIF can go slower, down to [MIN_GIF_FPS], because a GIF frame
+ * delay is a whole number of centiseconds and 100 of them is one second. MP4 is capped separately at
+ * [MAX_MP4_FPS].
+ */
 internal const val MIN_VIDEO_FPS = 10
 internal const val MAX_MP4_FPS = 60
 internal const val MAX_VIDEO_FPS = 100
 
-/** GIF's whole-centisecond delays: 2 cs (50 fps) through 10 cs (10 fps). */
+/** The slowest GIF the export writes: one frame a second, i.e. the longest delay GIF can hold cheaply. */
+internal const val MIN_GIF_FPS = 1
+
+/** GIF's whole-centisecond delays: 2 cs (50 fps) through 100 cs (1 fps). */
 internal const val MIN_GIF_DELAY_CENTISECONDS = 2
-internal const val MAX_GIF_DELAY_CENTISECONDS = 10
+internal const val MAX_GIF_DELAY_CENTISECONDS = 100
 
 /**
  * How many cells at the loop point are pinned so that the panorama closes on itself.
@@ -283,7 +356,9 @@ internal fun videoPlan(
   val screenCount = screens.coerceIn(MIN_LOOP_SCREENS, widest)
   val panoramaColumns = frameColumns + (screenCount - 1) * advance
   val panoramaWidth = panoramaColumns * pixelsPerCell
-  val delay = (100f / fps.coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS))
+  // A GIF's frame delay is stored in whole centiseconds, so 1 fps is the slowest it can go: 100 cs.
+  // The fastest is 2 cs (50 fps), because browsers commonly clamp faster GIF delays.
+  val delay = (100f / fps.coerceIn(MIN_GIF_FPS, MAX_VIDEO_FPS))
     .roundToInt()
     .coerceIn(MIN_GIF_DELAY_CENTISECONDS, MAX_GIF_DELAY_CENTISECONDS)
   val effectiveFps = 100f / delay

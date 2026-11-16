@@ -78,30 +78,38 @@ import ca.justinmo.wfcbitmap.storage.EditorStateHolder
 import ca.justinmo.wfcbitmap.storage.PatternGallery
 import ca.justinmo.wfcbitmap.storage.SavedPattern
 import ca.justinmo.wfcbitmap.ui.theme.WFCBitmapTheme
+import ca.justinmo.wfcbitmap.video.DEFAULT_RIFF_PATTERNS
 import ca.justinmo.wfcbitmap.video.GifEncoder
 import ca.justinmo.wfcbitmap.video.GifSaver
 import ca.justinmo.wfcbitmap.video.LOOP_SEAM_CELLS
 import ca.justinmo.wfcbitmap.video.MAX_EVOLVE_CELLS
+import ca.justinmo.wfcbitmap.video.MAX_GIF_DELAY_CENTISECONDS
 import ca.justinmo.wfcbitmap.video.MAX_MP4_FPS
 import ca.justinmo.wfcbitmap.video.MAX_PANORAMA_CELLS
+import ca.justinmo.wfcbitmap.video.MAX_RIFF_PATTERNS
 import ca.justinmo.wfcbitmap.video.MAX_VIDEO_FPS
 import ca.justinmo.wfcbitmap.video.MIN_EVOLVE_CELLS
+import ca.justinmo.wfcbitmap.video.MIN_GIF_DELAY_CENTISECONDS
+import ca.justinmo.wfcbitmap.video.MIN_GIF_FPS
+import ca.justinmo.wfcbitmap.video.MIN_RIFF_PATTERNS
 import ca.justinmo.wfcbitmap.video.MIN_VIDEO_FPS
 import ca.justinmo.wfcbitmap.video.MetalOffscreenRenderer
 import ca.justinmo.wfcbitmap.video.MetalShade
 import ca.justinmo.wfcbitmap.video.Mp4Encoder
 import ca.justinmo.wfcbitmap.video.Mp4Saver
-import ca.justinmo.wfcbitmap.video.USE_SURFACE_MP4_ENCODER
 import ca.justinmo.wfcbitmap.video.PANORAMA_TIMEOUT_MILLIS
+import ca.justinmo.wfcbitmap.video.RIFF_FRAME_TIMEOUT_MILLIS
 import ca.justinmo.wfcbitmap.video.ScrollDirection
 import ca.justinmo.wfcbitmap.video.SolveAnimation
 import ca.justinmo.wfcbitmap.video.SolveAnimationFrames
+import ca.justinmo.wfcbitmap.video.USE_SURFACE_MP4_ENCODER
 import ca.justinmo.wfcbitmap.video.VideoFormat
 import ca.justinmo.wfcbitmap.video.VideoLook
 import ca.justinmo.wfcbitmap.video.VideoMode
 import ca.justinmo.wfcbitmap.video.cropFrame
 import ca.justinmo.wfcbitmap.video.evolveUndoPlan
 import ca.justinmo.wfcbitmap.video.panoramaMetalFrame
+import ca.justinmo.wfcbitmap.video.riffSeeds
 import ca.justinmo.wfcbitmap.video.scaleFrame
 import ca.justinmo.wfcbitmap.video.stillMetalFrame
 import ca.justinmo.wfcbitmap.video.stitchScreen
@@ -421,6 +429,10 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   var evolveCells by remember {
     mutableIntStateOf(preferences.evolveCells(fallback = 1))
   }
+  // Riff: how many distinct patterns the clip runs through, one per frame.
+  var riffPatterns by remember {
+    mutableIntStateOf(preferences.riffPatterns(fallback = DEFAULT_RIFF_PATTERNS))
+  }
   var exportingVideo by remember { mutableStateOf(false) }
   var videoExportProgress by remember { mutableStateOf<Float?>(null) }
   var videoExportLabel by remember { mutableStateOf("") }
@@ -628,6 +640,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(metalSettings) { preferences.setMetalSettings(metalSettings.sanitised()) }
   LaunchedEffect(solveAnimation) { preferences.setSolveAnimation(solveAnimation) }
   LaunchedEffect(evolveCells) { preferences.setEvolveCells(evolveCells) }
+  LaunchedEffect(riffPatterns) { preferences.setRiffPatterns(riffPatterns) }
   LaunchedEffect(toolButtonSize) { preferences.setToolButtonSize(toolButtonSize) }
   LaunchedEffect(gridState.revision) {
     if (revisionsSeen > 0 && patternClean) patternClean = false
@@ -1083,9 +1096,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           val saved = Mp4Saver.save(context, bytes)
           saved to viewCopy(bytes, ".mp4")
         } else {
-          val gifDelay = (100f / videoFps.coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS))
+          val gifDelay = (100f / videoFps.coerceIn(MIN_GIF_FPS, MAX_VIDEO_FPS))
             .roundToInt()
-            .coerceIn(1, 100)
+            .coerceIn(MIN_GIF_DELAY_CENTISECONDS, MAX_GIF_DELAY_CENTISECONDS)
           val temp = File.createTempFile("wfc-solve-", ".gif", context.cacheDir)
           try {
             withContext(Dispatchers.Default) {
@@ -1266,9 +1279,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
           val saved = Mp4Saver.save(context, bytes)
           saved to viewCopy(bytes, ".mp4")
         } else {
-          val gifDelay = (100f / videoFps.coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS))
+          val gifDelay = (100f / videoFps.coerceIn(MIN_GIF_FPS, MAX_VIDEO_FPS))
             .roundToInt()
-            .coerceIn(1, 100)
+            .coerceIn(MIN_GIF_DELAY_CENTISECONDS, MAX_GIF_DELAY_CENTISECONDS)
           val temp = File.createTempFile("wfc-evolve-", ".gif", context.cacheDir)
           try {
             withContext(Dispatchers.Default) {
@@ -1332,6 +1345,209 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     }
   }
 
+  /**
+   * Riff: one freshly solved pattern per frame.
+   *
+   * Every frame is a full solve of the same drawing under a seed no earlier frame used, so the clip is a
+   * run of distinct arrangements rather than one picture moving. The first frame keeps the editor's seed,
+   * which is what makes the clip open on the picture that was on screen.
+   *
+   * The frames are kept as cell centres -- the compact form Evolve uses -- because a bitmap per frame
+   * would be tens of megabytes. Each is rendered back to pixels while encoding. The solves are
+   * demonstrations rather than the session's picture, so they bypass the generator's result cache and
+   * leave the editor's solve-time measurement alone.
+   */
+  fun exportRiffAnimation(format: VideoFormat, patterns: Int) {
+    if (exportingVideo) return
+    if (output == null) {
+      Toast.makeText(context, "There is no solved picture to riff on yet", Toast.LENGTH_SHORT).show()
+      return
+    }
+    val frame = videoFramePlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
+    val width = frame.columns * frame.pixelsPerCell
+    val height = frame.rows * frame.pixelsPerCell
+    val columns = gridState.columns
+    val rows = gridState.rows
+    val pixels = IntArray(columns * rows) { gridState.pixels[it].toArgb() }
+    val count = patterns.coerceIn(MIN_RIFF_PATTERNS, MAX_RIFF_PATTERNS)
+    val seeds = riffSeeds(seed, count)
+    val metal = videoLook == VideoLook.Metal
+    val metalParams = metalSettings.sanitised()
+
+    videoExportOpen = false
+    message = null
+    generation.job?.cancel()
+    exportingVideo = true
+    videoExportLabel = "Solving $count patterns…"
+    videoExportProgress = 0f
+    videoExportCancelled.set(false)
+    videoExportJob = application.exportScope.launch {
+      try {
+        val centres = ArrayList<IntArray>(count)
+        var blocks: List<IntArray>? = null
+        for ((index, frameSeed) in seeds.withIndex()) {
+          if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
+          videoExportLabel = "Solving pattern ${index + 1} of $count…"
+          videoExportProgress = 0.45f * index / count
+          val solved = generationMutex.withLock {
+            WfcGenerator.generate(
+              pixels = pixels,
+              sourceWidth = columns,
+              sourceHeight = rows,
+              seed = frameSeed,
+              columns = frame.columns,
+              rows = frame.rows,
+              wrapEdges = wrapEdges,
+              mirrorHorizontal = mirrorHorizontal,
+              mirrorVertical = mirrorVertical,
+              quarterTurn = quarterTurn,
+              bestEffort = bestEffort,
+              pixelsPerCell = frame.pixelsPerCell,
+              cellSize = frame.cellSize,
+              timeoutMillis = RIFF_FRAME_TIMEOUT_MILLIS,
+              // A frame is a demonstration, not the picture the editor shows: it must neither seed that
+              // cache nor teach the editor's budget a cost it never actually paid for a preview.
+              isSessionPicture = false,
+            )
+          }
+          val cellCentres = solved.cellCenters
+            ?: throw WfcGenerator.GenerationException("A riff frame had no solved cells")
+          centres.add(cellCentres)
+          if (blocks == null) blocks = solved.blocks
+          videoExportProgress = 0.45f * (index + 1) / count
+        }
+        val cellBlocks = blocks
+        videoExportLabel = "Encoding ${format.label}…"
+
+        fun solvedFrame(index: Int): IntArray {
+          val out = IntArray(width * height)
+          renderCellCenters(
+            pixels = out,
+            width = width,
+            columns = frame.columns,
+            rows = frame.rows,
+            scale = frame.pixelsPerCell,
+            centres = centres[index],
+            blocks = cellBlocks,
+            cell = frame.cellSize,
+          )
+          return out
+        }
+
+        fun frameFor(index: Int, renderer: MetalOffscreenRenderer?, out: IntArray): IntArray {
+          if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
+          val framePixels = solvedFrame(index)
+          if (!metal) return framePixels
+          if (renderer != null) {
+            renderer.upload(framePixels, width, height)
+            return renderer.render(
+              stillMetalFrame(width, height, frame.pixelsPerCell, index, count, metalParams),
+              out,
+            ) ?: MetalShade.paint(framePixels, width, height, frame.pixelsPerCell)
+          }
+          return MetalShade.paint(framePixels, width, height, frame.pixelsPerCell)
+        }
+
+        fun report(index: Int) {
+          if (index % 2 == 0 || index == count - 1) {
+            mainHandler.post { videoExportProgress = 0.45f + 0.54f * (index + 1) / count }
+          }
+        }
+
+        val (uri, viewUri) = if (format == VideoFormat.Mp4) {
+          val bytes = withContext(Dispatchers.Default) {
+            val renderer = if (metal) openMetalRenderer() else null
+            try {
+              val fps = videoFps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS)
+              Mp4Encoder.encode(
+                context = context,
+                width = width,
+                height = height,
+                frameCount = count,
+                fps = fps,
+              ) { index ->
+                report(index)
+                frameFor(index, renderer, IntArray(width * height))
+              }
+            } finally {
+              renderer?.close()
+            }
+          }
+          val saved = Mp4Saver.save(context, bytes)
+          saved to viewCopy(bytes, ".mp4")
+        } else {
+          val gifDelay = (100f / videoFps.coerceIn(MIN_GIF_FPS, MAX_VIDEO_FPS))
+            .roundToInt()
+            .coerceIn(MIN_GIF_DELAY_CENTISECONDS, MAX_GIF_DELAY_CENTISECONDS)
+          val temp = File.createTempFile("wfc-riff-", ".gif", context.cacheDir)
+          try {
+            withContext(Dispatchers.Default) {
+              val renderer = if (metal) openMetalRenderer() else null
+              try {
+                val out = IntArray(width * height)
+                val palette = if (metal) {
+                  // The material changes over the clip, so sample a middle frame for the 256-colour table.
+                  GifEncoder.paletteFor(
+                    frameFor((count / 3).coerceIn(0, count - 1), renderer, out),
+                  )
+                } else {
+                  GifEncoder.paletteFor(
+                    solvedFrame(0),
+                    extraColors = activePalette.colors.map { it.toArgb() }.toIntArray(),
+                  )
+                }
+                temp.outputStream().buffered().use { stream ->
+                  GifEncoder.encodeTo(
+                    out = stream,
+                    width = width,
+                    height = height,
+                    palette = palette,
+                    frameCount = count,
+                    delayForFrame = { gifDelay },
+                  ) { index ->
+                    report(index)
+                    frameFor(index, renderer, out)
+                  }
+                }
+              } finally {
+                renderer?.close()
+              }
+            }
+            val saved = GifSaver.save(context, temp)
+            saved to viewCopy(temp, ".gif")
+          } finally {
+            temp.delete()
+          }
+        }
+        videoExportProgress = 1f
+        message = EditorMessage("${format.label} saved", "View") {
+          val target = viewUri ?: uri
+          if (format == VideoFormat.Mp4) viewMp4(target) else viewVideo(target)
+        }
+      } catch (e: CancellationException) {
+        if (videoExportCancelled.get()) {
+          message = EditorMessage("Export cancelled")
+        }
+        throw e
+      } catch (e: Exception) {
+        Log.w(TAG, "Could not make the riff video", e)
+        message = EditorMessage(
+          if (e is WfcGenerator.GenerationException) {
+            e.message ?: "Could not make the riff video"
+          } else {
+            "Could not make the riff video"
+          },
+        )
+      } finally {
+        exportingVideo = false
+        videoExportProgress = null
+        videoExportJob = null
+        videoExportCancelled.set(false)
+        requestGeneration()
+      }
+    }
+  }
+
   fun exportVideo(format: VideoFormat) {
     if (videoMode == VideoMode.Solve) {
       exportSolveAnimation(format, solveAnimation)
@@ -1339,6 +1555,10 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     }
     if (videoMode == VideoMode.Evolve) {
       exportEvolveAnimation(format, evolveCells)
+      return
+    }
+    if (videoMode == VideoMode.Riff) {
+      exportRiffAnimation(format, riffPatterns)
       return
     }
     if (exportingVideo) return
@@ -2051,6 +2271,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     mode = videoMode,
     solveAnimation = solveAnimation,
     evolveCells = evolveCells,
+    riffPatterns = riffPatterns,
     screens = videoScreens,
     fps = videoFps,
     pixelsPerFrame = videoPixelsPerFrame,
@@ -2072,6 +2293,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     onModeChange = { videoMode = it },
     onSolveAnimationChange = { solveAnimation = it },
     onEvolveCellsChange = { evolveCells = it },
+    onRiffPatternsChange = { riffPatterns = it },
     onFpsChange = { videoFps = it },
     onPixelsPerFrameChange = { videoPixelsPerFrame = it },
     onScrollDirectionChange = { scrollDirection = it },

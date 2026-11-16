@@ -9,10 +9,12 @@ import ca.justinmo.wfcbitmap.output.PixelArtScaler
 import ca.justinmo.wfcbitmap.output.PreviewScale
 import ca.justinmo.wfcbitmap.video.MAX_EVOLVE_CELLS
 import ca.justinmo.wfcbitmap.video.MAX_LOOP_SCREENS
+import ca.justinmo.wfcbitmap.video.MAX_RIFF_PATTERNS
 import ca.justinmo.wfcbitmap.video.MAX_VIDEO_FPS
 import ca.justinmo.wfcbitmap.video.MIN_EVOLVE_CELLS
+import ca.justinmo.wfcbitmap.video.MIN_GIF_FPS
 import ca.justinmo.wfcbitmap.video.MIN_LOOP_SCREENS
-import ca.justinmo.wfcbitmap.video.MIN_VIDEO_FPS
+import ca.justinmo.wfcbitmap.video.MIN_RIFF_PATTERNS
 import ca.justinmo.wfcbitmap.video.MetalFinish
 import ca.justinmo.wfcbitmap.video.MetalSettings
 import ca.justinmo.wfcbitmap.video.ScrollDirection
@@ -125,7 +127,8 @@ class EditorPreferences(context: Context) {
   }
 
   fun videoFps(fallback: Int): Int =
-    preferences.getInt(KEY_VIDEO_FPS, fallback).coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS)
+    // A GIF may be as slow as 1 fps; MP4's own floor is applied where it is encoded.
+    preferences.getInt(KEY_VIDEO_FPS, fallback).coerceIn(MIN_GIF_FPS, MAX_VIDEO_FPS)
 
   fun setVideoFps(value: Int) {
     preferences.edit().putInt(KEY_VIDEO_FPS, value).apply()
@@ -266,6 +269,14 @@ class EditorPreferences(context: Context) {
     preferences.edit().putInt(KEY_EVOLVE_CELLS, value).apply()
   }
 
+  /** How many patterns a Riff clip runs through, one per frame. */
+  fun riffPatterns(fallback: Int): Int =
+    preferences.getInt(KEY_RIFF_PATTERNS, fallback).coerceIn(MIN_RIFF_PATTERNS, MAX_RIFF_PATTERNS)
+
+  fun setRiffPatterns(value: Int) {
+    preferences.edit().putInt(KEY_RIFF_PATTERNS, value).apply()
+  }
+
   fun toolButtonSize(fallback: Int): Int =
     preferences.getInt(KEY_TOOL_BUTTON_SIZE, fallback)
       .coerceIn(MIN_TOOL_BUTTON_SIZE, MAX_TOOL_BUTTON_SIZE)
@@ -372,6 +383,7 @@ class EditorPreferences(context: Context) {
     const val KEY_METAL_SMALL_SPOT_3 = "metal_small_spot_3"
     const val KEY_SOLVE_ANIMATION = "solve_animation"
     const val KEY_EVOLVE_CELLS = "evolve_cells"
+    const val KEY_RIFF_PATTERNS = "riff_patterns"
     const val KEY_TOOL_BUTTON_SIZE = "tool_button_size"
     const val KEY_TUTORIAL_SEEN = "tutorial_seen"
   }

@@ -59,8 +59,10 @@ class VideoShaderPickerTest {
     outputHeight: Int = 80,
     format: VideoFormat = VideoFormat.Gif,
     mode: VideoMode = VideoMode.Panorama,
+    fps: Int = 16,
     onFormatChange: (VideoFormat) -> Unit = {},
     onModeChange: (VideoMode) -> Unit = {},
+    onRiffPatternsChange: (Int) -> Unit = {},
     metal: MetalSettings = MetalSettings(),
     onMetalChange: (MetalSettings) -> Unit = {},
   ) {
@@ -74,7 +76,7 @@ class VideoShaderPickerTest {
         format = formatState.value,
         mode = modeState.value,
         screens = 2,
-        fps = 16,
+        fps = fps,
         frameColumns = 20,
         frameRows = 20,
         pixelsPerCell = 2,
@@ -94,6 +96,7 @@ class VideoShaderPickerTest {
           modeState.value = it
           onModeChange(it)
         },
+        onRiffPatternsChange = onRiffPatternsChange,
         onFpsChange = {},
         onFormatChange = {
           formatState.value = it
@@ -123,6 +126,26 @@ class VideoShaderPickerTest {
     rule.waitForIdle()
     assertEquals(VideoMode.Solve, selected)
     rule.onNodeWithText("A replay of the real solver", substring = true).assertExists()
+  }
+
+  @Test
+  fun riffOffersAPatternCountAndSaysWhatItDoes() {
+    var selected: VideoMode? = null
+    showScreen(VideoLook.Flat, format = VideoFormat.Gif, onModeChange = { selected = it })
+    rule.onNodeWithContentDescription("Video type picker").performClick()
+    rule.waitForIdle()
+    rule.onNodeWithText("Riff").performClick()
+    rule.waitForIdle()
+    assertEquals(VideoMode.Riff, selected)
+    rule.onNodeWithText("Riff re-solves", substring = true).assertExists()
+    rule.onNodeWithText("Patterns").performScrollTo().assertExists()
+    rule.onNodeWithText("24").performScrollTo().assertExists()
+  }
+
+  @Test
+  fun aGifCanBeAsSlowAsOneFramePerSecond() {
+    showScreen(VideoLook.Flat, format = VideoFormat.Gif, fps = 1)
+    rule.onNodeWithText("1 fps · 100 cs").performScrollTo().assertExists()
   }
 
   @Test

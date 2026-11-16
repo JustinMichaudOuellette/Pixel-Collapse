@@ -73,14 +73,18 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import ca.justinmo.wfcbitmap.FeatureFlags
+import ca.justinmo.wfcbitmap.video.DEFAULT_RIFF_PATTERNS
 import ca.justinmo.wfcbitmap.video.MAX_EVOLVE_CELLS
 import ca.justinmo.wfcbitmap.video.MAX_GIF_DELAY_CENTISECONDS
 import ca.justinmo.wfcbitmap.video.MAX_LOOP_SCREENS
 import ca.justinmo.wfcbitmap.video.MAX_MP4_FPS
+import ca.justinmo.wfcbitmap.video.MAX_RIFF_PATTERNS
 import ca.justinmo.wfcbitmap.video.MAX_VIDEO_FPS
 import ca.justinmo.wfcbitmap.video.MIN_EVOLVE_CELLS
 import ca.justinmo.wfcbitmap.video.MIN_GIF_DELAY_CENTISECONDS
+import ca.justinmo.wfcbitmap.video.MIN_GIF_FPS
 import ca.justinmo.wfcbitmap.video.MIN_LOOP_SCREENS
+import ca.justinmo.wfcbitmap.video.MIN_RIFF_PATTERNS
 import ca.justinmo.wfcbitmap.video.MIN_VIDEO_FPS
 import ca.justinmo.wfcbitmap.video.MetalFinish
 import ca.justinmo.wfcbitmap.video.MetalSettings
@@ -120,6 +124,7 @@ fun VideoExportScreen(
   mode: VideoMode = VideoMode.Panorama,
   solveAnimation: SolveAnimation = SolveAnimation.Collapse,
   evolveCells: Int = 1,
+  riffPatterns: Int = DEFAULT_RIFF_PATTERNS,
   screens: Int,
   fps: Int,
   pixelsPerFrame: Int = 2,
@@ -141,6 +146,7 @@ fun VideoExportScreen(
   onModeChange: (VideoMode) -> Unit = {},
   onSolveAnimationChange: (SolveAnimation) -> Unit = {},
   onEvolveCellsChange: (Int) -> Unit = {},
+  onRiffPatternsChange: (Int) -> Unit = {},
   onFpsChange: (Int) -> Unit,
   onPixelsPerFrameChange: (Int) -> Unit = {},
   onScrollDirectionChange: (ScrollDirection) -> Unit = {},
@@ -176,10 +182,22 @@ fun VideoExportScreen(
   val solveSteps = (fps * 2).coerceIn(24, 90)
   val solveTotal = if (format == VideoFormat.Gif) solveSteps * 2 - 1 else solveSteps
   val previewFps = if (format == VideoFormat.Gif) {
-    (100f / maxOf(plan.frameDelayCentiseconds, 10)).roundToInt()
+    // The preview follows the GIF's real delay, capped at 10 fps so a fast GIF does not spin the
+    // animation; at the slow end it is the honest 1 fps.
+    (100f / plan.frameDelayCentiseconds).roundToInt().coerceIn(MIN_GIF_FPS, 10)
   } else {
     fps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS)
   }
+  // What the file actually plays at: a GIF's real rate is its whole-centisecond delay, while an MP4
+  // uses the requested rate clamped to its own range.
+  val playbackFps = (if (format == VideoFormat.Gif) {
+    plan.effectiveFps
+  } else {
+    fps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS).toFloat()
+  }).coerceAtLeast(MIN_GIF_FPS.toFloat())
+  // A Riff frame is one pattern, so the clip's length is its pattern count over the rate it plays at.
+  val riffDurationSeconds = riffPatterns / playbackFps
+  val loopSeconds = plan.frameCount * plan.pixelsPerFrame / playbackFps
   var previewFrame by remember(mode) { mutableIntStateOf(0) }
   LaunchedEffect(mode, previewFps, pixelsPerFrame, previewPixels) {
     if (mode != VideoMode.Panorama || previewPixels == null) return@LaunchedEffect
@@ -219,7 +237,8 @@ fun VideoExportScreen(
         Row(
           modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(vertical = 8.dp)
+            .padding(end = 16.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
           IconButton(onClick = onDismiss) {
@@ -229,6 +248,7 @@ fun VideoExportScreen(
               tint = MENU_TEXT_COLOR,
             )
           }
+          Text("Video", color = MENU_TEXT_COLOR, fontSize = 16.sp, modifier = Modifier.padding(end = 16.dp))
           VideoModePicker(
             mode = mode,
             enabled = !exporting,
@@ -315,7 +335,8 @@ fun VideoExportScreen(
             .fillMaxWidth()
             .weight(0.66f)
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 16.dp)
+            .padding(top = 8.dp),
         ) {
           Text(
             when (mode) {
@@ -329,6 +350,10 @@ fun VideoExportScreen(
                 "Evolve nudges the picture a few cells at a time: a small patch is re-solved on each " +
                   "frame with the cells around it held in place. Then those changes are taken back one " +
                   "at a time, so the clip ends where it started."
+              VideoMode.Riff ->
+                "Riff re-solves the drawing for every frame, each time with a seed no earlier frame " +
+                  "used. The clip opens on the picture on screen and changes to a new arrangement on " +
+                  "every frame, so no two frames share a seed."
             },
             color = MENU_TEXT_COLOR.copy(alpha = 0.6f),
             fontSize = 12.sp,
@@ -436,6 +461,34 @@ fun VideoExportScreen(
             )
           }
 
+          if (mode == VideoMode.Riff) {
+            Spacer(Modifier.height(18.dp))
+            SettingLabel("Patterns", "$riffPatterns")
+            Slider(
+              value = riffPatterns.toFloat(),
+              onValueChange = {
+                onRiffPatternsChange(
+                  it.roundToInt().coerceIn(MIN_RIFF_PATTERNS, MAX_RIFF_PATTERNS),
+                )
+              },
+              valueRange = MIN_RIFF_PATTERNS.toFloat()..MAX_RIFF_PATTERNS.toFloat(),
+              steps = MAX_RIFF_PATTERNS - MIN_RIFF_PATTERNS - 1,
+              colors = SliderDefaults.colors(
+                thumbColor = MENU_TEXT_COLOR,
+                activeTrackColor = MENU_TEXT_COLOR,
+                inactiveTrackColor = MENU_TEXT_COLOR.copy(alpha = 0.25f),
+              ),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+              "One full solve per frame, each with a new seed. One solve costs about as much as a " +
+                "preview, so a longer clip takes proportionally longer to export.",
+              color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
+              fontSize = 11.sp,
+              lineHeight = 15.sp,
+            )
+          }
+
           Spacer(Modifier.height(22.dp))
           if (mode == VideoMode.Panorama) {
             SettingLabel("Loop", "$screens screens")
@@ -492,7 +545,7 @@ fun VideoExportScreen(
           )
           if (format == VideoFormat.Gif) {
             // A GIF only stores whole centiseconds. The slider runs opposite the delay: the left end is
-            // 10 cs (10 fps), the right end is the fastest value, 2 cs (50 fps), which is also the default.
+            // 100 cs (1 fps), the right end is the fastest value, 2 cs (50 fps), which is also the default.
             val delay = plan.frameDelayCentiseconds.coerceIn(
               MIN_GIF_DELAY_CENTISECONDS,
               MAX_GIF_DELAY_CENTISECONDS,
@@ -505,7 +558,7 @@ fun VideoExportScreen(
                   MIN_GIF_DELAY_CENTISECONDS,
                   MAX_GIF_DELAY_CENTISECONDS,
                 )
-                onFpsChange((100f / whole).roundToInt().coerceIn(MIN_VIDEO_FPS, MAX_VIDEO_FPS))
+                onFpsChange((100f / whole).roundToInt().coerceIn(MIN_GIF_FPS, MAX_VIDEO_FPS))
               },
               valueRange = MIN_GIF_DELAY_CENTISECONDS.toFloat()..MAX_GIF_DELAY_CENTISECONDS.toFloat(),
               steps = MAX_GIF_DELAY_CENTISECONDS - MIN_GIF_DELAY_CENTISECONDS - 1,
@@ -548,7 +601,7 @@ fun VideoExportScreen(
           if (mode == VideoMode.Panorama) {
             Text(
               "${plan.outputWidth}×${plan.outputHeight} · ${plan.frameCount} frames · " +
-                "${formatOneDecimal(plan.loopSeconds)} s per loop · ${plan.pixelsPerFrame} px per frame",
+                "${formatOneDecimal(loopSeconds)} s per loop · ${plan.pixelsPerFrame} px per frame",
               color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
               fontSize = 11.sp,
               lineHeight = 15.sp,
@@ -563,11 +616,15 @@ fun VideoExportScreen(
             Text(
               // Evolve's undo pass is as long as the number of cells that changed, which only the solve
               // knows, so its frame count is not quoted here.
-              if (mode == VideoMode.Evolve) {
-                "${frameColumns * pixelsPerCell}×${frameRows * pixelsPerCell} · " +
-                  "$solveSteps evolving frames, then one undo frame per changed cell"
-              } else {
-                "${frameColumns * pixelsPerCell}×${frameRows * pixelsPerCell} · $solveTotal frames"
+              when (mode) {
+                VideoMode.Evolve ->
+                  "${frameColumns * pixelsPerCell}×${frameRows * pixelsPerCell} · " +
+                    "$solveSteps evolving frames, then one undo frame per changed cell"
+                VideoMode.Riff ->
+                  "${frameColumns * pixelsPerCell}×${frameRows * pixelsPerCell} · " +
+                    "$riffPatterns patterns · ${formatOneDecimal(riffDurationSeconds)} s"
+                else ->
+                  "${frameColumns * pixelsPerCell}×${frameRows * pixelsPerCell} · $solveTotal frames"
               },
               color = MENU_TEXT_COLOR.copy(alpha = 0.55f),
               fontSize = 11.sp,
@@ -608,6 +665,7 @@ private fun VideoModePicker(
     Surface(
       modifier = Modifier
         .fillMaxWidth()
+        .padding(end = 16.dp)
         .clip(RoundedCornerShape(8.dp))
         .border(1.dp, MENU_DIVIDER_COLOR, RoundedCornerShape(8.dp))
         .clickable(enabled = enabled) { onExpandedChange(true) }
@@ -618,6 +676,7 @@ private fun VideoModePicker(
       Row(
         modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
       ) {
         Text(mode.label, color = MENU_TEXT_COLOR, fontSize = 13.sp)
         Icon(
