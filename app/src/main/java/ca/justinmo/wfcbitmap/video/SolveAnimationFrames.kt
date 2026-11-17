@@ -6,7 +6,8 @@ import ca.justinmo.wfcbitmap.generation.SolveTrace
  *
  * The trace is a sequence of domain transitions, not a sequence of finished bitmaps. This class
  * pre-samples the trace at [steps] points, stores one packed size/colour value per cell for each sample,
- * and paints a frame on demand.
+ * and paints a frame on demand. The trace itself is not retained after the samples are built, so its
+ * event array can be collected while the animation plays.
  *
  * A cell is drawn from the finished picture only when its domain size is 1. Both variants therefore
  * show the solver's real decision order; they differ only in what an undecided cell shows:
@@ -16,10 +17,10 @@ import ca.justinmo.wfcbitmap.generation.SolveTrace
  *    from the solver's own domain at that moment. The generated part always uses the editor's pixels.
  */
 internal class SolveAnimationFrames(
-  private val trace: SolveTrace,
+  trace: SolveTrace,
   private val solvedPixels: IntArray,
-  private val width: Int,
-  private val height: Int,
+  val width: Int,
+  val height: Int,
   background: Int,
   private val style: SolveAnimation,
   requestedSteps: Int,
@@ -31,14 +32,23 @@ internal class SolveAnimationFrames(
   private val cellHeight = (height / rows).coerceAtLeast(1)
   private val backgroundColor = background
 
-  val steps: Int = requestedSteps.coerceAtLeast(2)
+  /**
+   * How many samples the animation can afford.
+   *
+   * A sample is one int per cell, and the whole point of this class is to hold a sample per step. At a
+   * fine preview (540x960 at one pixel per cell) a single sample is about 2 MB, so the requested 90 steps
+   * would need roughly 190 MB before any frame is drawn -- an OutOfMemoryError on a normal phone. The cap
+   * trades some smoothness for a clip that can actually be built; the exporter uses this same [steps]
+   * value, so the preview and the file still agree.
+   */
+  val steps: Int = solveAnimationStepCount(columns * rows, requestedSteps)
 
   /**
    * Each sample is one int per cell: low 8 bits are the domain size, the next 24 are the average RGB of
    * the remaining candidates. Sample 0 is the state after pins and before propagation; the last sample
    * includes every trace event.
    */
-  private val snapshots: Array<IntArray> = buildSnapshots()
+  private val snapshots: Array<IntArray> = buildSnapshots(trace)
 
   /**
    * Colours the animation needs beyond the finished picture's own palette. For Wave, the most common
@@ -64,9 +74,20 @@ internal class SolveAnimationFrames(
   }.distinct().take(256).toIntArray()
 
   /** The frame at [forwardIndex] in the forward run, 0 = untouched, [steps] - 1 = solved. */
-  fun frameAt(forwardIndex: Int): IntArray {
+  fun frameAt(forwardIndex: Int): IntArray =
+    IntArray(width * height).also { fillFrame(forwardIndex, it) }
+
+  /**
+   * Paints the frame at [forwardIndex] into [frame], whose size must be [width] x [height].
+   *
+   * The preview and the exporter both reuse a buffer here rather than allocating a multi-megabyte array
+   * for every frame.
+   */
+  internal fun fillFrame(forwardIndex: Int, frame: IntArray) {
+    require(frame.size == width * height) {
+      "Frame buffer is ${frame.size}, expected ${width * height}"
+    }
     val sample = snapshots[forwardIndex.coerceIn(0, snapshots.lastIndex)]
-    val frame = IntArray(width * height)
     java.util.Arrays.fill(frame, backgroundColor)
     for (y in 0 until rows) {
       val cellRow = y * columns
@@ -89,10 +110,9 @@ internal class SolveAnimationFrames(
         }
       }
     }
-    return frame
   }
 
-  private fun buildSnapshots(): Array<IntArray> {
+  private fun buildSnapshots(trace: SolveTrace): Array<IntArray> {
     val cellCount = columns * rows
     val state = IntArray(cellCount)
     for (i in 0 until minOf(cellCount, trace.initialSizes.size)) {
@@ -143,3 +163,25 @@ internal class SolveAnimationFrames(
     const val MAX_AVERAGE_COLOURS = 128
   }
 }
+
+/**
+ * The number of samples a solve animation can afford for [cellCount] cells.
+ *
+ * Each sample is one int per cell. At a fine preview (540x960 at one pixel per cell) one sample is about
+ * 2 MB, so the requested 90 steps would need roughly 190 MB before a frame is drawn -- an
+ * OutOfMemoryError on a normal phone. The cap trades smoothness for a clip that can actually be built; the
+ * exporter and the preview both use this value, so they still agree on the frame count.
+ */
+internal fun solveAnimationStepCount(cellCount: Int, requestedSteps: Int): Int {
+  val max = if (cellCount <= 0) {
+    Int.MAX_VALUE
+  } else {
+    (MAX_SOLVE_SNAPSHOT_BYTES / (cellCount.toLong() * 4L))
+      .toInt()
+      .coerceAtLeast(2)
+  }
+  return requestedSteps.coerceAtLeast(2).coerceAtMost(max)
+}
+
+/** How much the per-step snapshots may occupy; see [solveAnimationStepCount]. */
+private const val MAX_SOLVE_SNAPSHOT_BYTES = 48L * 1024 * 1024

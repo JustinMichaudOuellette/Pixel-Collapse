@@ -20,11 +20,28 @@ internal data class PreviewSource(
   val wrapY: Boolean,
   val vertical: Boolean,
   val cellPixels: Int,
+  /**
+   * Changes whenever the pixels change even though the array may be reused.
+   *
+   * The solve preview paints into two alternating buffers; the renderer cannot use array identity alone
+   * to decide whether to upload, because the same buffer comes around again with new contents.
+   */
+  val version: Int = 0,
+  /**
+   * Where this frame sits in the clip (0..1), for materials whose animation is tied to the frame index
+   * rather than wall-clock time. The Solve exporter lights each frame from its index; carrying the same
+   * phase here makes the metal preview show the same light as the file. Null means "use elapsed time".
+   */
+  val phase: Float? = null,
 ) {
   val frameAspect: Float get() = frameWidth.toFloat() / frameHeight.coerceAtLeast(1)
 
   companion object {
-    fun fromPanorama(panorama: VideoPanorama, cellPixels: Int): PreviewSource =
+    fun fromPanorama(
+      panorama: VideoPanorama,
+      cellPixels: Int,
+      phase: Float? = null,
+    ): PreviewSource =
       PreviewSource(
         pixels = panorama.previewPixels,
         width = panorama.previewWidth,
@@ -36,9 +53,17 @@ internal data class PreviewSource(
         wrapY = panorama.vertical,
         vertical = panorama.vertical,
         cellPixels = cellPixels.coerceAtLeast(1),
+        phase = phase,
       )
 
-    fun fromFrame(pixels: IntArray, width: Int, height: Int, cellPixels: Int): PreviewSource =
+    fun fromFrame(
+      pixels: IntArray,
+      width: Int,
+      height: Int,
+      cellPixels: Int,
+      version: Int = 0,
+      phase: Float? = null,
+    ): PreviewSource =
       PreviewSource(
         pixels = pixels,
         width = width,
@@ -50,6 +75,8 @@ internal data class PreviewSource(
         wrapY = false,
         vertical = false,
         cellPixels = cellPixels.coerceAtLeast(1),
+        version = version,
+        phase = phase,
       )
   }
 }

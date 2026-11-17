@@ -809,6 +809,7 @@ private fun PhotoSlider(
 ) {
   Text(valueText, color = MENU_TEXT_COLOR.copy(alpha = 0.55f), fontSize = 10.sp)
   Slider(
+    modifier = Modifier.sliderInsets(),
     value = value,
     onValueChange = onChange,
     valueRange = range,

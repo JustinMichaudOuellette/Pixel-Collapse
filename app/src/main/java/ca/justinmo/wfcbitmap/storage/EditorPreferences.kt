@@ -127,7 +127,7 @@ class EditorPreferences(context: Context) {
   }
 
   fun videoFps(fallback: Int): Int =
-    // A GIF may be as slow as 1 fps; MP4's own floor is applied where it is encoded.
+    // Both containers can go down to 1 fps; each format clamps to its own range when it is written.
     preferences.getInt(KEY_VIDEO_FPS, fallback).coerceIn(MIN_GIF_FPS, MAX_VIDEO_FPS)
 
   fun setVideoFps(value: Int) {

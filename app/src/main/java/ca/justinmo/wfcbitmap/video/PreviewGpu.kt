@@ -201,12 +201,14 @@ internal class PreviewGpu {
       uploadBuffer = buffer
     }
     buffer.clear()
+    // One native-order int per pixel instead of four byte writes. On Android's little-endian order
+    // putInt emits the bytes R, G, B, A, which is exactly the layout GL_RGBA expects.
     for (i in 0 until width * height) {
       val colour = pixels[i]
-      buffer.put(((colour ushr 16) and 0xFF).toByte())
-      buffer.put(((colour ushr 8) and 0xFF).toByte())
-      buffer.put((colour and 0xFF).toByte())
-      buffer.put(0xFF.toByte())
+      val r = (colour ushr 16) and 0xFF
+      val g = (colour ushr 8) and 0xFF
+      val b = colour and 0xFF
+      buffer.putInt(0xFF000000.toInt() or (b shl 16) or (g shl 8) or r)
     }
     buffer.position(0)
     GLES30.glTexSubImage2D(
@@ -636,6 +638,7 @@ internal class MetalOffscreenRenderer : AutoCloseable {
   private var windowSurface: EGLSurface = EGL14.EGL_NO_SURFACE
   private var windowTarget: Surface? = null
   private var gpu: PreviewGpu? = null
+  private var presentationTimeSupported: Boolean? = null
 
   var failure: String? = null
     private set
@@ -699,16 +702,19 @@ internal class MetalOffscreenRenderer : AutoCloseable {
    * this is available; the caller then falls back to the readback encoder.
    */
   fun supportsWindowSurface(): Boolean {
+    presentationTimeSupported?.let { return it }
     if (display == EGL14.EGL_NO_DISPLAY) return false
     val extensions = EGL14.eglQueryString(display, EGL14.EGL_EXTENSIONS) ?: return false
-    return extensions.split(' ').contains("EGL_ANDROID_presentation_time")
+    val supported = extensions.split(' ').contains("EGL_ANDROID_presentation_time")
+    presentationTimeSupported = supported
+    return supported
   }
 
   /**
-   * Renders [frame] into MediaCodec's input [target] and swaps it.
+   * Renders [frame] into [target]'s window surface and swaps it.
    *
-   * No pixel ever leaves the GPU: this is the fast export path. The EGL window surface is cached per
-   * target Surface; the codec keeps the same input Surface for the whole clip.
+   * No pixel ever leaves the GPU. Used both by the direct-to-encoder export path and by the live metal
+   * preview, whose target is the TextureView's surface. The EGL window surface is cached per target.
    */
   fun renderToSurface(frame: MetalFrame, target: Surface, presentationTimeNanos: Long): Boolean {
     if (!attachWindowSurface(target)) return false
@@ -716,7 +722,11 @@ internal class MetalOffscreenRenderer : AutoCloseable {
     GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
     GLES30.glViewport(0, 0, frame.width, frame.height)
     gpu?.draw(frame) ?: return false
-    EGLExt.eglPresentationTimeANDROID(display, windowSurface, presentationTimeNanos)
+    // Not every driver has the presentation-time extension; queuing the frame without a timestamp is
+    // still correct, so only set it when it is there.
+    if (supportsWindowSurface()) {
+      EGLExt.eglPresentationTimeANDROID(display, windowSurface, presentationTimeNanos)
+    }
     return EGL14.eglSwapBuffers(display, windowSurface)
   }
 
@@ -759,6 +769,7 @@ internal class MetalOffscreenRenderer : AutoCloseable {
   override fun close() {
     gpu?.release()
     gpu = null
+    presentationTimeSupported = null
     if (display != EGL14.EGL_NO_DISPLAY) {
       EGL14.eglMakeCurrent(
         display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT,

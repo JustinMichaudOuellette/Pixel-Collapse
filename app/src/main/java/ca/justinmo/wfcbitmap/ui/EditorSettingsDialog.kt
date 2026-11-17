@@ -83,6 +83,7 @@ internal fun EditorSettingsDialog(
             Text("$buttonSize dp", color = MENU_TEXT_COLOR.copy(alpha = 0.6f), fontSize = 12.sp)
           }
           Slider(
+            modifier = Modifier.sliderInsets(),
             value = buttonSize.toFloat(),
             onValueChange = {
               onButtonSizeChange(

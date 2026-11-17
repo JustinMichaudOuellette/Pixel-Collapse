@@ -227,11 +227,10 @@ internal fun riffSeed(baseSeed: Int, index: Int): Int {
 /**
  * The fastest and slowest frame rates the export offers, in frames per second.
  *
- * [MIN_VIDEO_FPS] is the MP4 floor; a GIF can go slower, down to [MIN_GIF_FPS], because a GIF frame
- * delay is a whole number of centiseconds and 100 of them is one second. MP4 is capped separately at
- * [MAX_MP4_FPS].
+ * Both containers can go down to one frame a second. A GIF stores a whole number of centiseconds per
+ * frame, so 100 cs is exactly one second; MP4 is capped separately at [MAX_MP4_FPS].
  */
-internal const val MIN_VIDEO_FPS = 10
+internal const val MIN_VIDEO_FPS = 1
 internal const val MAX_MP4_FPS = 60
 internal const val MAX_VIDEO_FPS = 100
 

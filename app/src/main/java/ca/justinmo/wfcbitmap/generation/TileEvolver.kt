@@ -46,6 +46,15 @@ internal class TileEvolver(
   internal val changeCount: Int
     get() = changes.size
 
+  /**
+   * A copy of the recorded changes, oldest first: the cell index in the high 32 bits and the centre it
+   * replaced in the low 32.
+   *
+   * The preview keeps one clip's worth of undo frames without holding a picture per frame by recording
+   * this log and rebuilding each undo picture from it, exactly as [pictureAfterUndoing] does.
+   */
+  internal fun changesSnapshot(): LongArray = LongArray(changes.size) { changes[it] }
+
   init {
     val packed = requireNotNull(output.packedTiles) { "the solve has no tile set to evolve" }
     val initialPatterns = requireNotNull(output.cellPatterns) { "the solve has no patterns to evolve" }

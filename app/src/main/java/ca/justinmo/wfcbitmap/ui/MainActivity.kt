@@ -55,11 +55,9 @@ import ca.justinmo.wfcbitmap.FeatureFlags
 import ca.justinmo.wfcbitmap.PixelCollapseApplication
 import ca.justinmo.wfcbitmap.editor.LatencyMeter
 import ca.justinmo.wfcbitmap.editor.PixelGridState
-import ca.justinmo.wfcbitmap.generation.TileEvolver
 import ca.justinmo.wfcbitmap.generation.WfcGenerator
 import ca.justinmo.wfcbitmap.generation.generationNotice
 import ca.justinmo.wfcbitmap.generation.generationPlan
-import ca.justinmo.wfcbitmap.generation.renderCellCenters
 import ca.justinmo.wfcbitmap.output.EditorMessage
 import ca.justinmo.wfcbitmap.output.ImageSaver
 import ca.justinmo.wfcbitmap.output.KernelSize
@@ -99,20 +97,24 @@ import ca.justinmo.wfcbitmap.video.Mp4Encoder
 import ca.justinmo.wfcbitmap.video.Mp4Saver
 import ca.justinmo.wfcbitmap.video.PANORAMA_TIMEOUT_MILLIS
 import ca.justinmo.wfcbitmap.video.PanoramaParams
-import ca.justinmo.wfcbitmap.video.RIFF_FRAME_TIMEOUT_MILLIS
 import ca.justinmo.wfcbitmap.video.VideoPanorama
 import ca.justinmo.wfcbitmap.video.buildPanorama
+import ca.justinmo.wfcbitmap.video.EvolveFrames
+import ca.justinmo.wfcbitmap.video.EvolvePreview
+import ca.justinmo.wfcbitmap.video.RiffFrames
+import ca.justinmo.wfcbitmap.video.RiffPreview
+import ca.justinmo.wfcbitmap.video.buildEvolveFrames
+import ca.justinmo.wfcbitmap.video.buildRiffFrames
 import ca.justinmo.wfcbitmap.video.ScrollDirection
 import ca.justinmo.wfcbitmap.video.SolveAnimation
 import ca.justinmo.wfcbitmap.video.SolveAnimationFrames
+import ca.justinmo.wfcbitmap.video.SolvePreview
 import ca.justinmo.wfcbitmap.video.USE_SURFACE_MP4_ENCODER
 import ca.justinmo.wfcbitmap.video.VideoFormat
 import ca.justinmo.wfcbitmap.video.VideoLook
 import ca.justinmo.wfcbitmap.video.VideoMode
 import ca.justinmo.wfcbitmap.video.cropFrame
-import ca.justinmo.wfcbitmap.video.evolveUndoPlan
 import ca.justinmo.wfcbitmap.video.panoramaMetalFrame
-import ca.justinmo.wfcbitmap.video.riffSeeds
 import ca.justinmo.wfcbitmap.video.scaleFrame
 import ca.justinmo.wfcbitmap.video.stillMetalFrame
 import ca.justinmo.wfcbitmap.video.stitchScreen
@@ -256,6 +258,52 @@ private class GenerationSlot {
   /** The newest request, counting from 1. Only the job holding this number may clear the busy flag. */
   var newestRequest: Int = 0
 }
+
+/**
+ * What a built Solve replay depends on.
+ *
+ * The preview and the export share one [SolveAnimationFrames] when this matches, so previewing a clip
+ * and then exporting it replays the solve once, not twice.
+ */
+private data class SolveReplayKey(
+  val output: WfcGenerator.Output,
+  val animation: SolveAnimation,
+  val steps: Int,
+  val background: Int,
+)
+
+/**
+ * What a built Evolve frame source depends on.
+ *
+ * The preview and the export share one [EvolveFrames] when this matches, so previewing a drift and then
+ * exporting it evolves the picture once, not twice.
+ */
+private data class EvolveReplayKey(
+  val output: WfcGenerator.Output,
+  val steps: Int,
+  val cells: Int,
+  val seed: Int,
+)
+
+/**
+ * What a built Riff frame source depends on.
+ *
+ * The preview and the export share one [RiffFrames] when this matches, so previewing a riff and then
+ * exporting it solves the patterns once, not twice.
+ */
+private data class RiffReplayKey(
+  val drawingRevision: Int,
+  val seed: Int,
+  val patterns: Int,
+  val aspect: OutputAspect,
+  val previewScale: PreviewScale,
+  val kernel: KernelSize,
+  val wrapEdges: Boolean,
+  val mirrorHorizontal: Boolean,
+  val mirrorVertical: Boolean,
+  val quarterTurn: Boolean,
+  val bestEffort: Boolean,
+)
 
 /**
  * The editor draws the *source image*; the column on its left shows, live, the bitmap that source
@@ -453,6 +501,50 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   var videoPreviewPanoramaBuilding by remember { mutableStateOf(false) }
   var videoPreviewPanoramaError by remember { mutableStateOf<String?>(null) }
   var videoPreviewPanoramaRequest by remember { mutableIntStateOf(0) }
+  /*
+   * The replay both the Solve preview and the Solve export draw from.
+   *
+   * A Solve video is a replay of the real search, so the preview must play that same replay or it is
+   * showing a different video. The frames are built once, off the main thread, and then handed to the
+   * preview; an export reuses them instead of replaying the solve a second time.
+   */
+  var videoSolveFrames by remember { mutableStateOf<SolveAnimationFrames?>(null) }
+  var videoSolveFramesKey by remember { mutableStateOf<SolveReplayKey?>(null) }
+  var videoSolveFramesBuilding by remember { mutableStateOf(false) }
+  var videoSolveFramesError by remember { mutableStateOf<String?>(null) }
+  var videoSolveFramesRequest by remember { mutableIntStateOf(0) }
+  val videoPreviewSolve = remember(videoSolveFrames) {
+    videoSolveFrames?.let { SolvePreview(it) }
+  }
+  /*
+   * The evolve frames both the preview and the export draw from.
+   *
+   * The export evolves the picture frame by frame; the preview has to drift the same way or it is showing
+   * a different clip. The frames are built once, off the main thread, and an export reuses them instead
+   * of evolving the picture a second time.
+   */
+  var videoEvolveFrames by remember { mutableStateOf<EvolveFrames?>(null) }
+  var videoEvolveKey by remember { mutableStateOf<EvolveReplayKey?>(null) }
+  var videoEvolveBuilding by remember { mutableStateOf(false) }
+  var videoEvolveError by remember { mutableStateOf<String?>(null) }
+  var videoEvolveRequest by remember { mutableIntStateOf(0) }
+  val videoPreviewEvolve = remember(videoEvolveFrames) {
+    videoEvolveFrames?.let { EvolvePreview(it) }
+  }
+  /*
+   * The riff patterns both the preview and the export draw from.
+   *
+   * Riff solves the drawing once per frame with a fresh seed; the preview plays those same frames. The
+   * patterns are built once, off the main thread, and an export reuses them instead of solving them again.
+   */
+  var videoRiffFrames by remember { mutableStateOf<RiffFrames?>(null) }
+  var videoRiffKey by remember { mutableStateOf<RiffReplayKey?>(null) }
+  var videoRiffBuilding by remember { mutableStateOf(false) }
+  var videoRiffError by remember { mutableStateOf<String?>(null) }
+  var videoRiffRequest by remember { mutableIntStateOf(0) }
+  val videoPreviewRiff = remember(videoRiffFrames) {
+    videoRiffFrames?.let { RiffPreview(it) }
+  }
   var toolButtonSize by remember {
     mutableIntStateOf(preferences.toolButtonSize(fallback = BUTTON_SIZE_DP_INT))
   }
@@ -1011,6 +1103,10 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     val metalParams = metalSettings.sanitised()
     // The replay's frames are the solved bitmap itself, so its cells are this many pixels wide.
     val cellPixels = (width / solved.columns.coerceAtLeast(1)).coerceAtLeast(1)
+    // If the preview already holds this exact replay, the file is built from those same frames rather
+    // than replaying the solve a second time.
+    val previewFrames = videoSolveFrames
+      .takeIf { videoSolveFramesKey == SolveReplayKey(solved, animation, requestedSteps, background) }
 
     exportingVideo = true
     videoExportLabel = "Replaying the solve…"
@@ -1018,21 +1114,26 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     videoExportCancelled.set(false)
     videoExportJob = application.exportScope.launch {
       try {
-        val trace = WfcGenerator.traceSolve(solved)
-        if (trace == null) {
+        // The trace can be tens of megabytes; keep it only while the samples are built, and build the
+        // samples off the main thread.
+        val frames = previewFrames ?: withContext(Dispatchers.Default) {
+          WfcGenerator.traceSolve(solved)?.let { trace ->
+            SolveAnimationFrames(
+              trace = trace,
+              solvedPixels = solvedPixels,
+              width = width,
+              height = height,
+              background = background,
+              style = animation,
+              requestedSteps = requestedSteps,
+            )
+          }
+        }
+        if (frames == null) {
           message = EditorMessage("Could not replay this solve for a video")
           return@launch
         }
         if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
-        val frames = SolveAnimationFrames(
-          trace = trace,
-          solvedPixels = solvedPixels,
-          width = width,
-          height = height,
-          background = background,
-          style = animation,
-          requestedSteps = requestedSteps,
-        )
         val steps = frames.steps
         val total = if (format == VideoFormat.Gif) steps * 2 - 1 else steps
         videoExportLabel = "Encoding ${format.label}…"
@@ -1041,9 +1142,12 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
         fun forwardIndex(index: Int): Int =
           if (format == VideoFormat.Gif && index >= steps) total - 1 - index else index
 
+        // One frame buffer for the whole export: the encoders consume it before the next callback.
+        val frameBuffer = IntArray(width * height)
         fun rawFrame(forward: Int): IntArray {
           if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
-          return frames.frameAt(forward)
+          frames.fillFrame(forward, frameBuffer)
+          return frameBuffer
         }
 
         /** One output frame, GPU-shaded when possible and CPU-shaded (the old way) when not. */
@@ -1191,8 +1295,7 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     }
     val width = base.bitmap.width
     val height = base.bitmap.height
-    val baseCenters = base.cellCenters
-    if (baseCenters == null) {
+    if (base.cellCenters == null) {
       Toast.makeText(context, "There is no solved picture to evolve yet", Toast.LENGTH_SHORT).show()
       return
     }
@@ -1204,6 +1307,10 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     val scale = (width / base.columns).coerceAtLeast(1)
     val metal = videoLook == VideoLook.Metal
     val metalParams = metalSettings.sanitised()
+    // If the preview already holds this exact clip, the file is built from those same frames rather than
+    // evolving the picture a second time.
+    val previewFrames = videoEvolveFrames
+      .takeIf { videoEvolveKey == EvolveReplayKey(base, steps, count, baseSeed) }
 
     videoExportOpen = false
     message = null
@@ -1214,46 +1321,21 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     videoExportCancelled.set(false)
     videoExportJob = application.exportScope.launch {
       try {
-        // Evolve all unique frames once, as cell centres. That keeps the encoder from re-solving
-        // everything, and is far smaller than holding bitmaps for every frame.
-        val evolvedCenters = arrayOfNulls<IntArray>(steps)
-        evolvedCenters[0] = baseCenters
-        // One model and one cumulative assignment for the whole video: no per-frame re-solve.
-        val evolver = TileEvolver(base, count)
-        val undoReversions: List<Int>
-        try {
-          for (frame in 1 until steps) {
-            if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
-            videoExportProgress = 0.01f + 0.49f * frame / steps
-            evolvedCenters[frame] = evolver.nextFrame(baseSeed * 31 + frame * 101)
-          }
-          // What the second pass has to take back, and how many changes each of its frames reverts.
-          undoReversions = evolveUndoPlan(evolver.changeCount)
-        } finally {
-          // Closing frees the native model; the recorded changes are plain data, so the undo pass can
-          // still ask the evolver for its pictures afterwards.
-          evolver.close()
+        // The clip is cell centres plus the undo log, so it is small; build it once, off the main thread.
+        val frames = previewFrames ?: buildEvolveFrames(base, steps, count, baseSeed) { frame ->
+          if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
+          mainHandler.post { videoExportProgress = 0.01f + 0.49f * frame / steps }
         }
-        val total = steps + undoReversions.size
+        if (frames == null) {
+          message = EditorMessage("Could not make the evolve video")
+          return@launch
+        }
+        val total = frames.frameCount
 
         fun rawFrame(index: Int): IntArray {
           if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
-          val centres = if (index < steps) {
-            evolvedCenters[index] ?: baseCenters
-          } else {
-            evolver.pictureAfterUndoing(undoReversions[index - steps])
-          }
           val pixels = IntArray(width * height)
-          renderCellCenters(
-            pixels = pixels,
-            width = width,
-            columns = base.columns,
-            rows = base.rows,
-            scale = scale,
-            centres = centres,
-            blocks = base.blocks,
-            cell = base.cellSize,
-          )
+          frames.fillFrame(index, pixels)
           return pixels
         }
 
@@ -1385,9 +1467,25 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     val rows = gridState.rows
     val pixels = IntArray(columns * rows) { gridState.pixels[it].toArgb() }
     val count = patterns.coerceIn(MIN_RIFF_PATTERNS, MAX_RIFF_PATTERNS)
-    val seeds = riffSeeds(seed, count)
     val metal = videoLook == VideoLook.Metal
     val metalParams = metalSettings.sanitised()
+    // If the preview already holds these exact patterns, the file is built from them instead of solving
+    // the drawing a second time.
+    val previewFrames = videoRiffFrames.takeIf {
+      videoRiffKey == RiffReplayKey(
+        drawingRevision = gridState.revision,
+        seed = seed,
+        patterns = count,
+        aspect = outputSettings.aspect,
+        previewScale = outputSettings.preview,
+        kernel = outputSettings.kernel,
+        wrapEdges = wrapEdges,
+        mirrorHorizontal = mirrorHorizontal,
+        mirrorVertical = mirrorVertical,
+        quarterTurn = quarterTurn,
+        bestEffort = bestEffort,
+      )
+    }
 
     videoExportOpen = false
     message = null
@@ -1398,54 +1496,34 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     videoExportCancelled.set(false)
     videoExportJob = application.exportScope.launch {
       try {
-        val centres = ArrayList<IntArray>(count)
-        var blocks: List<IntArray>? = null
-        for ((index, frameSeed) in seeds.withIndex()) {
+        val frames = previewFrames ?: buildRiffFrames(
+          pixels = pixels,
+          sourceWidth = columns,
+          sourceHeight = rows,
+          seed = seed,
+          patterns = count,
+          frameColumns = frame.columns,
+          frameRows = frame.rows,
+          pixelsPerCell = frame.pixelsPerCell,
+          cellSize = frame.cellSize,
+          wrapEdges = wrapEdges,
+          mirrorHorizontal = mirrorHorizontal,
+          mirrorVertical = mirrorVertical,
+          quarterTurn = quarterTurn,
+          bestEffort = bestEffort,
+          generationMutex = generationMutex,
+        ) { done ->
           if (videoExportCancelled.get()) throw CancellationException("Export cancelled")
-          videoExportLabel = "Solving pattern ${index + 1} of $count…"
-          videoExportProgress = 0.45f * index / count
-          val solved = generationMutex.withLock {
-            WfcGenerator.generate(
-              pixels = pixels,
-              sourceWidth = columns,
-              sourceHeight = rows,
-              seed = frameSeed,
-              columns = frame.columns,
-              rows = frame.rows,
-              wrapEdges = wrapEdges,
-              mirrorHorizontal = mirrorHorizontal,
-              mirrorVertical = mirrorVertical,
-              quarterTurn = quarterTurn,
-              bestEffort = bestEffort,
-              pixelsPerCell = frame.pixelsPerCell,
-              cellSize = frame.cellSize,
-              timeoutMillis = RIFF_FRAME_TIMEOUT_MILLIS,
-              // A frame is a demonstration, not the picture the editor shows: it must neither seed that
-              // cache nor teach the editor's budget a cost it never actually paid for a preview.
-              isSessionPicture = false,
-            )
+          mainHandler.post {
+            videoExportLabel = "Solving pattern $done of $count…"
+            videoExportProgress = 0.45f * done / count
           }
-          val cellCentres = solved.cellCenters
-            ?: throw WfcGenerator.GenerationException("A riff frame had no solved cells")
-          centres.add(cellCentres)
-          if (blocks == null) blocks = solved.blocks
-          videoExportProgress = 0.45f * (index + 1) / count
         }
-        val cellBlocks = blocks
         videoExportLabel = "Encoding ${format.label}…"
 
         fun solvedFrame(index: Int): IntArray {
           val out = IntArray(width * height)
-          renderCellCenters(
-            pixels = out,
-            width = width,
-            columns = frame.columns,
-            rows = frame.rows,
-            scale = frame.pixelsPerCell,
-            centres = centres[index],
-            blocks = cellBlocks,
-            cell = frame.cellSize,
-          )
+          frames.fillFrame(index, out)
           return out
         }
 
@@ -2285,14 +2363,17 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
    *
    * This is intentionally not the current solved frame repeated: that frame's edges are independent, so
    * repeating it invents a seam the exporter would never write. The builder runs after a short debounce
-   * because the Loop and Pixels-per-frame sliders change many times during a drag, and a cancelled build
-   * must not leave the "building" label up for the next settings.
+   * because the Loop slider changes many times during a drag, and a cancelled build must not leave the
+   * "building" label up for the next settings.
+   *
+   * Pixels per frame is deliberately not a key: it changes how far the existing window travels per tick,
+   * not the panorama surface. Rebuilding here would replace the preview source with the single-frame
+   * fallback for several frames, which resets the user's zoom for a setting that does not need a solve.
    */
   LaunchedEffect(
     videoExportOpen,
     videoMode,
     videoScreens,
-    videoPixelsPerFrame,
     scrollDirection,
     seed,
     videoFrame.columns,
@@ -2385,6 +2466,233 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
       if (request == videoPreviewPanoramaRequest) videoPreviewPanoramaBuilding = false
     }
   }
+  /*
+   * Build the Solve replay once for both the preview and the export.
+   *
+   * This is the exporter's own frame source: `WfcGenerator.traceSolve` records the real search and
+   * `SolveAnimationFrames` samples it. It costs another solve, so it runs off the main thread, behind a
+   * short debounce for slider drags, and the finished object is kept for the export to reuse. While it
+   * builds the preview keeps the still picture up (with a spinner).
+   */
+  LaunchedEffect(
+    videoExportOpen,
+    videoMode,
+    solveAnimation,
+    videoFps,
+    output,
+    videoPreviewPixels,
+    gridState.defaultColor,
+  ) {
+    val solved = output
+    val pixels = videoPreviewPixels
+    if (!videoExportOpen || videoMode != VideoMode.Solve || solved == null || pixels == null) {
+      videoSolveFramesRequest++
+      videoSolveFrames = null
+      videoSolveFramesKey = null
+      videoSolveFramesBuilding = false
+      videoSolveFramesError = null
+      return@LaunchedEffect
+    }
+    val key = SolveReplayKey(
+      output = solved,
+      animation = solveAnimation,
+      steps = (videoFps * 2).coerceIn(24, 90),
+      background = gridState.defaultColor.toArgb(),
+    )
+    if (videoSolveFramesKey == key && videoSolveFrames != null) return@LaunchedEffect
+    val request = videoSolveFramesRequest + 1
+    videoSolveFramesRequest = request
+    videoSolveFrames = null
+    videoSolveFramesKey = null
+    videoSolveFramesError = null
+    videoSolveFramesBuilding = true
+    try {
+      // A slider drag changes many times; only the last setting should pay for a replay.
+      delay(250)
+      val built = withContext(Dispatchers.Default) {
+        WfcGenerator.traceSolve(solved)?.let { trace ->
+          SolveAnimationFrames(
+            trace = trace,
+            solvedPixels = pixels,
+            width = solved.bitmap.width,
+            height = solved.bitmap.height,
+            background = key.background,
+            style = key.animation,
+            requestedSteps = key.steps,
+          )
+        }
+      }
+      if (request == videoSolveFramesRequest) {
+        if (built == null) {
+          videoSolveFramesError = "Could not replay this solve for a video"
+        } else {
+          videoSolveFrames = built
+          videoSolveFramesKey = key
+          videoSolveFramesError = null
+        }
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Could not build the solve replay", e)
+      if (request == videoSolveFramesRequest) {
+        videoSolveFrames = null
+        videoSolveFramesError = "Could not prepare the solve preview"
+      }
+    } finally {
+      if (request == videoSolveFramesRequest) videoSolveFramesBuilding = false
+    }
+  }
+  /*
+   * Build the Evolve frames once for both the preview and the export.
+   *
+   * The exporter's own frame source is `TileEvolver`: a forward pass of local re-solves, then an undo
+   * pass that takes the recorded cell changes back. Building it is 90 small solves, so it runs off the
+   * main thread behind a short debounce and is kept for the export to reuse. While it builds the preview
+   * keeps the still picture up (with a spinner).
+   */
+  LaunchedEffect(videoExportOpen, videoMode, evolveCells, videoFps, output, seed) {
+    val solved = output
+    if (!videoExportOpen || videoMode != VideoMode.Evolve ||
+      solved == null || solved.cellCenters == null
+    ) {
+      videoEvolveRequest++
+      videoEvolveFrames = null
+      videoEvolveKey = null
+      videoEvolveBuilding = false
+      videoEvolveError = null
+      return@LaunchedEffect
+    }
+    val key = EvolveReplayKey(
+      output = solved,
+      steps = (videoFps * 2).coerceIn(24, 90),
+      cells = evolveCells.coerceIn(MIN_EVOLVE_CELLS, MAX_EVOLVE_CELLS),
+      seed = seed,
+    )
+    if (videoEvolveKey == key && videoEvolveFrames != null) return@LaunchedEffect
+    val request = videoEvolveRequest + 1
+    videoEvolveRequest = request
+    videoEvolveFrames = null
+    videoEvolveKey = null
+    videoEvolveError = null
+    videoEvolveBuilding = true
+    try {
+      // A slider drag changes many times; only the last setting should pay for a build.
+      delay(250)
+      val built = buildEvolveFrames(solved, key.steps, key.cells, key.seed)
+      if (request == videoEvolveRequest) {
+        if (built == null) {
+          videoEvolveError = "Could not prepare the evolve preview"
+        } else {
+          videoEvolveFrames = built
+          videoEvolveKey = key
+          videoEvolveError = null
+        }
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Could not build the evolve frames", e)
+      if (request == videoEvolveRequest) {
+        videoEvolveFrames = null
+        videoEvolveError = "Could not prepare the evolve preview"
+      }
+    } finally {
+      if (request == videoEvolveRequest) videoEvolveBuilding = false
+    }
+  }
+  /*
+   * Build the Riff patterns once for both the preview and the export.
+   *
+   * Each frame is a full solve of the drawing with a fresh seed, so building the clip costs one solve per
+   * pattern. It runs off the main thread, behind a debounce for the pattern slider, and the result is kept
+   * for the export to reuse. While it builds the preview keeps the still picture up (with a spinner).
+   */
+  LaunchedEffect(
+    videoExportOpen,
+    videoMode,
+    riffPatterns,
+    seed,
+    output,
+    gridState.revision,
+    outputSettings.aspect,
+    outputSettings.preview,
+    outputSettings.kernel,
+    wrapEdges,
+    mirrorHorizontal,
+    mirrorVertical,
+    quarterTurn,
+    bestEffort,
+  ) {
+    if (!videoExportOpen || videoMode != VideoMode.Riff || output == null) {
+      videoRiffRequest++
+      videoRiffFrames = null
+      videoRiffKey = null
+      videoRiffBuilding = false
+      videoRiffError = null
+      return@LaunchedEffect
+    }
+    val key = RiffReplayKey(
+      drawingRevision = gridState.revision,
+      seed = seed,
+      patterns = riffPatterns.coerceIn(MIN_RIFF_PATTERNS, MAX_RIFF_PATTERNS),
+      aspect = outputSettings.aspect,
+      previewScale = outputSettings.preview,
+      kernel = outputSettings.kernel,
+      wrapEdges = wrapEdges,
+      mirrorHorizontal = mirrorHorizontal,
+      mirrorVertical = mirrorVertical,
+      quarterTurn = quarterTurn,
+      bestEffort = bestEffort,
+    )
+    if (videoRiffKey == key && videoRiffFrames != null) return@LaunchedEffect
+    val request = videoRiffRequest + 1
+    videoRiffRequest = request
+    videoRiffFrames = null
+    videoRiffKey = null
+    videoRiffError = null
+    videoRiffBuilding = true
+    try {
+      // The pattern slider changes many times during a drag; only the last value should pay for a clip.
+      delay(250)
+      val columns = gridState.columns
+      val rows = gridState.rows
+      val pixels = IntArray(columns * rows) { gridState.pixels[it].toArgb() }
+      val plan = videoFramePlan(outputSettings.aspect, outputSettings.preview, outputSettings.kernel)
+      val built = buildRiffFrames(
+        pixels = pixels,
+        sourceWidth = columns,
+        sourceHeight = rows,
+        seed = key.seed,
+        patterns = key.patterns,
+        frameColumns = plan.columns,
+        frameRows = plan.rows,
+        pixelsPerCell = plan.pixelsPerCell,
+        cellSize = plan.cellSize,
+        wrapEdges = key.wrapEdges,
+        mirrorHorizontal = key.mirrorHorizontal,
+        mirrorVertical = key.mirrorVertical,
+        quarterTurn = key.quarterTurn,
+        bestEffort = key.bestEffort,
+        generationMutex = generationMutex,
+      )
+      if (request == videoRiffRequest) {
+        videoRiffFrames = built
+        videoRiffKey = key
+        videoRiffError = null
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Could not build the riff patterns", e)
+      if (request == videoRiffRequest) {
+        videoRiffFrames = null
+        videoRiffError = e.message ?: "Could not prepare the riff preview"
+      }
+    } finally {
+      if (request == videoRiffRequest) videoRiffBuilding = false
+    }
+  }
   VideoExportScreen(
     open = videoExportOpen,
     format = videoFormat,
@@ -2405,6 +2713,15 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
     previewPanorama = videoPreviewPanorama,
     previewPanoramaBuilding = videoPreviewPanoramaBuilding,
     previewPanoramaError = videoPreviewPanoramaError,
+    previewSolve = videoPreviewSolve,
+    previewSolveBuilding = videoSolveFramesBuilding,
+    previewSolveError = videoSolveFramesError,
+    previewEvolve = videoPreviewEvolve,
+    previewEvolveBuilding = videoEvolveBuilding,
+    previewEvolveError = videoEvolveError,
+    previewRiff = videoPreviewRiff,
+    previewRiffBuilding = videoRiffBuilding,
+    previewRiffError = videoRiffError,
     frameColumns = videoFrame.columns,
     frameRows = videoFrame.rows,
     pixelsPerCell = videoFrame.pixelsPerCell,

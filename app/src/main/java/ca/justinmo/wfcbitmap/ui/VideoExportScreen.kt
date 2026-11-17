@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -56,8 +58,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import ca.justinmo.wfcbitmap.FeatureFlags
 import ca.justinmo.wfcbitmap.video.DEFAULT_RIFF_PATTERNS
+import ca.justinmo.wfcbitmap.video.EvolvePreview
+import ca.justinmo.wfcbitmap.video.RiffPreview
 import ca.justinmo.wfcbitmap.video.MAX_EVOLVE_CELLS
 import ca.justinmo.wfcbitmap.video.MAX_GIF_DELAY_CENTISECONDS
 import ca.justinmo.wfcbitmap.video.MAX_LOOP_SCREENS
@@ -76,18 +82,42 @@ import ca.justinmo.wfcbitmap.video.PreviewMaterial
 import ca.justinmo.wfcbitmap.video.PreviewSource
 import ca.justinmo.wfcbitmap.video.ScrollDirection
 import ca.justinmo.wfcbitmap.video.SolveAnimation
+import ca.justinmo.wfcbitmap.video.SolvePreview
 import ca.justinmo.wfcbitmap.video.VideoFormat
 import ca.justinmo.wfcbitmap.video.VideoLook
 import ca.justinmo.wfcbitmap.video.VideoMode
 import ca.justinmo.wfcbitmap.video.VideoPanorama
 import ca.justinmo.wfcbitmap.video.estimatedVideoBytes
 import ca.justinmo.wfcbitmap.video.formatByteSize
+import ca.justinmo.wfcbitmap.video.solveAnimationStepCount
 import ca.justinmo.wfcbitmap.video.videoPlan
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
+
+/**
+ * Adjust this value to control how big the video export preview is. Smaller value equals bigger preview.
+ */
+private const val PREVIEW_WEIGHT = 0.5f
+
+private const val UI_HEIGHT = 1f - PREVIEW_WEIGHT
+
+/** The solve preview paints a whole frame per tick, so it is capped lower than a panned texture. */
+private const val MAX_SOLVE_PREVIEW_FPS = 30
+
+/** The "building a preview" indicator, shown over the preview while a background solve runs. */
+@Composable
+private fun PreviewSpinner() {
+  CircularProgressIndicator(
+    modifier = Modifier.size(28.dp),
+    color = MENU_TEXT_COLOR,
+    strokeWidth = 3.dp,
+  )
+}
 
 /**
  * The video export as a screen of its own: the loop's two measurements, the container to write, and one
@@ -124,6 +154,15 @@ fun VideoExportScreen(
   previewPanorama: VideoPanorama? = null,
   previewPanoramaBuilding: Boolean = false,
   previewPanoramaError: String? = null,
+  previewSolve: SolvePreview? = null,
+  previewSolveBuilding: Boolean = false,
+  previewSolveError: String? = null,
+  previewEvolve: EvolvePreview? = null,
+  previewEvolveBuilding: Boolean = false,
+  previewEvolveError: String? = null,
+  previewRiff: RiffPreview? = null,
+  previewRiffBuilding: Boolean = false,
+  previewRiffError: String? = null,
   frameColumns: Int,
   frameRows: Int,
   pixelsPerCell: Int,
@@ -168,7 +207,11 @@ fun VideoExportScreen(
     scrollDirection = scrollDirection,
     outputWidth = outputWidth, outputHeight = outputHeight,
   )
-  val solveSteps = (fps * 2).coerceIn(24, 90)
+  // Once the replay is built its own step count is the truth; before that, predict the same value.
+  val solveSteps = previewSolve?.steps ?: solveAnimationStepCount(
+    cellCount = frameColumns * frameRows,
+    requestedSteps = (fps * 2).coerceIn(24, 90),
+  )
   val solveTotal = if (format == VideoFormat.Gif) solveSteps * 2 - 1 else solveSteps
   val previewFps = if (format == VideoFormat.Gif) {
     // The preview follows the GIF's real delay, capped at 10 fps so a fast GIF does not spin the
@@ -187,6 +230,77 @@ fun VideoExportScreen(
   // A Riff frame is one pattern, so the clip's length is its pattern count over the rate it plays at.
   val riffDurationSeconds = riffPatterns / playbackFps
   val loopSeconds = plan.frameCount * plan.pixelsPerFrame / playbackFps
+  /*
+   * The solve preview plays the same [SolveAnimationFrames] the exporter writes, so the two cannot
+   * disagree. A whole frame is painted per tick, so it runs more slowly than a panned texture can; GIF
+   * and MP4 order their frames differently, which [SolvePreview.previewSource] handles from the same
+   * sequence index.
+   */
+  val solvePreviewFps = previewFps.coerceIn(1, MAX_SOLVE_PREVIEW_FPS)
+  var solveFrameSource by remember(mode, format, previewSolve, previewCellPixels) {
+    mutableStateOf<PreviewSource?>(null)
+  }
+  /*
+   * The solve preview plays the exporter's own frames. Painting one off the main thread keeps the UI
+   * responsive at fine preview sizes; only the finished PreviewSource is published to composition.
+   */
+  LaunchedEffect(mode, format, previewSolve, solvePreviewFps, previewCellPixels) {
+    solveFrameSource = null
+    if (mode != VideoMode.Solve || previewSolve == null) return@LaunchedEffect
+    val solve = previewSolve
+    var tick = 0
+    while (isActive) {
+      val next = withContext(Dispatchers.Default) {
+        solve.previewSource(
+          sequenceIndex = tick,
+          gifLoop = format == VideoFormat.Gif,
+          cellPixels = previewCellPixels,
+        )
+      }
+      solveFrameSource = next
+      tick++
+      delay((1000L / solvePreviewFps.coerceAtLeast(1)).coerceAtLeast(1L))
+    }
+  }
+  // Evolve previews the same frame sequence the exporter writes: the forward drift, then the undo pass.
+  val evolvePreviewFps = previewFps.coerceIn(1, MAX_SOLVE_PREVIEW_FPS)
+  var evolveFrameSource by remember(mode, previewEvolve, previewCellPixels) {
+    mutableStateOf<PreviewSource?>(null)
+  }
+  LaunchedEffect(mode, previewEvolve, evolvePreviewFps, previewCellPixels) {
+    evolveFrameSource = null
+    if (mode != VideoMode.Evolve || previewEvolve == null) return@LaunchedEffect
+    val evolve = previewEvolve
+    var tick = 0
+    while (isActive) {
+      val next = withContext(Dispatchers.Default) {
+        evolve.previewSource(sequenceIndex = tick, cellPixels = previewCellPixels)
+      }
+      evolveFrameSource = next
+      tick++
+      delay((1000L / evolvePreviewFps.coerceAtLeast(1)).coerceAtLeast(1L))
+    }
+  }
+  // Riff previews the same pattern run the exporter writes: one freshly solved picture per frame.
+  val riffPreviewFps = previewFps.coerceIn(1, MAX_SOLVE_PREVIEW_FPS)
+  var riffFrameSource by remember(mode, previewRiff) {
+    mutableStateOf<PreviewSource?>(null)
+  }
+  LaunchedEffect(mode, previewRiff, riffPreviewFps, pixelsPerCell) {
+    riffFrameSource = null
+    if (mode != VideoMode.Riff || previewRiff == null) return@LaunchedEffect
+    val riff = previewRiff
+    var tick = 0
+    while (isActive) {
+      val next = withContext(Dispatchers.Default) {
+        // A riff frame is cut at the exporter's own cell size, not the solved picture's.
+        riff.previewSource(sequenceIndex = tick, cellPixels = pixelsPerCell)
+      }
+      riffFrameSource = next
+      tick++
+      delay((1000L / riffPreviewFps.coerceAtLeast(1)).coerceAtLeast(1L))
+    }
+  }
   var previewFrame by remember(mode) { mutableIntStateOf(0) }
   LaunchedEffect(mode, previewFps, pixelsPerFrame, previewPixels) {
     if (mode != VideoMode.Panorama || previewPixels == null) return@LaunchedEffect
@@ -217,20 +331,42 @@ fun VideoExportScreen(
     if (verticalPreview) it.previewHeight else it.previewWidth
   } ?: previewSpan
   val panoramaShift = if (previewPanorama == null) 0 else shiftIn(panoramaSpan)
-  // Match the export's softened emboss when the saved video is an upscale of the preview bitmap.
+  // Where the pan is in the export's own frame sequence, so the metal light is lit from the same phase
+  // the exporter uses for that frame.
+  val panoramaPhase = if (previewPanorama == null) {
+    null
+  } else if (plan.frameCount <= 1 || plan.pixelsPerFrame <= 0) {
+    0f
+  } else {
+    val index = if (reversePreview) {
+      (panoramaSpan - panoramaShift) / plan.pixelsPerFrame
+    } else {
+      panoramaShift / plan.pixelsPerFrame
+    }
+    (index % plan.frameCount).toFloat() / plan.frameCount
+  }
+  // Match the export's softened emboss. The panorama exporter softens for an upscale; the single-frame
+  // exporters (Solve, Evolve, Riff) use the material unscaled.
   val previewEmbossScale = 1f / sqrt(exportPixelScale.coerceAtLeast(1f))
   val previewSource: PreviewSource? = if (previewPixels == null ||
     previewWidth <= 0 || previewHeight <= 0
   ) {
     null
+  } else if (mode == VideoMode.Solve && solveFrameSource != null) {
+    solveFrameSource
+  } else if (mode == VideoMode.Evolve && evolveFrameSource != null) {
+    evolveFrameSource
+  } else if (mode == VideoMode.Riff && riffFrameSource != null) {
+    riffFrameSource
   } else if (mode == VideoMode.Panorama && previewPanorama != null) {
-    PreviewSource.fromPanorama(previewPanorama, previewCellPixels)
+    PreviewSource.fromPanorama(previewPanorama, previewCellPixels, phase = panoramaPhase)
   } else {
     PreviewSource.fromFrame(previewPixels, previewWidth, previewHeight, previewCellPixels)
   }
   val previewMaterial: PreviewMaterial =
     if (look == VideoLook.Metal && format == VideoFormat.Mp4) {
-      PreviewMaterial.Metal(metal, previewEmbossScale)
+      val embossScale = if (mode == VideoMode.Panorama) previewEmbossScale else 1f
+      PreviewMaterial.Metal(metal, embossScale)
     } else {
       PreviewMaterial.Flat
     }
@@ -238,6 +374,28 @@ fun VideoExportScreen(
     panoramaShift.toFloat()
   } else {
     0f
+  }
+  // The build is debounced in the caller, so there can be a short window before the building flag is
+  // set. Treat "panorama expected but not here yet" as loading too, and let a real error win.
+  val panoramaPreparing = mode == VideoMode.Panorama &&
+    previewSource != null &&
+    previewPanorama == null &&
+    previewPanoramaError == null
+  // Each mode has its own background build: a seam-correct panorama, a replay of the real solve, the
+  // evolve frame sequence, or the riff pattern run.
+  val previewLoading = when (mode) {
+    VideoMode.Panorama -> panoramaPreparing || previewPanoramaBuilding
+    VideoMode.Solve -> previewSolveBuilding
+    VideoMode.Evolve -> previewEvolveBuilding
+    VideoMode.Riff -> previewRiffBuilding
+    else -> false
+  }
+  val previewError = when (mode) {
+    VideoMode.Panorama -> previewPanoramaError
+    VideoMode.Solve -> previewSolveError
+    VideoMode.Evolve -> previewEvolveError
+    VideoMode.Riff -> previewRiffError
+    else -> null
   }
 
   Dialog(
@@ -302,11 +460,14 @@ fun VideoExportScreen(
          * In Panorama mode the caller builds the same looped panorama the exporter cuts from. This box
          * only draws a frame window into it, so the screen-to-screen joins shown here are real WFC joins
          * rather than the arbitrary edges of one independently solved frame.
+         *
+         * In Solve mode the caller prepares the exporter's own replay. This box advances through those
+         * frames at the preview's tick rate, so the preview and the file show the same sequence.
          */
         Box(
           modifier = Modifier
             .fillMaxWidth()
-            .weight(0.34f)
+            .weight(UI_HEIGHT)
             .background(Color.Black),
           contentAlignment = Alignment.Center,
         ) {
@@ -324,29 +485,48 @@ fun VideoExportScreen(
               modifier = Modifier.fillMaxSize(),
             )
           }
-          if (mode == VideoMode.Panorama) {
-            if (previewPanoramaBuilding) {
+          // Only the metal preview is a SurfaceView, and a SurfaceView's pixels sit above the dialog's
+          // canvas; its overlays need a Popup window. The flat preview is drawn in Compose, so its
+          // overlays can be ordinary children (no extra window to tear down on close).
+          val previewOnGlSurface = previewMaterial is PreviewMaterial.Metal
+          if (previewLoading) {
+            if (previewOnGlSurface) {
+              Popup(
+                alignment = Alignment.Center,
+                properties = PopupProperties(focusable = false),
+              ) {
+                PreviewSpinner()
+              }
+            } else {
+              PreviewSpinner()
+            }
+          } else if (previewError != null) {
+            val errorText: @Composable () -> Unit = {
               Text(
-                "Building seamless panorama…",
+                previewError,
                 color = MENU_TEXT_COLOR,
                 fontSize = 10.sp,
                 modifier = Modifier
-                  .align(Alignment.BottomCenter)
-                  .padding(8.dp)
-                  .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                  .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
                   .padding(horizontal = 8.dp, vertical = 4.dp),
               )
-            } else if (previewPanoramaError != null) {
-              Text(
-                previewPanoramaError,
-                color = MENU_TEXT_COLOR,
-                fontSize = 10.sp,
+            }
+            if (previewOnGlSurface) {
+              Popup(
+                alignment = Alignment.BottomCenter,
+                properties = PopupProperties(focusable = false),
+              ) {
+                errorText()
+              }
+            } else {
+              Box(
                 modifier = Modifier
-                  .align(Alignment.BottomCenter)
-                  .padding(8.dp)
-                  .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
-                  .padding(horizontal = 8.dp, vertical = 4.dp),
-              )
+                  .fillMaxSize()
+                  .padding(8.dp),
+                contentAlignment = Alignment.BottomCenter,
+              ) {
+                errorText()
+              }
             }
           }
         }
@@ -354,7 +534,7 @@ fun VideoExportScreen(
         Column(
           modifier = Modifier
             .fillMaxWidth()
-            .weight(0.66f)
+            .weight(PREVIEW_WEIGHT)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp)
             .padding(top = 8.dp),
@@ -365,8 +545,8 @@ fun VideoExportScreen(
                 "A wide picture pans around a loop and returns to its start. Pick the direction below; " +
                   "every frame moves the window by the chosen step, so the loop is smooth by construction."
               VideoMode.Solve ->
-                "A replay of the real solver, not a reveal of the finished bitmap. A GIF runs the replay " +
-                  "backwards so it loops; an MP4 stops on the finished picture."
+                "A replay of the real solver, played here exactly as it will be written. A GIF runs " +
+                  "the replay backwards so it loops; an MP4 stops on the finished picture."
               VideoMode.Evolve ->
                 "Evolve nudges the picture a few cells at a time: a small patch is re-solved on each " +
                   "frame with the cells around it held in place. Then those changes are taken back one " +
@@ -374,7 +554,7 @@ fun VideoExportScreen(
               VideoMode.Riff ->
                 "Riff re-solves the drawing for every frame, each time with a seed no earlier frame " +
                   "used. The clip opens on the picture on screen and changes to a new arrangement on " +
-                  "every frame, so no two frames share a seed."
+                  "every frame, so no two frames share a seed. This preview plays that same clip."
             },
             color = MENU_TEXT_COLOR.copy(alpha = 0.6f),
             fontSize = 12.sp,
@@ -433,7 +613,7 @@ fun VideoExportScreen(
                     },
                     contentColor = if (chosen) Color.Black else MENU_TEXT_COLOR,
                     disabledContainerColor = if (chosen) {
-                      MENU_TEXT_COLOR.copy(alpha = 0.5f)
+                      MENU_TEXT_COLOR.copy(alpha = PREVIEW_WEIGHT)
                     } else {
                       MENU_TEXT_COLOR.copy(alpha = 0.08f)
                     },
@@ -457,6 +637,7 @@ fun VideoExportScreen(
             Spacer(Modifier.height(18.dp))
             SettingLabel("Cells per frame", "$evolveCells")
             Slider(
+              modifier = Modifier.sliderInsets(),
               value = evolveCells.toFloat(),
               onValueChange = {
                 onEvolveCellsChange(
@@ -486,6 +667,7 @@ fun VideoExportScreen(
             Spacer(Modifier.height(18.dp))
             SettingLabel("Patterns", "$riffPatterns")
             Slider(
+              modifier = Modifier.sliderInsets(),
               value = riffPatterns.toFloat(),
               onValueChange = {
                 onRiffPatternsChange(
@@ -514,6 +696,7 @@ fun VideoExportScreen(
           if (mode == VideoMode.Panorama) {
             SettingLabel("Loop", "$screens screens")
             Slider(
+              modifier = Modifier.sliderInsets(),
               value = screens.toFloat(),
               onValueChange = { onScreensChange(it.roundToInt().coerceIn(MIN_LOOP_SCREENS, MAX_LOOP_SCREENS)) },
               valueRange = MIN_LOOP_SCREENS.toFloat()..MAX_LOOP_SCREENS.toFloat(),
@@ -572,6 +755,7 @@ fun VideoExportScreen(
               MAX_GIF_DELAY_CENTISECONDS,
             )
             Slider(
+              modifier = Modifier.sliderInsets(),
               value = (MIN_GIF_DELAY_CENTISECONDS + MAX_GIF_DELAY_CENTISECONDS - delay).toFloat(),
               onValueChange = { reversed ->
                 val whole = (MIN_GIF_DELAY_CENTISECONDS + MAX_GIF_DELAY_CENTISECONDS -
@@ -591,6 +775,7 @@ fun VideoExportScreen(
             )
           } else {
             Slider(
+              modifier = Modifier.sliderInsets(),
               value = fps.coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS).toFloat(),
               onValueChange = { onFpsChange(it.roundToInt().coerceIn(MIN_VIDEO_FPS, MAX_MP4_FPS)) },
               valueRange = MIN_VIDEO_FPS.toFloat()..MAX_MP4_FPS.toFloat(),
@@ -606,6 +791,7 @@ fun VideoExportScreen(
           if (mode == VideoMode.Panorama) {
             SettingLabel("Pixels per frame", "$pixelsPerFrame")
             Slider(
+              modifier = Modifier.sliderInsets(),
               value = pixelsPerFrame.toFloat(),
               onValueChange = { onPixelsPerFrameChange(it.roundToInt().coerceIn(1, 16)) },
               valueRange = 1f..16f,
@@ -640,10 +826,12 @@ fun VideoExportScreen(
               when (mode) {
                 VideoMode.Evolve ->
                   "${frameColumns * pixelsPerCell}×${frameRows * pixelsPerCell} · " +
-                    "$solveSteps evolving frames, then one undo frame per changed cell"
+                    (previewEvolve?.let { "${it.frameCount} frames" }
+                      ?: "$solveSteps evolving frames, then one undo frame per changed cell")
                 VideoMode.Riff ->
                   "${frameColumns * pixelsPerCell}×${frameRows * pixelsPerCell} · " +
-                    "$riffPatterns patterns · ${formatOneDecimal(riffDurationSeconds)} s"
+                    "${previewRiff?.frameCount ?: riffPatterns} patterns · " +
+                    "${formatOneDecimal(riffDurationSeconds)} s"
                 else ->
                   "${frameColumns * pixelsPerCell}×${frameRows * pixelsPerCell} · $solveTotal frames"
               },
@@ -911,7 +1099,7 @@ private fun MetalShaderControls(
                 ) { onMetalChange(metal.copy(baseColor = it)) }
 
                 Spacer(Modifier.height(14.dp))
-                Text("MOVING LIGHT", color = MENU_TEXT_COLOR.copy(alpha = 0.5f), fontSize = 10.sp)
+                Text("MOVING LIGHT", color = MENU_TEXT_COLOR.copy(alpha = PREVIEW_WEIGHT), fontSize = 10.sp)
                 Spacer(Modifier.height(6.dp))
                 Row(
                   modifier = Modifier.fillMaxWidth(),
@@ -972,7 +1160,7 @@ private fun MetalShaderControls(
                 ) { onMetalChange(metal.copy(lightColor = it)) }
 
                 Spacer(Modifier.height(14.dp))
-                Text("REFLECTIONS", color = MENU_TEXT_COLOR.copy(alpha = 0.5f), fontSize = 10.sp)
+                Text("REFLECTIONS", color = MENU_TEXT_COLOR.copy(alpha = PREVIEW_WEIGHT), fontSize = 10.sp)
                 Spacer(Modifier.height(6.dp))
                 Text(
                   "ENVIRONMENT LIGHTS",
@@ -1061,6 +1249,7 @@ private fun MetalSlider(
 ) {
   SettingLabel(label, String.format(Locale.US, "%.${decimals}f", value))
   Slider(
+    modifier = Modifier.sliderInsets(),
     value = value,
     onValueChange = onChange,
     valueRange = range,
@@ -1128,6 +1317,7 @@ private fun MetalColorChannel(
       fontSize = 10.sp,
     )
     Slider(
+      modifier = Modifier.sliderInsets(),
       value = value.toFloat(),
       onValueChange = { onChange(it.roundToInt().coerceIn(0, 255)) },
       valueRange = 0f..255f,

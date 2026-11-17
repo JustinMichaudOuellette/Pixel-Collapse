@@ -1,13 +1,12 @@
 package ca.justinmo.wfcbitmap.ui
 
-import android.content.Context
-import android.opengl.GLES30
-import android.opengl.GLSurfaceView
-import android.util.Log
+import android.graphics.Bitmap
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -21,28 +20,35 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
-import ca.justinmo.wfcbitmap.video.MetalFrame
-import ca.justinmo.wfcbitmap.video.PreviewGpu
-import ca.justinmo.wfcbitmap.video.MetalSettings
 import ca.justinmo.wfcbitmap.video.PreviewCamera
 import ca.justinmo.wfcbitmap.video.PreviewMaterial
 import ca.justinmo.wfcbitmap.video.PreviewSource
+import ca.justinmo.wfcbitmap.video.PreviewWindow
 import ca.justinmo.wfcbitmap.video.window
 import java.util.Locale
-import javax.microedition.khronos.egl.EGLConfig
-import javax.microedition.khronos.opengles.GL10
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
- * The one preview surface for every shader.
+ * The one preview surface for the export screen.
  *
- * Flat and Metal share the same source texture, window/pan mapping, zoom/pan camera and GLSurfaceView.
- * The material only chooses which fragment program the GPU runs, so a gesture cannot behave differently
- * depending on the look and the two previews cannot drift apart.
+ * The flat look is drawn by Compose from the frame's own pixels. The metal look draws straight into a
+ * [MetalPreviewTexture]'s OpenGL surface, so no frame is read back to the CPU. There is no live
+ * `GLSurfaceView` here on purpose: a `SurfaceView`'s pixels live in a separate window layer, and its render
+ * thread is joined on the UI thread when the dialog closes, which made the metal preview unreliable inside
+ * the dialog. A `TextureView` is an ordinary composited View, so it has neither problem.
  */
 @Composable
 internal fun PreviewSurface(
@@ -52,28 +58,20 @@ internal fun PreviewSurface(
   modifier: Modifier = Modifier,
   maxZoom: Float = PreviewCamera.MAX_PREVIEW_ZOOM,
 ) {
+  if (source == null) return
   BoxWithConstraints(
     modifier = modifier.clipToBounds().background(Color.Black),
     contentAlignment = Alignment.Center,
   ) {
-    if (source == null) return@BoxWithConstraints
     val density = LocalDensity.current
     val boxWidth = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
     val boxHeight = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
     val viewportAspect = boxWidth / boxHeight
-    // Key the camera on the framing, not on the pixel array identity: a recomposition can hand in an
-    // equal-sized source again, and that must not throw away the user's zoom. A change of shape or wrap
-    // axis does reset it because the old offsets no longer mean the same thing.
-    val sourceKey = listOf(
-      source.width,
-      source.height,
-      source.frameWidth,
-      source.frameHeight,
-      source.loopLength,
-      source.wrapX,
-      source.wrapY,
-      source.vertical,
-    )
+    // Keep zoom/pan across a panorama rebuild, but not across the switch between a single frame and a
+    // panorama: they have different coordinate systems, and carrying a paused or zoomed camera from the
+    // Solve preview into Panorama made the next preview look frozen. The wrap flags are what distinguish
+    // those two sources.
+    val sourceKey = Triple(source.frameAspect, source.wrapX, source.wrapY)
 
     var camera by remember(sourceKey) { mutableStateOf(PreviewCamera()) }
     // Keep the current camera in the gesture lambda without rebuilding the transform state on every
@@ -101,19 +99,22 @@ internal fun PreviewSurface(
       if (clamped != camera) camera = clamped
     }
 
-    AndroidView(
-      modifier = Modifier.fillMaxSize(),
-      factory = { context -> PreviewGlView(context) },
-      update = { view ->
-        view.setScene(source, material, camera, loopPixels)
-      },
-    )
+    if (material is PreviewMaterial.Metal) {
+      MetalSurface(
+        source = source,
+        material = material,
+        camera = camera,
+        loopPixels = loopPixels,
+      )
+    } else {
+      FlatSurface(source = source, camera = camera, loopPixels = loopPixels)
+    }
 
     val label = when (material) {
       is PreviewMaterial.Metal -> "Metal preview"
       PreviewMaterial.Flat -> "Video preview"
     }
-    androidx.compose.foundation.layout.Box(
+    Box(
       modifier = Modifier
         .fillMaxSize()
         .transformable(transformState)
@@ -137,175 +138,131 @@ internal fun PreviewSurface(
   }
 }
 
-private class PreviewGlView(context: Context) : GLSurfaceView(context) {
-
-  private val previewRenderer = PreviewRenderer()
-  private var lastSource: PreviewSource? = null
-  private var lastMaterial: PreviewMaterial? = null
-  private var lastCamera: PreviewCamera? = null
-  private var lastLoopPixels = Float.NaN
-
-  init {
-    setEGLContextClientVersion(3)
-    setEGLConfigChooser(8, 8, 8, 8, 0, 0)
-    preserveEGLContextOnPause = true
-    setRenderer(previewRenderer)
-    renderMode = RENDERMODE_CONTINUOUSLY
-    // Compose draws its own background over a plain SurfaceView. This keeps the live GL surface above
-    // the dialog's canvas, as the previous Metal-only preview did.
-    setZOrderOnTop(true)
-    setBackgroundColor(android.graphics.Color.BLACK)
+/**
+ * The flat look, drawn by Compose.
+ *
+ * The pixels are copied into one reusable bitmap on composition. [PreviewSource.version] is what says the
+ * contents changed: the solve sweep alternates two source buffers, so the array identity alone would miss
+ * every other frame. [FilterQuality.None] when magnified keeps the pixel art crisp, matching the GL
+ * material's nearest-neighbour magnification.
+ */
+@Composable
+private fun FlatSurface(
+  source: PreviewSource,
+  camera: PreviewCamera,
+  loopPixels: Float,
+) {
+  val bitmap = remember(source.width, source.height) {
+    Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
   }
-
-  fun setScene(
-    source: PreviewSource,
-    material: PreviewMaterial,
-    camera: PreviewCamera,
-    loopPixels: Float,
-  ) {
-    val sameSource = source.pixels === lastSource?.pixels &&
-      source.width == lastSource?.width &&
-      source.height == lastSource?.height &&
-      source.frameWidth == lastSource?.frameWidth &&
-      source.frameHeight == lastSource?.frameHeight &&
-      source.wrapX == lastSource?.wrapX &&
-      source.wrapY == lastSource?.wrapY
-    if (sameSource && material == lastMaterial && camera == lastCamera &&
-      loopPixels == lastLoopPixels
-    ) {
-      return
-    }
-    // The source arrays are immutable snapshots: the panorama builder returns a new array and the
-    // single-frame preview is copied once off the generator's reusable bitmap. Copying them here would
-    // allocate a megapixel buffer on every camera tick, so the renderer holds the caller's array.
-    lastSource = source
-    lastMaterial = material
-    lastCamera = camera
-    lastLoopPixels = loopPixels
-    queueEvent { previewRenderer.setScene(source, material, camera, loopPixels) }
+  // Fills the reusable bitmap with the frame that is being shown right now.
+  remember(bitmap, source.version, source.pixels) {
+    bitmap.setPixels(source.pixels, 0, source.width, 0, 0, source.width, source.height)
+  }
+  val image = remember(bitmap, source.version, source.pixels) { bitmap.asImageBitmap() }
+  Canvas(Modifier.fillMaxSize()) {
+    val window = source.window(camera, loopPixels)
+    drawFlatWindow(image, source, window, camera)
   }
 }
 
-private class PreviewRenderer : GLSurfaceView.Renderer {
+/**
+ * The metal look, drawn straight into a [MetalPreviewTexture]'s OpenGL surface.
+ *
+ * Every frame stays on the GPU: the exporter's renderer presents to the TextureView's surface, and the
+ * view hierarchy composites it. A TextureView is an ordinary View, so this also avoids the `SurfaceView`
+ * window layer and render-thread join that made the old live GL preview unreliable in the dialog.
+ */
+@Composable
+private fun MetalSurface(
+  source: PreviewSource,
+  material: PreviewMaterial.Metal,
+  camera: PreviewCamera,
+  loopPixels: Float,
+) {
+  val context = LocalContext.current
+  val view = remember { MetalPreviewTexture(context) }
+  AndroidView(
+    modifier = Modifier.fillMaxSize(),
+    factory = { view },
+    update = { it.setScene(source, material, camera, loopPixels) },
+  )
+}
 
-  private var gpu: PreviewGpu? = null
-  private var source: PreviewSource? = null
-  private var material: PreviewMaterial = PreviewMaterial.Flat
-  private var camera = PreviewCamera()
-  private var loopPixels = 0f
-  private var uploadedSrgb = false
-  private var surfaceWidth = 1
-  private var surfaceHeight = 1
-  private var lastFrameNanos = 0L
-  private var elapsedNanos = 0L
+/**
+ * Draws one window of [source] the way the flat material would: the frame fitted in the viewport, then
+ * the camera's zoom and pan applied, with the frame wrapping at the source's ends.
+ */
+private fun DrawScope.drawFlatWindow(
+  image: ImageBitmap,
+  source: PreviewSource,
+  window: PreviewWindow,
+  camera: PreviewCamera,
+) {
+  if (source.width <= 0 || source.height <= 0) return
+  val srcX = (window.uvOffsetX * source.width).roundToInt()
+  val srcY = (window.uvOffsetY * source.height).roundToInt()
+  val srcWidth = (window.uvScaleX * source.width).roundToInt().coerceIn(1, source.width)
+  val srcHeight = (window.uvScaleY * source.height).roundToInt().coerceIn(1, source.height)
+  if (srcWidth <= 0 || srcHeight <= 0) return
 
-  fun setScene(
-    source: PreviewSource,
-    material: PreviewMaterial,
-    camera: PreviewCamera,
-    loopPixels: Float,
-  ) {
-    val sourceChanged = this.source == null ||
-      this.source!!.pixels !== source.pixels ||
-      this.source!!.width != source.width ||
-      this.source!!.height != source.height ||
-      this.source!!.frameWidth != source.frameWidth ||
-      this.source!!.frameHeight != source.frameHeight ||
-      this.source!!.wrapX != source.wrapX ||
-      this.source!!.wrapY != source.wrapY
-    val materialChanged = this.material != material
-    this.source = source
-    this.material = material
-    this.camera = camera
-    this.loopPixels = loopPixels
-    if (materialChanged && material is PreviewMaterial.Metal) {
-      gpu?.ensureMetal()
+  val fit = min(size.width / srcWidth, size.height / srcHeight)
+  val scale = fit * camera.zoom
+  val destinationWidth = srcWidth * scale
+  val destinationHeight = srcHeight * scale
+  // Same mapping as the shader: screen = (uv - 0.5 - previewOffset) * rect + 0.5.
+  val left = (size.width - destinationWidth) * 0.5f - camera.offsetX * destinationWidth
+  val top = (size.height - destinationHeight) * 0.5f - camera.offsetY * destinationHeight
+
+  val columns = windowSegments(srcX, srcWidth, source.width, window.wrapX)
+  val rows = windowSegments(srcY, srcHeight, source.height, window.wrapY)
+  val quality = if (scale >= 1f) FilterQuality.None else FilterQuality.Low
+  for (row in rows) {
+    for (column in columns) {
+      val destinationX = left + destinationWidth * column.fraction
+      val destinationY = top + destinationHeight * row.fraction
+      val destinationW = destinationWidth * column.length / srcWidth
+      val destinationH = destinationHeight * row.length / srcHeight
+      drawImage(
+        image = image,
+        srcOffset = IntOffset(column.start, row.start),
+        srcSize = IntSize(column.length, row.length),
+        dstOffset = IntOffset(destinationX.roundToInt(), destinationY.roundToInt()),
+        dstSize = IntSize(
+          destinationW.roundToInt().coerceAtLeast(1),
+          destinationH.roundToInt().coerceAtLeast(1),
+        ),
+        filterQuality = quality,
+      )
     }
-    if (sourceChanged || materialChanged) uploadSource()
-  }
-
-  private fun uploadSource() {
-    val current = source ?: return
-    val metal = material is PreviewMaterial.Metal
-    gpu?.uploadAlbedo(current.pixels, current.width, current.height, srgb = metal)
-    uploadedSrgb = metal
-  }
-
-  override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-    val created = PreviewGpu()
-    val metal = material is PreviewMaterial.Metal
-    if (created.init(includeMetal = metal)) {
-      gpu = created
-      uploadSource()
-      Log.i("PreviewGl", "GLES preview ready (flat=${!metal})")
-    } else {
-      gpu = null
-      Log.w("PreviewGl", "GLES preview unavailable: ${created.failure}")
-    }
-    elapsedNanos = 0L
-    lastFrameNanos = System.nanoTime()
-  }
-
-  override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
-    surfaceWidth = width.coerceAtLeast(1)
-    surfaceHeight = height.coerceAtLeast(1)
-    GLES30.glViewport(0, 0, surfaceWidth, surfaceHeight)
-  }
-
-  override fun onDrawFrame(gl: GL10?) {
-    GLES30.glViewport(0, 0, surfaceWidth, surfaceHeight)
-    GLES30.glDisable(GLES30.GL_DEPTH_TEST)
-    GLES30.glDisable(GLES30.GL_BLEND)
-    GLES30.glDisable(GLES30.GL_CULL_FACE)
-    GLES30.glClearColor(0f, 0f, 0f, 1f)
-    GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-    val g = gpu ?: return
-    val current = source ?: return
-    if (current.width <= 0 || current.height <= 0) return
-
-    val now = System.nanoTime()
-    if (!camera.paused && lastFrameNanos != 0L) {
-      elapsedNanos += (now - lastFrameNanos).coerceAtLeast(0L)
-    }
-    lastFrameNanos = now
-    val elapsed = elapsedNanos / 1_000_000_000f
-    val metal = material as? PreviewMaterial.Metal
-    val settings = metal?.settings ?: MetalSettings()
-    val turns = elapsed * 0.25f * settings.lightTurnsPerLoop
-    val window = current.window(camera, loopPixels)
-    val frame = MetalFrame(
-      width = surfaceWidth,
-      height = surfaceHeight,
-      viewportAspect = surfaceWidth.toFloat() / surfaceHeight,
-      imageAspect = window.imageAspect,
-      uvOffsetX = window.uvOffsetX,
-      uvOffsetY = window.uvOffsetY,
-      uvScaleX = window.uvScaleX,
-      uvScaleY = window.uvScaleY,
-      embossScale = metal?.embossScale ?: 1f,
-      previewScale = window.previewScale,
-      previewOffsetX = window.previewOffsetX,
-      previewOffsetY = window.previewOffsetY,
-      wrapX = window.wrapX,
-      wrapY = window.wrapY,
-      stepTexels = current.cellPixels.toFloat(),
-      turns = turns,
-      settings = settings,
-    )
-
-    if (metal != null) {
-      if (g.ensureMetal()) {
-        g.draw(frame)
-        return
-      }
-      // A device that can run the flat preview but not the metal program should still show something.
-      // The texture was uploaded as sRGB for metal, so re-upload the bytes linearly for the fallback.
-      if (uploadedSrgb) {
-        g.uploadAlbedo(current.pixels, current.width, current.height, srgb = false)
-        uploadedSrgb = false
-      }
-    }
-    g.drawFlat(frame)
   }
 }
 
+/**
+ * Splits one window axis into the source slices that fill it.
+ *
+ * [fraction] is where the slice starts inside the window (0..1), so a window that runs off the end of the
+ * source continues from the opposite edge instead of being clamped.
+ */
+private fun windowSegments(
+  start: Int,
+  length: Int,
+  limit: Int,
+  wrap: Boolean,
+): List<WindowSegment> {
+  if (length <= 0 || limit <= 0) return emptyList()
+  if (!wrap) {
+    val begin = start.coerceIn(0, limit - 1)
+    val count = min(length, limit - begin)
+    return listOf(WindowSegment(begin, count, 0f))
+  }
+  val first = min(length, limit - start)
+  val segments = ArrayList<WindowSegment>(2)
+  if (first > 0) segments.add(WindowSegment(start, first, 0f))
+  if (first < length) {
+    segments.add(WindowSegment(0, length - first, first.toFloat() / length))
+  }
+  return segments
+}
+
+private data class WindowSegment(val start: Int, val length: Int, val fraction: Float)
