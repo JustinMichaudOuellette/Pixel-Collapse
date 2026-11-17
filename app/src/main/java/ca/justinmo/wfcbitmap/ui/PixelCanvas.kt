@@ -191,12 +191,23 @@ fun ZoomablePixelCanvas(
   fitInitialGrid: Boolean = false,
   /** Called after the one-time fresh-start fit, so the caller can remember not to do it again. */
   onInitialGridFitted: () -> Unit = {},
+  /**
+   * On first layout, place an already-sized drawing so the +/- pairs just outside its top and left edges
+   * are on screen.
+   *
+   * A restored session opens at the origin, which puts those pairs at negative coordinates and makes
+   * them unreachable; the editor sets this so the first view offsets the grid far enough to show them.
+   */
+  keepEdgeButtonsVisible: Boolean = false,
 ) {
   var scale by remember { mutableFloatStateOf(1f) }
   var offset by remember { mutableStateOf(Offset.Zero) }
   var canvasSize by remember { mutableStateOf(IntSize.Zero) }
   var fitted by remember { mutableStateOf(false) }
   val haptics = LocalHapticFeedback.current
+  // The + and - pairs just outside the grid are this big, so the first view needs this much margin
+  // for the top and left pairs to sit on screen.
+  val edgeButtonMargin = with(LocalDensity.current) { BUTTON_SIZE.toPx() }
 
   /*
    * The gesture handler below is restarted whenever its keys change, so the selection is read through
@@ -228,21 +239,43 @@ fun ZoomablePixelCanvas(
       .fillMaxSize()
       .onSizeChanged { size ->
         canvasSize = size
-        if (fitInitialGrid && !fitted && size.width > 0 && size.height > 0) {
+        if (fitted || size.width <= 0 || size.height <= 0) return@onSizeChanged
+        if (fitInitialGrid) {
           // One cell on every side is the ring the + and - buttons live in; taking it off before sizing
           // the sheet is what keeps all eight of them on screen.
           val maxColumns = size.width / baseCellSizePx - 2
           val maxRows = size.height / baseCellSizePx - 2
           gridState.fitBlankToCanvas(maxColumns, maxRows, gridStep)
-          // Center the sheet, which centers the ring around it too.
+          // Center the sheet, which centers the ring around it too. When the smallest legal grid is
+          // larger than the canvas, keep its top-left ring on screen instead of centering it off.
           offset =
             Offset(
-              (size.width - gridState.columns * baseCellSizePx) / 2f,
-              (size.height - gridState.rows * baseCellSizePx) / 2f,
+              ((size.width - gridState.columns * baseCellSizePx) / 2f)
+                .coerceAtLeast(edgeButtonMargin),
+              ((size.height - gridState.rows * baseCellSizePx) / 2f)
+                .coerceAtLeast(edgeButtonMargin),
             )
           fitted = true
           onInitialGridFitted()
           onResize()
+        } else if (keepEdgeButtonsVisible) {
+          // A restored (or otherwise already-sized) sheet starts at the origin, which puts the pairs just
+          // outside its top and left edges off screen. Centre the sheet while its whole ring fits; once
+          // it is larger than the viewport, show its top-left corner with one button of margin so those
+          // pairs stay reachable.
+          val gridWidth = gridState.columns * baseCellSizePx.toFloat()
+          val gridHeight = gridState.rows * baseCellSizePx.toFloat()
+          offset = if (gridWidth + edgeButtonMargin * 2f <= size.width &&
+            gridHeight + edgeButtonMargin * 2f <= size.height
+          ) {
+            Offset(
+              (size.width - gridWidth) / 2f,
+              (size.height - gridHeight) / 2f,
+            )
+          } else {
+            Offset(edgeButtonMargin, edgeButtonMargin)
+          }
+          fitted = true
         }
       }
       // A handle for UI tests: the drawing is one Canvas and gestures are the only way to drive it, so a

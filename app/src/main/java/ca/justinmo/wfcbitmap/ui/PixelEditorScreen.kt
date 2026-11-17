@@ -649,6 +649,7 @@ fun PixelEditorScreen(
             onResize = onResize,
             fitInitialGrid = fitInitialGrid,
             onInitialGridFitted = onInitialGridFitted,
+            keepEdgeButtonsVisible = true,
           )
         }
       }
@@ -691,6 +692,7 @@ fun PixelEditorScreen(
             onResize = onResize,
             fitInitialGrid = fitInitialGrid,
             onInitialGridFitted = onInitialGridFitted,
+            keepEdgeButtonsVisible = true,
           )
         }
 
