@@ -181,18 +181,7 @@ class MainActivity : ComponentActivity() {
      * no wakelock and no permission.
      */
     window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-
-    val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
-    // Portrait keeps the status bar so the clock and battery stay readable; landscape is the drawing
-    // surface and uses the whole screen. The navigation bar stays out of the way in both.
-    if (resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) {
-      windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
-    } else {
-      windowInsetsController.hide(WindowInsetsCompat.Type.statusBars())
-    }
-    windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
-    windowInsetsController.systemBarsBehavior =
-      WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    applySystemBars()
 
     setContent {
       WFCBitmapTheme {
@@ -207,6 +196,31 @@ class MainActivity : ComponentActivity() {
         }
       }
     }
+  }
+
+  /**
+   * Portrait keeps the status bar so the clock and battery stay readable; landscape is the drawing
+   * surface and uses the whole screen. The navigation bar stays out of the way in both.
+   *
+   * Rotation is handled in place -- the manifest declares the configuration changes -- so this is
+   * applied again in [onConfigurationChanged] rather than only once at startup.
+   */
+  private fun applySystemBars() {
+    val controller = WindowCompat.getInsetsController(window, window.decorView)
+    if (resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) {
+      controller.show(WindowInsetsCompat.Type.statusBars())
+    } else {
+      controller.hide(WindowInsetsCompat.Type.statusBars())
+    }
+    controller.hide(WindowInsetsCompat.Type.navigationBars())
+    controller.systemBarsBehavior =
+      WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+  }
+
+  override fun onConfigurationChanged(newConfig: Configuration) {
+    super.onConfigurationChanged(newConfig)
+    // The activity is not recreated for rotation, so its system-bar state has to be refreshed here.
+    applySystemBars()
   }
 }
 

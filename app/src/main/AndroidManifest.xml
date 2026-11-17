@@ -26,6 +26,7 @@
         android:theme="@style/Theme.WFCBitmap">
         <activity
             android:name=".ui.MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
             android:exported="true"
             android:theme="@style/Theme.WFCBitmap">
             <intent-filter>
