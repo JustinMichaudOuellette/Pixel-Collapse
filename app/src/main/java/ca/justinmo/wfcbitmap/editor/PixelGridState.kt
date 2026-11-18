@@ -74,8 +74,8 @@ class PixelGridState(
    * previews and tests that do not care which palette they are on.
    */
   palette: List<Color> = listOf(Color.Black),
-  initialColumns: Int = 16,
-  initialRows: Int = 11,
+  initialColumns: Int = 17,
+  initialRows: Int = 12,
 ) {
   var columns by mutableIntStateOf(initialColumns)
     private set

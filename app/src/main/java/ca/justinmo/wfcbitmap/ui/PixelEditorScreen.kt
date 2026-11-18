@@ -639,7 +639,7 @@ fun PixelEditorScreen(
             selectedColor = selectedColor,
             mode = mode,
             selection = selection,
-            baseCellSizePx = LocalDensity.current.run { BUTTON_SIZE.toPx().roundToInt() },
+            baseCellSizePx = LocalDensity.current.run { EDITOR_GRID_CELL_SIZE.toPx().roundToInt() },
             gridStep = if (output.kernel.grouped) output.kernel.cellSize else 1,
             marksEdgeBand = showsEdgeBand(edgeRuleKept, wrapEdges),
             onSelectionChange = { selection = it },
@@ -670,7 +670,7 @@ fun PixelEditorScreen(
           .weight(1f)
           .fillMaxHeight()
       ) {
-        val baseCellSizePx = LocalDensity.current.run { BUTTON_SIZE.toPx().roundToInt() }
+        val baseCellSizePx = LocalDensity.current.run { EDITOR_GRID_CELL_SIZE.toPx().roundToInt() }
 
         Box(
           modifier = Modifier

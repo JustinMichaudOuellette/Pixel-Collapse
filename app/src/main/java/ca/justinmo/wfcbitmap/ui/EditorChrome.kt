@@ -22,9 +22,20 @@ internal val PREVIEW_BACKGROUND = Color.Black
 /** Behind a menu or a tool's explanation: the same black, so they read as part of the editor. */
 internal val PANEL_BACKGROUND = Color.Black
 
-const val BUTTON_SIZE_DP_INT = 38
+const val BUTTON_SIZE_DP_INT = 48
 
 internal val BUTTON_SIZE = BUTTON_SIZE_DP_INT.dp
+
+/**
+ * The editor grid's default cell size, in dp.
+ *
+ * Deliberately separate from [BUTTON_SIZE]: the drawing grid is a workspace, not a row of controls, and
+ * changing the toolbar/colour-button size must not resize the cells. The +/- edge controls still use the
+ * button size.
+ */
+const val EDITOR_GRID_CELL_SIZE_DP_INT = 38
+
+internal val EDITOR_GRID_CELL_SIZE = EDITOR_GRID_CELL_SIZE_DP_INT.dp
 
 /** The menu's labels, in the theme's ink. */
 internal val MENU_TEXT_COLOR = Color.White

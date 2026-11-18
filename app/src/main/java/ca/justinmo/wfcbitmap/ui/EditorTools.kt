@@ -523,6 +523,10 @@ internal fun editorToolInfosFor(): List<EditorToolInfo> =
       EditorToolId.Triangle -> FeatureFlags.TRIANGLE_TOOL_ENABLED
       EditorToolId.PhotoCamera -> FeatureFlags.CAMERA_TOOL_ENABLED
       EditorToolId.BestEffort -> FeatureFlags.BEST_EFFORT_TOOL_ENABLED
+      EditorToolId.FlipHorizontal,
+      EditorToolId.FlipVertical,
+      EditorToolId.Rotate -> FeatureFlags.TRANSFORM_TOOLS_ENABLED
+      EditorToolId.Settings -> FeatureFlags.SETTINGS_TOOL_ENABLED
       else -> true
     }
   }

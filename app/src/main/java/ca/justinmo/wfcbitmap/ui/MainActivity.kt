@@ -559,8 +559,17 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   val videoPreviewRiff = remember(videoRiffFrames) {
     videoRiffFrames?.let { RiffPreview(it) }
   }
+  // While the settings button is gated off, the built-in default is the only available size. The stored
+  // preference is left untouched, exactly like the gated best-effort mode, so re-enabling settings
+  // restores the last user choice instead of forgetting it.
   var toolButtonSize by remember {
-    mutableIntStateOf(preferences.toolButtonSize(fallback = BUTTON_SIZE_DP_INT))
+    mutableIntStateOf(
+      if (FeatureFlags.SETTINGS_TOOL_ENABLED) {
+        preferences.toolButtonSize(fallback = BUTTON_SIZE_DP_INT)
+      } else {
+        BUTTON_SIZE_DP_INT
+      },
+    )
   }
   var savedPatterns by remember { mutableStateOf<List<SavedPattern>>(emptyList()) }
   /*
@@ -762,7 +771,9 @@ fun PixelEditor(modifier: Modifier = Modifier, editorState: EditorStateHolder? =
   LaunchedEffect(solveAnimation) { preferences.setSolveAnimation(solveAnimation) }
   LaunchedEffect(evolveCells) { preferences.setEvolveCells(evolveCells) }
   LaunchedEffect(riffPatterns) { preferences.setRiffPatterns(riffPatterns) }
-  LaunchedEffect(toolButtonSize) { preferences.setToolButtonSize(toolButtonSize) }
+  LaunchedEffect(toolButtonSize) {
+    if (FeatureFlags.SETTINGS_TOOL_ENABLED) preferences.setToolButtonSize(toolButtonSize)
+  }
   LaunchedEffect(gridState.revision) {
     if (revisionsSeen > 0 && patternClean) patternClean = false
     revisionsSeen++

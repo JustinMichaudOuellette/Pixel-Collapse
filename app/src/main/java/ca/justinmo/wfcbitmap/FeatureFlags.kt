@@ -18,6 +18,12 @@ internal object FeatureFlags {
   /** The best-effort fill mode. */
   const val BEST_EFFORT_TOOL_ENABLED = false
 
+  /** The flip left-to-right, flip top-to-bottom, and rotate drawing tools. */
+  const val TRANSFORM_TOOLS_ENABLED = false
+
+  /** The settings button and its button-size dialog. */
+  const val SETTINGS_TOOL_ENABLED = false
+
   /** The three small studio spot lights in the metal environment. */
   const val SPOT_LIGHTS_ENABLED = false
 }
