@@ -176,7 +176,7 @@ internal fun EditorInfoScreen(
           "I had a lot of fun creating a pseudo electric schematic generator. " +
           "I found the WFC algorithm to be particularly interesting so I decided to explore a bitmap based implementation. " +
           "Mobile felt like an interesting platform for it, not only because I am a seasoned mobile app developer but also because the touch interface makes it enjoyable. " +
-          "The resulting app is a tool I create for me and to share to allow the exploration of wfc and patterns. " +
+          "The resulting app is a tool that I created for me to play with and explore. " +
           "I hope you enjoy it as much as I enjoyed creating it." +
           "\n\n— jmo",
     )
